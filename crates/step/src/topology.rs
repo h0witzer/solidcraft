@@ -794,6 +794,10 @@ impl<'b, 'a> Builder<'b, 'a> {
     fn finish(mut self, item: u64, name: String, shells: Vec<Vec<(u32, bool)>>, kind: Kind) -> R<Solid> {
         let _span = solidcraft_profile::span("import", "step.solid_record");
         let mut notes = Vec::new();
+        let at_poles = self.split_at_poles()?;
+        if at_poles > 0 {
+            notes.push(format!("{at_poles} edges split where they pass through a face's pole"));
+        }
         let seams = self.add_seams()?;
         if seams > 0 {
             notes.push(format!("{seams} seam edges added to faces that wind around their surface"));
