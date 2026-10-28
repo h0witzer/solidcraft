@@ -458,10 +458,23 @@ impl<'b, 'a> Builder<'b, 'a> {
     /// and the edge's tolerance covers it. A spline face's gaps are measured on the pcurves its
     /// kernel makes (`raise_edges`): an iterative nearest point may settle elsewhere on it.
     fn measure_edges(&mut self, surface: &BSurface, edge_loops: &[Vec<(u32, bool)>]) -> R<()> {
+        // Only where the nearest point is in closed form: on a spline the search may settle on
+        // another part of the surface, or on its boundary for a point a hair past it, and report a
+        // gap the edge does not have (2.9 mm on Poppy Humanoid's leg shells, whose edges lie within
+        // 0.003 mm), widening tolerances past what SMLib takes. A spline face's gaps are measured
+        // on the pcurves its kernel makes (`raise_edges`).
+        if !matches!(
+            surface,
+            BSurface::Plane { .. }
+                | BSurface::PlaneThrough { .. }
+                | BSurface::Cylinder { .. }
+                | BSurface::Cone { .. }
+                | BSurface::Sphere { .. }
+                | BSurface::Torus { .. }
+        ) {
+            return Ok(());
+        }
         let on = SurfaceEval::new(surface).map_err(|m| m.to_string())?;
-        // One search grid for all of the face's points, each searched from the whole grid: a
-        // nearest point carried on as the next one's start can settle on another part of a
-        // closed spline.
         let starts = solidcraft_geom::tess::uv::Starts::default();
         for l in edge_loops {
             for &(e, _) in l {
