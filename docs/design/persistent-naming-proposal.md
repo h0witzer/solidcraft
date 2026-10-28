@@ -171,12 +171,26 @@ This changes what some saved designs rebuild to, so it raises the `Changes a def
 ## 6. A body's identity is not its name
 
 In #5308, references to a body use its display name. Features already keep the two apart: a
-minted id (`F12`) and a name the user edits. Bodies can do the same. The identity would be the
-creating feature plus the lump's place, which SolidCraft already orders by each lump's least face
-name. The name becomes a label. Appearance, visibility, materials, groups, participants and joints
-would key on the identity. `body.rename` would change only the label, and
-`Document::rename_body_keys` could go. Form Studio does this for features: the id is minted once
-and kept through renames, and a rename never rewrites a reference.
+minted id (`F12`) and a name the user edits. Bodies can do the same, and bluecmd's plan on #5308
+does it: an id minted from `next_id` and stored with the feature slot by slot, with the name
+becoming a label. That is better than deriving the identity from the creating feature and the
+lump's place, as an earlier version of this note proposed, because a stored id survives later
+changes to how lumps and faces are named. Form Studio does the same for features: the id is
+minted once and kept through renames, and a rename never rewrites a reference.
+
+A stored id is only as stable as the step that decides which lump fills which slot. Today the
+pieces of a split body are assigned in the order of their least face name
+(`crates/doc/src/lineage.rs:554` at 33281cf), and text order says nothing about which piece is the
+original. Suppose an upstream edit makes a cut slice a small piece off a body, and that piece's
+names sort first. The piece then takes the body's id, and with it the material and appearance.
+Assigning slots by lineage keeps the id on the main piece:
+
+- Each face contributes its own name and the names of the faces it was split from.
+- When a slot is pinned, the feature stores a MinHash signature of that set beside `body_names`.
+- On evaluation, each slot takes the lump whose signature overlaps its own the most.
+
+The details are in the
+[#5308 discussion](https://github.com/tangency-labs/solidcraft/issues/5308#issuecomment-6470264793).
 
 ## Measuring it
 
@@ -195,7 +209,7 @@ Each step is a small PR on one topic:
 3. Lineage fallback for blend edges, then for face references (change 1; #4341, second repro).
 4. Structured names, together with #5861's step 2 (change 3).
 5. Cap roles and ordinals from the feature (change 4; #5198).
-6. Body identity (change 6; #5308).
+6. Body identity (change 6), which bluecmd plans on #5308, then slots assigned by lineage.
 
 Steps 3, 4 and 6 save something new in a design, so each adds a file under
 `crates/doc/src/format/pending/`. Steps 3 and 5 change what some saved designs rebuild to.
