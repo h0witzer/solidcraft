@@ -24,7 +24,7 @@ mod develop;
 mod rigid;
 mod skin;
 
-pub use develop::{DevelopError, Development, FlatPanel, Mismatch, develop};
+pub use develop::{DevelopError, Development, FlatPanel, Mismatch, Trim, Zone, develop};
 pub use rigid::Rigid2;
 pub use skin::{Anchor, Bend, Datum, Joint, JointKind, Panel, Skin, Surface, Tail, ZoneEnds};
 
