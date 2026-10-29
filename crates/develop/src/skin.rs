@@ -96,6 +96,10 @@ pub struct Bend {
     /// What each panel keeps beyond the zone's ends, between its anchor and where the bend
     /// would start: `(a, b)`.
     pub tails: (Tail, Tail),
+    /// Which of the zone's ends, `(start, end)` along the joint, is a corner relief: there
+    /// each panel keeps nothing past the zone whatever its tail, as at a corner where a rip cuts
+    /// the panels beside the bend and the bend stops short of it.
+    pub relieved: (bool, bool),
 }
 
 /// The line the anchors mark.

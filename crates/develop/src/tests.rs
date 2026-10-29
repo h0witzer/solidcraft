@@ -26,7 +26,15 @@ fn same_motion(a: &Rigid2, b: &Rigid2) -> bool {
 }
 
 fn bend(angle: f64, datum: Datum, span: (f64, f64)) -> Bend {
-    Bend { angle, radius: R, toward_material: true, datum, ends: ZoneEnds { near: span, far: span }, tails: (Tail::Keep, Tail::Trim) }
+    Bend {
+        angle,
+        radius: R,
+        toward_material: true,
+        datum,
+        ends: ZoneEnds { near: span, far: span },
+        tails: (Tail::Keep, Tail::Trim),
+        relieved: (false, false),
+    }
 }
 
 /// An L bracket: a 100 x 60 base whose virtual sharp runs along y = 0, and a 20 mm flange drawn
@@ -143,6 +151,23 @@ fn a_torn_end_slants_the_zone() {
     let ba = FRAC_PI_2 * (R + K * T);
     let [zone] = dev.zones.as_slice() else { panic!() };
     assert!((zone.region.area() - ba * (90.0 + 95.0) / 2.0).abs() < 1e-9, "{}", zone.region.area());
+}
+
+/// A zone that stops short of the base's edge: past it the base keeps its tail, out to its sharp,
+/// unless that end is a corner relief, where the base stops at its tangent line.
+#[test]
+fn a_relieved_end_stops_the_base_at_its_tangent_line() {
+    let base_band = |relieved: (bool, bool)| {
+        let mut b = bend(FRAC_PI_2, Datum::Sharp, (5.0, 95.0));
+        b.relieved = relieved;
+        let dev = develop(&bracket(b), 0).unwrap_or_default();
+        let bands: Vec<Aabb2> = dev.trims.iter().filter(|t| t.panel == 0).map(|t| bounds(&t.region)).collect();
+        let [band] = bands.as_slice() else { panic!("one trim of the base: {:?}", dev.trims) };
+        (band.min.x, band.max.x)
+    };
+    let (kept, relieved) = (base_band((false, false)), base_band((true, false)));
+    assert!((kept.0 - 5.0).abs() < 1e-9 && (kept.1 - 95.0).abs() < 1e-9, "{kept:?}");
+    assert!(relieved.0 < 0.0 && (relieved.1 - 95.0).abs() < 1e-9, "{relieved:?}");
 }
 
 /// Four walls of a square tube joined by four bends close a ring: the layout follows three of
