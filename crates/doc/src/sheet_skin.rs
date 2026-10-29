@@ -175,6 +175,11 @@ fn sheet_flat(sh: &SheetBody, work: &mut FlatWork) -> Result<Vec<Region2>> {
 /// was joined from.
 fn skin_flat(skin: &Skin, work: &mut FlatWork) -> Result<(Vec<Region2>, Development)> {
     let dev = develop(skin, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
+    Ok((join(&dev, work)?, dev))
+}
+
+/// A development's flat: each placed panel less its trims, and the zones, joined.
+pub(crate) fn join(dev: &Development, work: &mut FlatWork) -> Result<Vec<Region2>> {
     let mut pieces = Vec::new();
     for (i, flat) in dev.panels.iter().enumerate() {
         let Some(flat) = flat else { continue };
@@ -191,7 +196,7 @@ fn skin_flat(skin: &Skin, work: &mut FlatWork) -> Result<(Vec<Region2>, Developm
         }
     }
     pieces.extend(dev.zones.iter().map(|z| on_grid(&z.region)));
-    Ok((stage("joining the skin's pieces", material_union(pieces, work))?, dev))
+    stage("joining the skin's pieces", material_union(pieces, work))
 }
 
 /// A region with its points on the sheet's nanometre grid, as the sheet model rounds its
