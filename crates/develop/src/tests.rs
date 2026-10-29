@@ -2,7 +2,7 @@ use std::f64::consts::{FRAC_PI_2, PI};
 
 use solidcraft_geom::{Aabb2, Loop2, Region2, Seg2, Vec2};
 
-use crate::{Anchor, Bend, Datum, DevelopError, Joint, JointKind, Panel, Rigid2, Skin, Tail, ZoneEnds, develop};
+use crate::{Anchor, Bend, Datum, DevelopError, Joint, JointKind, Panel, Rigid2, Skin, Surface, Tail, ZoneEnds, develop};
 
 const T: f64 = 2.0;
 const R: f64 = 2.0;
@@ -38,8 +38,8 @@ fn bracket(b: Bend) -> Skin {
         thickness: T,
         k_factor: K,
         panels: vec![
-            Panel { name: "base".into(), region: rect(0.0, 0.0, 100.0, 60.0) },
-            Panel { name: "flange".into(), region: chart.region(&rect(0.0, -20.0, 100.0, 0.0)) },
+            Panel { name: "base".into(), region: rect(0.0, 0.0, 100.0, 60.0), ..Panel::default() },
+            Panel { name: "flange".into(), region: chart.region(&rect(0.0, -20.0, 100.0, 0.0)), ..Panel::default() },
         ],
         joints: vec![Joint {
             a: Anchor { panel: 0, origin: Vec2::ZERO, dir: Vec2::X },
@@ -148,7 +148,7 @@ fn a_torn_end_slants_the_zone() {
 /// them and reports how far the fourth is from fitting, since a ring only flattens with a rip.
 #[test]
 fn a_ring_of_bends_is_reported_not_forced() {
-    let wall = |i: usize| Panel { name: format!("wall {i}"), region: rect(0.0, 0.0, 100.0, 40.0) };
+    let wall = |i: usize| Panel { name: format!("wall {i}"), region: rect(0.0, 0.0, 100.0, 40.0), ..Panel::default() };
     let joint = |a: usize, b: usize| Joint {
         a: Anchor { panel: a, origin: Vec2::new(100.0, 40.0), dir: Vec2::new(-1.0, 0.0) },
         b: Anchor { panel: b, origin: Vec2::new(100.0, 0.0), dir: Vec2::new(-1.0, 0.0) },
@@ -168,17 +168,161 @@ fn a_ring_of_bends_is_reported_not_forced() {
     assert!(develop(&ring_free, 0).unwrap_or_default().loops.is_empty());
 }
 
+/// A rip is not followed: its panels are laid out as pieces of their own, the second beside the
+/// first, and each loses its cut along the rip.
 #[test]
-fn rips_are_not_followed_and_bad_joints_are_refused() {
+fn a_rip_lays_its_panels_out_apart_and_bad_joints_are_refused() {
     let mut skin = bracket(bend(FRAC_PI_2, Datum::Sharp, (0.0, 100.0)));
     if let Some(j) = skin.joints.get_mut(0) {
-        j.kind = JointKind::Rip;
+        j.kind = JointKind::Rip { cut: (0.5, 0.25) };
     }
     let dev = develop(&skin, 0).unwrap_or_default();
-    assert!(dev.placements.get(1).is_some_and(Option::is_none) && dev.zones.is_empty());
+    assert_eq!(dev.pieces, vec![vec![0], vec![1]]);
+    assert!(dev.zones.is_empty() && dev.loops.is_empty());
+    // The flange lies ten thicknesses to the right of the base, level with its lowest edge.
+    let Some(Some(flange)) = dev.panels.get(1) else { panic!("the flange is laid out: {dev:?}") };
+    let fb = bounds(&flange.region);
+    assert!((fb.min.x - 120.0).abs() < 1e-9 && fb.min.y.abs() < 1e-9, "{fb:?}");
+    // The base loses 0.5 along the rip, into its material above y = 0.
+    let [(0, base), (1, _)] = dev.trims.as_slice() else { panic!("a trim of each: {:?}", dev.trims) };
+    let bb = bounds(base);
+    assert!(bb.min.y.abs() < 1e-9 && (bb.max.y - 0.5).abs() < 1e-9, "{bb:?}");
     assert_eq!(develop(&skin, 5), Err(DevelopError::NoPanel(5)));
     if let Some(j) = skin.joints.get_mut(0) {
         j.b.dir = Vec2::new(2.0, 0.0);
+    }
+    assert!(matches!(develop(&skin, 0), Err(DevelopError::Joint(0, _))));
+}
+
+fn roll(radius: f64, material_inward: bool, length: f64, around: f64) -> Panel {
+    Panel { name: "roll".into(), surface: Surface::Cylinder { radius, material_inward }, region: rect(0.0, 0.0, length, around) }
+}
+
+/// Panels 100 long whose seams run along x: `a`'s at `ya` with its material below, `b`'s at
+/// `yb` with its material above.
+fn seam(a: usize, ya: f64, b: usize, yb: f64) -> Joint {
+    Joint {
+        a: Anchor { panel: a, origin: Vec2::new(100.0, ya), dir: Vec2::new(-1.0, 0.0) },
+        b: Anchor { panel: b, origin: Vec2::new(100.0, yb), dir: Vec2::new(-1.0, 0.0) },
+        kind: JointKind::Seam,
+    }
+}
+
+/// A floor, a quarter roll and a wall joined by seams: the roll flattens to its neutral arc's
+/// length, a quarter turn at K x T out from the inside of the roll. With the skin on the inside
+/// of the roll the neutral surface lies further out than the skin; with it on the outside,
+/// further in.
+#[test]
+fn a_roll_flattens_through_its_neutral_surface() {
+    let r = 30.0;
+    let around = FRAC_PI_2 * r;
+    for (inward, neutral_radius) in [(false, r + K * T), (true, r - (1.0 - K) * T)] {
+        let skin = Skin {
+            thickness: T,
+            k_factor: K,
+            panels: vec![
+                Panel { name: "floor".into(), region: rect(0.0, 0.0, 100.0, 40.0), ..Panel::default() },
+                roll(r, inward, 100.0, around),
+                Panel { name: "wall".into(), region: rect(0.0, 0.0, 100.0, 30.0), ..Panel::default() },
+            ],
+            joints: vec![seam(0, 40.0, 1, 0.0), seam(1, around, 2, 0.0)],
+        };
+        let dev = develop(&skin, 0).unwrap_or_default();
+        assert!(dev.loops.is_empty() && dev.zones.is_empty() && dev.trims.is_empty() && dev.pieces.len() == 1);
+        let Some(Some(wall)) = dev.panels.get(2) else { panic!("the wall is laid out: {dev:?}") };
+        let flat = bounds(&wall.region).max.y;
+        assert!((flat - (40.0 + FRAC_PI_2 * neutral_radius + 30.0)).abs() < 1e-9, "{flat}");
+    }
+}
+
+/// A cone opened along a ruling flattens to a sector of a ring: its arcs about the apex keep
+/// their sweep and move by the neutral surface's offset along the rulings, K x T / tan(half
+/// angle), and its rulings stay lines.
+#[test]
+fn a_cone_flattens_to_a_sector_at_its_neutral_radii() {
+    let half_angle: f64 = 0.5;
+    let sweep = std::f64::consts::TAU * half_angle.sin();
+    let ray = |r: f64, a: f64| Vec2::from_angle(a) * r;
+    let outer = Loop2 {
+        segs: vec![
+            Seg2::Line { a: ray(40.0, 0.0), b: ray(90.0, 0.0) },
+            Seg2::Arc { center: Vec2::ZERO, radius: 90.0, start: 0.0, sweep },
+            Seg2::Line { a: ray(90.0, sweep), b: ray(40.0, sweep) },
+            Seg2::Arc { center: Vec2::ZERO, radius: 40.0, start: sweep, sweep: -sweep },
+        ],
+    };
+    let skin = Skin {
+        thickness: T,
+        k_factor: K,
+        panels: vec![Panel {
+            name: "hopper".into(),
+            surface: Surface::Cone { half_angle, material_inward: false },
+            region: Region2 { outer, holes: Vec::new() },
+        }],
+        joints: Vec::new(),
+    };
+    let dev = develop(&skin, 0).unwrap_or_default();
+    let Some(Some(flat)) = dev.panels.first() else { panic!("laid out: {dev:?}") };
+    let d = K * T / half_angle.tan();
+    let arcs: Vec<(f64, f64)> =
+        flat.region.outer.segs.iter().filter_map(|s| if let Seg2::Arc { radius, sweep, .. } = s { Some((*radius, *sweep)) } else { None }).collect();
+    assert_eq!(arcs.len(), 2, "{:?}", flat.region.outer.segs);
+    assert!(arcs.iter().any(|&(r, s)| (r - (90.0 + d)).abs() < 1e-12 && (s - sweep).abs() < 1e-12), "{arcs:?}");
+    assert!(arcs.iter().any(|&(r, s)| (r - (40.0 + d)).abs() < 1e-12 && (s + sweep).abs() < 1e-12), "{arcs:?}");
+    assert_eq!(flat.region.outer.segs.len(), 4, "the rulings stay single lines");
+}
+
+/// Two half rolls joined along both their edges close a tube: the layout reports the ring. With
+/// one seam a rip, the tube opens flat, a whole turn of the neutral circle wide.
+#[test]
+fn a_tube_of_rolls_opens_with_a_rip() {
+    let r = 25.0;
+    let half = PI * r;
+    let mut skin = Skin {
+        thickness: T,
+        k_factor: K,
+        panels: vec![roll(r, true, 100.0, half), roll(r, true, 100.0, half)],
+        joints: vec![seam(0, half, 1, 0.0), seam(1, half, 0, 0.0)],
+    };
+    assert_eq!(develop(&skin, 0).unwrap_or_default().loops.len(), 1);
+    if let Some(j) = skin.joints.get_mut(1) {
+        j.kind = JointKind::Rip { cut: (0.0, 0.0) };
+    }
+    let dev = develop(&skin, 0).unwrap_or_default();
+    assert!(dev.loops.is_empty() && dev.pieces.len() == 1, "{dev:?}");
+    let Some(Some(second)) = dev.panels.get(1) else { panic!() };
+    let around = std::f64::consts::TAU * (r - (1.0 - K) * T);
+    assert!((bounds(&second.region).max.y - around).abs() < 1e-9, "{:?}", bounds(&second.region));
+}
+
+/// A round hole in a roll is no circle on the neutral surface: stretched round the roll it is an
+/// exact ellipse, as conics that each say which of the hole's arcs they came from.
+#[test]
+fn a_hole_in_a_roll_flattens_to_an_exact_ellipse() {
+    let (r, c, hole) = (40.0, Vec2::new(50.0, 30.0), 10.0);
+    let mut panel = roll(r, false, 100.0, 60.0);
+    panel.region.holes.push(Loop2::circle(c, hole).reversed());
+    let skin = Skin { thickness: T, k_factor: K, panels: vec![panel], joints: Vec::new() };
+    let dev = develop(&skin, 0).unwrap_or_default();
+    let Some(Some(flat)) = dev.panels.first() else { panic!("laid out: {dev:?}") };
+    let (Some(ellipse), Some(from)) = (flat.region.holes.first(), flat.origins.get(1)) else { panic!("{flat:?}") };
+    let k = (r + K * T) / r;
+    assert!(ellipse.segs.iter().all(|s| matches!(s, Seg2::Conic { .. })), "{ellipse:?}");
+    assert_eq!(from, &[0, 0, 1, 1], "each half circle became two quarter conics");
+    for s in &ellipse.segs {
+        for t in [0.0, 0.3, 0.7, 1.0] {
+            let p = s.point_at(t);
+            let e = ((p.x - c.x) / hole).powi(2) + ((p.y - c.y * k) / (hole * k)).powi(2);
+            assert!((e - 1.0).abs() < 1e-12, "{e}");
+        }
+    }
+}
+
+#[test]
+fn a_bend_on_the_edge_of_a_roll_is_refused() {
+    let mut skin = bracket(bend(FRAC_PI_2, Datum::Sharp, (0.0, 100.0)));
+    if let Some(p) = skin.panels.get_mut(1) {
+        p.surface = Surface::Cylinder { radius: 50.0, material_inward: false };
     }
     assert!(matches!(develop(&skin, 0), Err(DevelopError::Joint(0, _))));
 }

@@ -60,7 +60,7 @@ pub(crate) fn skin_of(sh: &SheetBody) -> Result<Skin> {
         .iter()
         .zip(&charts)
         .enumerate()
-        .map(|(i, (r, c))| Panel { name: if i == 0 { "base".into() } else { format!("flange {}", i - 1) }, region: c.region(r) })
+        .map(|(i, (r, c))| Panel { name: if i == 0 { "base".into() } else { format!("flange {}", i - 1) }, region: c.region(r), ..Panel::default() })
         .collect();
     let joints = joints
         .iter()
@@ -174,12 +174,9 @@ fn sheet_flat(sh: &SheetBody, work: &mut FlatWork) -> Result<Vec<Region2>> {
 fn skin_flat(skin: &Skin, work: &mut FlatWork) -> Result<(Vec<Region2>, usize)> {
     let dev = develop(skin, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
     let mut pieces = Vec::new();
-    for (i, (panel, place)) in skin.panels.iter().zip(&dev.placements).enumerate() {
-        let Some(place) = place else { continue };
-        if panel.region.outer.segs.is_empty() {
-            continue;
-        }
-        let placed = on_grid(&place.region(&panel.region));
+    for (i, flat) in dev.panels.iter().enumerate() {
+        let Some(flat) = flat else { continue };
+        let placed = on_grid(&flat.region);
         let trims: Vec<Region2> = dev.trims.iter().filter(|(p, _)| *p == i).map(|(_, r)| on_grid(r)).collect();
         if trims.is_empty() {
             pieces.push(placed);
