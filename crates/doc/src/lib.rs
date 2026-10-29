@@ -70,6 +70,8 @@ pub mod render_surface;
 pub mod sheet;
 mod sheet_flat_lineage;
 mod sheet_skin;
+mod sheet_skin_convert;
+pub use sheet_skin_convert::{SkinBendLine, SkinConversion, SkinFlat, SkinRule, convert_skin};
 pub mod text_params;
 pub mod thread_forms;
 
