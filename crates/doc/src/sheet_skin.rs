@@ -107,6 +107,7 @@ impl BendFrame {
             datum,
             ends: ZoneEnds { near: (0.0, 0.0), far: (0.0, 0.0) },
             tails: (Tail::Keep, Tail::Trim),
+            relieved: (false, false),
         };
         let setback = bend.setback(sh.t);
         let width = sh.allowance(f);

@@ -411,7 +411,10 @@ fn add_zone(
             Tail::Trim => (u0.min(u1) - reach, u0.max(u1) + reach),
             Tail::Keep => match band_extent(skin, panel, place, frame, line, depth)? {
                 None => continue,
-                Some((lo, hi)) => (if lo >= u0 - EDGE_TOL { u0 - reach } else { u0 }, if hi <= u1 + EDGE_TOL { u1 + reach } else { u1 }),
+                Some((lo, hi)) => (
+                    if lo >= u0 - EDGE_TOL || bend.relieved.0 { u0 - reach } else { u0 },
+                    if hi <= u1 + EDGE_TOL || bend.relieved.1 { u1 + reach } else { u1 },
+                ),
             },
         };
         if s1 > s0 {

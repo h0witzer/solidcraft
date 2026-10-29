@@ -95,10 +95,9 @@ fn a_shell_is_cut_open_until_its_edges_are_picked_as_bends() {
 
 /// A solid converts whole: every face but the skipped top, the rule's thickness inside it, to
 /// the shelled tray's flat. Drawn from the inside instead, a box the tray's cavity converted with
-/// its material outside folds to the same walls and floor, so the same flat but at the corners: a
-/// bend zone runs the length of its drawn edge, which is T shorter at each end inside. Until
-/// corner reliefs are drawn from the sheet's material rather than its drawn edges (#6748), the
-/// two differ by up to T x the bend allowance at each zone's end.
+/// its material outside is the same metal, and so the same flat, corners and all: each bend ends
+/// where the rip planes at its corners cut it, R + T + gap / sqrt 2 short of each end of the edge
+/// drawn outside, whichever side the sheet is drawn from.
 #[test]
 fn a_solid_converts_whole_with_its_material_inside_or_outside() {
     let shelled = {
@@ -120,14 +119,16 @@ fn a_solid_converts_whole_with_its_material_inside_or_outside() {
     let floor = [[50.0, 2.0, 2.0], [98.0, 30.0, 2.0], [50.0, 58.0, 2.0], [2.0, 30.0, 2.0]];
     let outside = skin(&s, "Cavity", TEST, &floor, &[[50.0, 30.0, 30.0]], true).unwrap_or_else(|e| panic!("{e}"));
     let bd = deduction(std::f64::consts::FRAC_PI_2, TEST.bend_radius, TEST.thickness, TEST.k_factor);
-    for (what, c) in [("inside", &inside), ("outside", &outside)] {
-        assert!(same_size(size(c), size(&shelled), 1e-6), "{what}: {:?} vs {:?}", size(c), size(&shelled));
-    }
     assert!(same_size(size(&inside), (160.0 - 2.0 * bd, 120.0 - 2.0 * bd), 1e-6), "{:?}", size(&inside));
-    assert!((area(&inside) - area(&shelled)).abs() < 1e-6, "{} vs {}", area(&inside), area(&shelled));
-    let allowance = std::f64::consts::FRAC_PI_2 * (TEST.bend_radius + TEST.k_factor * TEST.thickness);
-    let corners = area(&shelled) - area(&outside);
-    assert!(corners > 0.0 && corners <= 8.0 * TEST.thickness * allowance, "{corners}");
+    let short = 2.0 * (TEST.bend_radius + TEST.thickness) + std::f64::consts::SQRT_2 * TEST.gap;
+    let want = [60.0 - short, 60.0 - short, 100.0 - short, 100.0 - short];
+    for (what, c) in [("shelled", &shelled), ("inside", &inside), ("outside", &outside)] {
+        let mut lengths: Vec<f64> = c.development.zones.iter().map(|z| z.near[0].dist(z.near[1])).collect();
+        lengths.sort_by(f64::total_cmp);
+        assert!(lengths.iter().zip(want).all(|(l, w)| (l - w).abs() < 1e-9), "{what}: {lengths:?} vs {want:?}");
+        assert!(same_size(size(c), size(&shelled), 1e-6), "{what}: {:?} vs {:?}", size(c), size(&shelled));
+        assert!((area(c) - area(&shelled)).abs() < 1e-6, "{what}: {} vs {}", area(c), area(&shelled));
+    }
 }
 
 /// A square tube converted with all four of its corners as bends closes a ring: refused, naming

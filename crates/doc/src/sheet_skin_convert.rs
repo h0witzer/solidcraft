@@ -235,16 +235,50 @@ fn straight_runs(pts: &[Vec2], tol: f64) -> Vec<Seg2> {
     (0..m).filter_map(|i| Some(Seg2::Line { a: *corners.get(i)?, b: *corners.get((i + 1) % m)? })).collect()
 }
 
-/// How far a panel `x` is cut back from an edge between it and panel `y` so that its end stays
-/// half the gap from the plane halfway between them, as `sheet.convert` cuts a rip. `e` runs
-/// along the edge with `x` on its left seen from outside; normals are outward.
-fn rip_cut(nx: Vec3, ny: Vec3, e: Vec3, t: f64, gap: f64) -> Result<f64> {
+/// The normal of the plane halfway between panels `x` and `y` through the edge between them,
+/// toward `x`'s side. `e` runs along the edge with `x` on its left seen from outside; normals are
+/// outward.
+fn rip_plane(nx: Vec3, ny: Vec3, e: Vec3) -> Option<Vec3> {
     let (wx, wy) = (nx.cross(e), e.cross(ny));
-    let Some(mid) = (wx - wy).normalized().filter(|m| wx.dot(*m) > 1e-9) else {
+    (wx - wy).normalized().filter(|m| wx.dot(*m) > 1e-9)
+}
+
+/// How far a panel `x` is cut back from an edge between it and panel `y` so that its end stays
+/// half the gap from the plane halfway between them, as `sheet.convert` cuts a rip.
+fn rip_cut(nx: Vec3, ny: Vec3, e: Vec3, t: f64, gap: f64) -> Result<f64> {
+    let Some(mid) = rip_plane(nx, ny, e) else {
         return err("two faces of the sheet lie on each other along the edge between them");
     };
     let lean = -nx.dot(mid) * t;
-    Ok((gap / 2.0 - lean.min(0.0)) / wx.dot(mid))
+    Ok((gap / 2.0 - lean.min(0.0)) / nx.cross(e).dot(mid))
+}
+
+/// How far a bend is cut back square along its edge from the corner `v` so that none of its
+/// metal comes nearer than half the gap to a rip's plane through `v` (normal `m`, toward the side
+/// the bend keeps), as the rip cuts the panels beside it. `d` runs along the edge from `v`; `na`
+/// and `nb` are the two panels' normals away from their material. The bend's metal is the ring
+/// sector between radii `r` and `r + t` round its axis, which lies `r + t` inside both faces
+/// where it turns toward the material (the faces are its outside) and `r` outside them where it
+/// turns away (they are its inside). None where running along the edge leads no further from the
+/// plane.
+fn bend_cut(v: Vec3, d: Vec3, m: Vec3, (na, nb): (Vec3, Vec3), toward: bool, r: f64, t: f64, gap: f64) -> Option<f64> {
+    let away = d.dot(m);
+    let cos = na.dot(nb).clamp(-1.0, 1.0);
+    if away <= 1e-9 || 1.0 + cos <= 1e-9 {
+        return None;
+    }
+    let depth = if toward { -(r + t) } else { r };
+    let axis = v + (na + nb) * (depth / (1.0 + cos));
+    // The sector runs from the radius toward `a`'s face to the one toward `b`'s.
+    let (ua, ub) = if toward { (na, nb) } else { (-na, -nb) };
+    let across = (ub - ua * ub.dot(ua)).normalized()?;
+    let theta = cos.acos();
+    let (cu, cv) = (ua.dot(m), across.dot(m));
+    let lowest = (-cv).atan2(-cu).rem_euclid(std::f64::consts::TAU);
+    let turns = [0.0, theta, if lowest <= theta { lowest } else { 0.0 }];
+    let nearest =
+        turns.iter().flat_map(|a| [r, r + t].map(|radius| (axis - v).dot(m) + radius * (a.cos() * cu + a.sin() * cv))).fold(f64::INFINITY, f64::min);
+    Some(((gap / 2.0 - nearest) / away).max(0.0))
 }
 
 /// What an edge between two faces of the sheet is.
@@ -410,14 +444,18 @@ pub fn convert_skin(mb: &ModelBody, rule: &SkinRule, bends: &[Vec3], skip: &[Vec
         panels.push(Panel { name: format!("face {f}"), surface: shape.surface(), region });
     }
 
-    // The joints: every edge between two faces of the sheet.
+    // The joints: every edge between two faces of the sheet. Each rip's plane, by its ends and
+    // toward its `a` face, and each bend's edge, for the bends' ends below.
     let (mut joints, mut edges) = (Vec::new(), Vec::new());
+    let mut rips: Vec<([Vec3; 2], (usize, usize), Vec3)> = Vec::new();
+    let mut bent: Vec<(usize, [Vec3; 2], (usize, usize), (Vec3, Vec3), bool, f64)> = Vec::new();
     for &(e, x, y, role) in &roles {
         let Some(line) = mesh.edges.get(e) else { continue };
         let (Some(&p0), Some(&p1)) = (line.first(), line.last()) else { continue };
         let (Some(&ix), Some(&iy), Some(sx), Some(sy)) = (index.get(&x), index.get(&y), shaped.get(&x), shaped.get(&y)) else { continue };
         // `a` is the face the other was reached from, where there is one.
         let ((ia, sa), (ib, sb)) = if parent.get(&x) == Some(&y) { ((iy, sy), (ix, sx)) } else { ((ix, sx), (iy, sy)) };
+        let faces = if parent.get(&x) == Some(&y) { (y, x) } else { (x, y) };
         let mid = middle(line).unwrap_or(p0);
         // The edge's ends in each panel's parameters, run so that `a`'s material is on the left.
         let (Some(ra), Some(rb)) = (panels.get(ia).map(|p: &Panel| p.region.clone()), panels.get(ib).map(|p: &Panel| p.region.clone())) else {
@@ -459,6 +497,7 @@ pub fn convert_skin(mb: &ModelBody, rule: &SkinRule, bends: &[Vec3], skip: &[Vec
                 (&pts).into_iter().map(|q| (plane.to_world(*q) - from).dot(*na)).fold(0.0, |m: f64, h| if h.abs() > m.abs() { h } else { m })
             });
             let len = a0.dist(a1);
+            bent.push((joints.len(), [from, to], faces, (*na, *nb), lift < 0.0, len));
             JointKind::Bend(Bend {
                 angle: theta,
                 radius: rule.bend_radius,
@@ -466,6 +505,7 @@ pub fn convert_skin(mb: &ModelBody, rule: &SkinRule, bends: &[Vec3], skip: &[Vec
                 datum: Datum::Sharp,
                 ends: ZoneEnds { near: (0.0, len), far: (0.0, len) },
                 tails: (Tail::Keep, Tail::Trim),
+                relieved: (false, false),
             })
         } else if role == Role::Seam {
             JointKind::Seam
@@ -477,10 +517,44 @@ pub fn convert_skin(mb: &ModelBody, rule: &SkinRule, bends: &[Vec3], skip: &[Vec
                     _ => Ok(rule.gap / 2.0),
                 }
             };
+            if let (Shape::Plane { out: na, .. }, Shape::Plane { out: nb, .. }) = (sa, sb)
+                && let Some(m) = rip_plane(*na, *nb, -e)
+            {
+                rips.push(([from, to], faces, m));
+            }
             JointKind::Rip { cut: (cut(sa, sb, -e)?, cut(sb, sa, e)?) }
         };
         joints.push(Joint { a: Anchor { panel: ia, origin: a0, dir: da }, b: Anchor { panel: ib, origin: b0, dir: db }, kind });
         edges.push(mid);
+    }
+    // A bend ends where its metal does. At a corner where a rip cuts a panel the bend joins, the
+    // rip's plane cuts the bend square too, so that one sheet drawn from its outside, or from its
+    // inside with its material out, unfolds alike.
+    for (j, [from, to], (fa, fb), normals, toward, len) in bent {
+        let cut_at = |v: Vec3, d: Vec3| -> Option<f64> {
+            let at_corner = rips.iter().filter(|(ends, ..)| ends.iter().any(|p| p.dist(v) <= tol * 10.0));
+            let planes = at_corner.filter_map(|(_, (x, y), m)| {
+                if *x == fa || *x == fb {
+                    Some(*m)
+                } else if *y == fa || *y == fb {
+                    Some(-*m)
+                } else {
+                    None
+                }
+            });
+            planes.filter_map(|m| bend_cut(v, d, m, normals, toward, rule.bend_radius, t, rule.gap)).reduce(f64::max)
+        };
+        let Some(d) = (to - from).normalized() else { continue };
+        let (first, last) = (cut_at(from, d), cut_at(to, -d));
+        let (start, end) = (first.unwrap_or(0.0), len - last.unwrap_or(0.0));
+        if start >= end {
+            return err(format!("the bend at {} is cut away by the rips at its ends", at(from.lerp(to, 0.5))));
+        }
+        // Past a cut end, the panels stop at their tangent lines: the corner's relief.
+        if let Some(Joint { kind: JointKind::Bend(b), .. }) = joints.get_mut(j) {
+            b.ends = ZoneEnds { near: (start, end), far: (start, end) };
+            b.relieved = (first.is_some(), last.is_some());
+        }
     }
     let skin = Skin { thickness: t, k_factor: rule.k_factor, panels, joints };
     let development = develop(&skin, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
