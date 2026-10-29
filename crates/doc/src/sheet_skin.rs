@@ -4,7 +4,7 @@
 //! `SOLIDCRAFT_SKIN_REPORT` to a file makes every sheet body that is built append one line to it,
 //! naming the thread (a test's name under `cargo test`) and how far the two flats differ.
 
-use solidcraft_develop::{Anchor, Bend, Datum, Development, Joint, JointKind, Panel, Rigid2, Skin, Tail, ZoneEnds, develop};
+use solidcraft_develop::{Anchor, Bend, Datum, Development, Joint, JointKind, Panel, Relief, Rigid2, Skin, Tail, ZoneEnds, develop};
 use solidcraft_geom::{Loop2, Region2, Seg2, Vec2};
 use solidcraft_kernel::BoolOp;
 
@@ -74,7 +74,7 @@ pub(crate) fn skin_of(sh: &SheetBody) -> Result<Skin> {
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(Skin { thickness: sh.t, k_factor: sh.k, panels, joints })
+    Ok(Skin { thickness: sh.t, k_factor: sh.k, panels, joints, corners: Vec::new() })
 }
 
 /// One flange's bend, in the sheet's flat frame: the anchors run `along` the bend with the
@@ -107,7 +107,7 @@ impl BendFrame {
             datum,
             ends: ZoneEnds { near: (0.0, 0.0), far: (0.0, 0.0) },
             tails: (Tail::Keep, Tail::Trim),
-            relieved: (false, false),
+            relief: (Relief::None, Relief::None),
         };
         let setback = bend.setback(sh.t);
         let width = sh.allowance(f);
@@ -179,25 +179,55 @@ fn skin_flat(skin: &Skin, work: &mut FlatWork) -> Result<(Vec<Region2>, Developm
     Ok((join(&dev, work)?, dev))
 }
 
-/// A development's flat: each placed panel less its trims, and the zones, joined.
-pub(crate) fn join(dev: &Development, work: &mut FlatWork) -> Result<Vec<Region2>> {
+/// A piece of a development's flat: a panel's material less its trims, or a bend's zone (by its
+/// place in the development's zones).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Piece {
+    Panel(usize),
+    Zone(usize),
+}
+
+/// A development's pieces before they are joined: each placed panel less its trims, and the
+/// zones, all less the corners' reliefs. The flat pattern and the folded solid are both made of
+/// them.
+pub(crate) fn pieces(dev: &Development, work: &mut FlatWork) -> Result<Vec<(Piece, Region2)>> {
     let mut pieces = Vec::new();
     for (i, flat) in dev.panels.iter().enumerate() {
         let Some(flat) = flat else { continue };
         let placed = on_grid(&flat.region);
         let trims: Vec<Region2> = dev.trims.iter().filter(|t| t.panel == i).map(|t| on_grid(&t.region)).collect();
         if trims.is_empty() {
-            pieces.push(placed);
+            pieces.push((Piece::Panel(i), placed));
         } else {
             // Until the kernel's planar booleans take several tools that share an edge (#6748):
             // trims of two bends can share an edge and a corner with the panel, which the
             // planar booleans take apart only one tool at a time, so join them first.
             let trims = stage(&format!("joining panel {i}'s trims"), material_union(trims, work))?;
-            pieces.extend(stage(&format!("trimming panel {i}"), material_boolean(&[placed], &trims, BoolOp::Cut, work))?);
+            let left = stage(&format!("trimming panel {i}"), material_boolean(&[placed], &trims, BoolOp::Cut, work))?;
+            pieces.extend(left.into_iter().map(|r| (Piece::Panel(i), r)));
         }
     }
-    pieces.extend(dev.zones.iter().map(|z| on_grid(&z.region)));
-    stage("joining the skin's pieces", material_union(pieces, work))
+    pieces.extend(dev.zones.iter().enumerate().map(|(z, zone)| (Piece::Zone(z), on_grid(&zone.region))));
+    if dev.cuts.is_empty() {
+        return Ok(pieces);
+    }
+    // The corners' reliefs, from every piece they reach.
+    let cuts = stage("joining the corners' reliefs", material_union(dev.cuts.iter().map(on_grid).collect(), work))?;
+    let mut out = Vec::with_capacity(pieces.len());
+    for (piece, region) in pieces {
+        out.extend(stage("cutting the corners' reliefs", material_boolean(&[region], &cuts, BoolOp::Cut, work))?.into_iter().map(|r| (piece, r)));
+    }
+    Ok(out)
+}
+
+/// A development's flat: each placed panel less its trims, and the zones, joined.
+pub(crate) fn join(dev: &Development, work: &mut FlatWork) -> Result<Vec<Region2>> {
+    join_pieces(&pieces(dev, work)?, work)
+}
+
+/// A development's pieces (see [`pieces`]) joined into its flat.
+pub(crate) fn join_pieces(pieces: &[(Piece, Region2)], work: &mut FlatWork) -> Result<Vec<Region2>> {
+    stage("joining the skin's pieces", material_union(pieces.iter().map(|(_, r)| r.clone()).collect(), work))
 }
 
 /// A region with its points on the sheet's nanometre grid, as the sheet model rounds its

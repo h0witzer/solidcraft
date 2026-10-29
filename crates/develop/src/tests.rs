@@ -1,8 +1,10 @@
-use std::f64::consts::{FRAC_PI_2, PI};
+use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 
 use solidcraft_geom::{Aabb2, Loop2, Region2, Seg2, Vec2, Vec3};
 
-use crate::{Anchor, Bend, Datum, DevelopError, Joint, JointKind, Panel, Rigid2, Skin, Surface, Tail, ZoneEnds, develop};
+use crate::{
+    Anchor, Bend, Corner, Datum, DevelopError, Joint, JointKind, Panel, Relief, Rigid2, Rigid3, Skin, Surface, Tail, ZoneEnds, develop, fold,
+};
 
 const T: f64 = 2.0;
 const R: f64 = 2.0;
@@ -33,7 +35,7 @@ fn bend(angle: f64, datum: Datum, span: (f64, f64)) -> Bend {
         datum,
         ends: ZoneEnds { near: span, far: span },
         tails: (Tail::Keep, Tail::Trim),
-        relieved: (false, false),
+        relief: (Relief::None, Relief::None),
     }
 }
 
@@ -54,6 +56,7 @@ fn bracket(b: Bend) -> Skin {
             b: Anchor { panel: 1, origin: chart.point(Vec2::ZERO), dir: chart.vector(Vec2::X) },
             kind: JointKind::Bend(b),
         }],
+        corners: Vec::new(),
     }
 }
 
@@ -157,15 +160,15 @@ fn a_torn_end_slants_the_zone() {
 /// unless that end is a corner relief, where the base stops at its tangent line.
 #[test]
 fn a_relieved_end_stops_the_base_at_its_tangent_line() {
-    let base_band = |relieved: (bool, bool)| {
+    let base_band = |relief: (Relief, Relief)| {
         let mut b = bend(FRAC_PI_2, Datum::Sharp, (5.0, 95.0));
-        b.relieved = relieved;
+        b.relief = relief;
         let dev = develop(&bracket(b), 0).unwrap_or_default();
         let bands: Vec<Aabb2> = dev.trims.iter().filter(|t| t.panel == 0).map(|t| bounds(&t.region)).collect();
         let [band] = bands.as_slice() else { panic!("one trim of the base: {:?}", dev.trims) };
         (band.min.x, band.max.x)
     };
-    let (kept, relieved) = (base_band((false, false)), base_band((true, false)));
+    let (kept, relieved) = (base_band((Relief::None, Relief::None)), base_band((Relief::Notch, Relief::None)));
     assert!((kept.0 - 5.0).abs() < 1e-9 && (kept.1 - 95.0).abs() < 1e-9, "{kept:?}");
     assert!(relieved.0 < 0.0 && (relieved.1 - 95.0).abs() < 1e-9, "{relieved:?}");
 }
@@ -180,8 +183,13 @@ fn a_ring_of_bends_is_reported_not_forced() {
         b: Anchor { panel: b, origin: Vec2::new(100.0, 0.0), dir: Vec2::new(-1.0, 0.0) },
         kind: JointKind::Bend(bend(FRAC_PI_2, Datum::Sharp, (0.0, 100.0))),
     };
-    let skin =
-        Skin { thickness: T, k_factor: K, panels: (0..4).map(wall).collect(), joints: vec![joint(0, 1), joint(1, 2), joint(2, 3), joint(3, 0)] };
+    let skin = Skin {
+        thickness: T,
+        k_factor: K,
+        panels: (0..4).map(wall).collect(),
+        joints: vec![joint(0, 1), joint(1, 2), joint(2, 3), joint(3, 0)],
+        corners: Vec::new(),
+    };
     let dev = develop(&skin, 0).unwrap_or_default();
     assert!(dev.placements.iter().all(Option::is_some));
     let [miss] = dev.loops.as_slice() else { panic!("one loop: {:?}", dev.loops) };
@@ -253,6 +261,7 @@ fn a_roll_flattens_through_its_neutral_surface() {
                 Panel { name: "wall".into(), region: rect(0.0, 0.0, 100.0, 30.0), ..Panel::default() },
             ],
             joints: vec![seam(0, 40.0, 1, 0.0), seam(1, FRAC_PI_2, 2, 0.0)],
+            corners: Vec::new(),
         };
         let dev = develop(&skin, 0).unwrap_or_default();
         assert!(dev.loops.is_empty() && dev.zones.is_empty() && dev.trims.is_empty() && dev.pieces.len() == 1);
@@ -281,6 +290,7 @@ fn a_cone_flattens_to_a_sector_at_its_neutral_radii() {
             region: rect(40.0, 0.0, 90.0, turn),
         }],
         joints: Vec::new(),
+        corners: Vec::new(),
     };
     let dev = develop(&skin, 0).unwrap_or_default();
     let Some(Some(flat)) = dev.panels.first() else { panic!("laid out: {dev:?}") };
@@ -303,6 +313,7 @@ fn a_tube_of_rolls_opens_with_a_rip() {
         k_factor: K,
         panels: vec![roll(r, true, 100.0, PI), roll(r, true, 100.0, PI)],
         joints: vec![seam(0, PI, 1, 0.0), seam(1, PI, 0, 0.0)],
+        corners: Vec::new(),
     };
     assert_eq!(develop(&skin, 0).unwrap_or_default().loops.len(), 1);
     if let Some(j) = skin.joints.get_mut(1) {
@@ -331,7 +342,7 @@ fn a_hole_in_a_roll_flattens_to_an_exact_ellipse() {
         .collect();
     let mut panel = roll(r, false, 100.0, 60.0 / r);
     panel.region.holes.push(Loop2 { segs: quarters }.reversed());
-    let skin = Skin { thickness: T, k_factor: K, panels: vec![panel], joints: Vec::new() };
+    let skin = Skin { thickness: T, k_factor: K, panels: vec![panel], joints: Vec::new(), corners: Vec::new() };
     let dev = develop(&skin, 0).unwrap_or_default();
     let Some(Some(flat)) = dev.panels.first() else { panic!("laid out: {dev:?}") };
     let (Some(ellipse), Some(from)) = (flat.region.holes.first(), flat.origins.get(1)) else { panic!("{flat:?}") };
@@ -365,7 +376,13 @@ fn spline(degree: [usize; 2], knots: [Vec<f64>; 2], points: &[Vec3], weights: &[
 
 /// A free-form panel over its whole parameter square.
 fn free(surface: Surface) -> Skin {
-    Skin { thickness: T, k_factor: K, panels: vec![Panel { name: "free".into(), surface, region: rect(0.0, 0.0, 1.0, 1.0) }], joints: Vec::new() }
+    Skin {
+        thickness: T,
+        k_factor: K,
+        panels: vec![Panel { name: "free".into(), surface, region: rect(0.0, 0.0, 1.0, 1.0) }],
+        joints: Vec::new(),
+        corners: Vec::new(),
+    }
 }
 
 /// The flat length of the parameter line from `a` to `b`, along the flattened segments.
@@ -485,4 +502,273 @@ fn a_straight_trim_flattens_to_exact_bezier_pieces() {
             assert!(best < 0.05, "piece {k} of {total} at {t}: {best}");
         }
     }
+}
+
+fn near3(a: Vec3, b: Vec3) -> bool {
+    a.dist(b) < 1e-9
+}
+
+/// Folded, the bracket's flange stands square on its base: turned toward the material it rises
+/// on the material's side with its material toward the base, turned away it drops with its
+/// material away from it. Its zone wraps from the base's tangent line to the flange's round an
+/// axis the skin's radius from both, and each zone edge the flat shares with a panel lands where
+/// that panel's own does, at every depth.
+#[test]
+fn an_l_bracket_folds_square_round_its_bend() {
+    for toward in [true, false] {
+        let mut b = bend(FRAC_PI_2, Datum::Sharp, (0.0, 100.0));
+        b.toward_material = toward;
+        let skin = bracket(b);
+        let dev = develop(&skin, 0).unwrap_or_default();
+        let folded = fold(&skin, &dev, &[Rigid3::IDENTITY]).unwrap_or_else(|e| panic!("{e}"));
+        let side = if toward { 1.0 } else { -1.0 };
+        // 30 along the sharp and 20 into the flange, from the `b` anchor.
+        let Some(at) = skin.joints.first().map(|j| j.b) else { panic!() };
+        let q = at.origin + at.dir * 30.0 + Vec2::new(at.dir.y, -at.dir.x) * 20.0;
+        for depth in [0.0, T] {
+            let got = folded.surface_point(1, q, depth).unwrap_or_else(|| panic!("the flange is folded"));
+            assert!(near3(got, Vec3::new(30.0, side * depth, side * 20.0)), "{toward}: {got:?} at {depth}");
+        }
+        let Some(Some(bent)) = folded.bends.first() else { panic!("the bend is folded") };
+        let skin_r = if toward { R + T } else { R };
+        let (axis_at, axis) = bent.axis();
+        assert!(
+            (axis_at.y - skin_r).abs() < 1e-9 && (axis_at.z - side * skin_r).abs() < 1e-9 && near3(axis, Vec3::X * -side),
+            "{axis_at:?} {axis:?}"
+        );
+        let [zone] = dev.zones.as_slice() else { panic!("one zone") };
+        for depth in [0.0, T] {
+            for k in 0..2 {
+                let (n, f) = (zone.near[k], zone.far[k]);
+                let (Some(base), Some(flange)) = (folded.panel_point(0, n, depth), folded.panel_point(1, f, depth)) else { panic!() };
+                assert!(near3(bent.point(n, depth), base) && near3(bent.point(f, depth), flange), "{toward}: zone end {k} at {depth}");
+            }
+            // Halfway round, the metal lies its radius at that depth from the axis.
+            let (along, _) = bent.wrapped(zone.near[0]);
+            let p = bent.at(along, FRAC_PI_4, depth);
+            let rho = (p - axis_at) - axis * (p - axis_at).dot(axis);
+            assert!((rho.len() - (skin_r - side * depth)).abs() < 1e-9, "{toward}: {rho:?} at {depth}");
+        }
+    }
+}
+
+/// Folded, a floor, a quarter roll and a wall joined by seams stand as drawn: the roll curls up
+/// round an axis on the material's side when its material is inward, down when it is outward,
+/// and the wall runs on square from its end. The seams' flat lines land as one at every depth.
+#[test]
+fn a_roll_folds_onto_its_cylinder_between_its_neighbours() {
+    let r = 30.0;
+    for (inward, rise) in [(true, 1.0), (false, -1.0)] {
+        let skin = Skin {
+            thickness: T,
+            k_factor: K,
+            panels: vec![
+                Panel { name: "floor".into(), region: rect(0.0, 0.0, 100.0, 40.0), ..Panel::default() },
+                roll(r, inward, 100.0, FRAC_PI_2),
+                Panel { name: "wall".into(), region: rect(0.0, 0.0, 100.0, 30.0), ..Panel::default() },
+            ],
+            joints: vec![seam(0, 40.0, 1, 0.0), seam(1, FRAC_PI_2, 2, 0.0)],
+            corners: Vec::new(),
+        };
+        let dev = develop(&skin, 0).unwrap_or_default();
+        let folded = fold(&skin, &dev, &[Rigid3::IDENTITY]).unwrap_or_else(|e| panic!("{e}"));
+        assert!(folded.loops.is_empty() && folded.bends.iter().all(Option::is_none));
+        let (Some(Some(roll)), Some(Some(wall))) = (dev.panels.get(1), dev.panels.get(2)) else { panic!("laid out: {dev:?}") };
+        let (seam_a, seam_b, top) = (40.0, bounds(&roll.region).max.y, bounds(&wall.region).max.y);
+        for depth in [0.0, T] {
+            let at = |i: usize, y: f64| folded.panel_point(i, Vec2::new(50.0, y), depth).unwrap_or_else(|| panic!("panel {i} is folded"));
+            assert!(near3(at(0, seam_a), at(1, seam_a)) && near3(at(1, seam_b), at(2, seam_b)), "{inward}: seams at {depth}");
+        }
+        let got = folded.panel_point(2, Vec2::new(50.0, top), 0.0).unwrap_or_default();
+        assert!(near3(got, Vec3::new(50.0, 40.0 + r, rise * (r + 30.0))), "{inward}: {got:?}");
+        let Some((o, axis)) = folded.axis(1) else { panic!("the roll has an axis") };
+        let p = folded.panel_point(1, Vec2::new(50.0, (seam_a + seam_b) / 2.0), 0.0).unwrap_or_default();
+        assert!((((p - o) - axis * (p - o).dot(axis)).len() - r).abs() < 1e-9 && (axis.x.abs() - 1.0).abs() < 1e-12, "{inward}: {p:?}");
+    }
+}
+
+/// A cone's flat sector maps back to the parameters it came from, whichever way round its angle
+/// runs, and a depth into the material moves square off the cone by that much.
+#[test]
+fn a_cones_flat_maps_back_to_its_parameters() {
+    let half_angle: f64 = 0.5;
+    for inward in [true, false] {
+        let surface = Surface::Cone { half_angle, material_inward: inward };
+        let skin = Skin {
+            thickness: T,
+            k_factor: K,
+            panels: vec![Panel { name: "hopper".into(), surface: surface.clone(), region: rect(40.0, 0.5, 90.0, 5.5) }],
+            joints: Vec::new(),
+            corners: Vec::new(),
+        };
+        let dev = develop(&skin, 0).unwrap_or_default();
+        let folded = fold(&skin, &dev, &[Rigid3::IDENTITY]).unwrap_or_else(|e| panic!("{e}"));
+        let (Ok(map), Some(Some(place))) = (crate::chart::Flatten::of(&surface, &skin), dev.placements.first()) else { panic!() };
+        for q in [Vec2::new(40.0, 0.5), Vec2::new(90.0, 5.5), Vec2::new(65.0, 3.0)] {
+            let p = place.point(map.point(q));
+            let back = folded.param(0, p).unwrap_or_default();
+            assert!(near(back, q), "{inward}: {back:?} vs {q:?}");
+            let (Some(skin_p), Some(deep)) = (folded.panel_point(0, p, 0.0), folded.panel_point(0, p, T)) else { panic!() };
+            assert!((skin_p.len() - q.x).abs() < 1e-9 && (deep.dist(skin_p) - T).abs() < 1e-9, "{inward}: {skin_p:?} {deep:?}");
+        }
+    }
+}
+
+/// A square tube's four walls and four bends close a ring that the flat can't, but space can:
+/// folded, the bend the layout left out fits where the other three put its walls. A fold needs
+/// a place for each piece of the flat.
+#[test]
+fn a_ring_of_bends_closes_in_space() {
+    let wall = |i: usize| Panel { name: format!("wall {i}"), region: rect(0.0, 0.0, 100.0, 40.0), ..Panel::default() };
+    let joint = |a: usize, b: usize| Joint {
+        a: Anchor { panel: a, origin: Vec2::new(100.0, 40.0), dir: Vec2::new(-1.0, 0.0) },
+        b: Anchor { panel: b, origin: Vec2::new(100.0, 0.0), dir: Vec2::new(-1.0, 0.0) },
+        kind: JointKind::Bend(bend(FRAC_PI_2, Datum::Sharp, (0.0, 100.0))),
+    };
+    let skin = Skin {
+        thickness: T,
+        k_factor: K,
+        panels: (0..4).map(wall).collect(),
+        joints: vec![joint(0, 1), joint(1, 2), joint(2, 3), joint(3, 0)],
+        corners: Vec::new(),
+    };
+    let dev = develop(&skin, 0).unwrap_or_default();
+    let folded = fold(&skin, &dev, &[Rigid3::IDENTITY]).unwrap_or_else(|e| panic!("{e}"));
+    let [miss] = folded.loops.as_slice() else { panic!("one ring: {:?}", folded.loops) };
+    assert!(miss.distance < 1e-9 && miss.angle < 1e-9, "{miss:?}");
+    assert_eq!(fold(&skin, &dev, &[]), Err(DevelopError::Roots(1)));
+}
+
+/// The base's trims for the bracket's bend other than its band along the zone: its reliefs.
+fn reliefs(dev: &crate::Development) -> Vec<&Region2> {
+    dev.trims.iter().filter(|t| t.panel == 0).skip(1).map(|t| &t.region).collect()
+}
+
+/// A floor 100 x 60 bent up along y = 0 and along x = 100, the bends meeting at the corner (100,
+/// 0): their zones end where the floor's tangent lines cross, (96, 4) in the flat, and with
+/// `flip` the second bend's joint runs the other way, from its wall to the floor.
+fn corner(round: bool, flip: bool) -> Skin {
+    let ends = |near: (f64, f64)| ZoneEnds { near, far: near };
+    let mut a = bend(FRAC_PI_2, Datum::Sharp, (0.0, 96.0));
+    a.relief = (Relief::None, Relief::Notch);
+    let mut b = bend(FRAC_PI_2, Datum::Sharp, (4.0, 60.0));
+    b.relief = (Relief::Notch, Relief::None);
+    let second = if flip {
+        b.ends = ends((0.0, 56.0));
+        b.relief = (Relief::None, Relief::Notch);
+        Joint {
+            a: Anchor { panel: 2, origin: Vec2::new(60.0, 0.0), dir: Vec2::new(-1.0, 0.0) },
+            b: Anchor { panel: 0, origin: Vec2::new(100.0, 60.0), dir: Vec2::new(0.0, -1.0) },
+            kind: JointKind::Bend(b),
+        }
+    } else {
+        Joint {
+            a: Anchor { panel: 0, origin: Vec2::new(100.0, 0.0), dir: Vec2::Y },
+            b: Anchor { panel: 2, origin: Vec2::ZERO, dir: Vec2::X },
+            kind: JointKind::Bend(b),
+        }
+    };
+    Skin {
+        thickness: T,
+        k_factor: K,
+        panels: vec![
+            Panel { name: "floor".into(), region: rect(0.0, 0.0, 100.0, 60.0), ..Panel::default() },
+            Panel { name: "wall a".into(), region: rect(0.0, -30.0, 100.0, 0.0), ..Panel::default() },
+            Panel { name: "wall b".into(), region: rect(0.0, -30.0, 60.0, 0.0), ..Panel::default() },
+        ],
+        joints: vec![
+            Joint {
+                a: Anchor { panel: 0, origin: Vec2::ZERO, dir: Vec2::X },
+                b: Anchor { panel: 1, origin: Vec2::ZERO, dir: Vec2::X },
+                kind: JointKind::Bend(a),
+            },
+            second,
+        ],
+        corners: vec![Corner { joints: [0, 1], round, size: 8.0 }],
+    }
+}
+
+/// A corner relief 8 across belongs to the corner, not to either panel: centered where the two
+/// zones' center lines cross, BA / 2 out from the floor's tangent lines both ways, it is cut
+/// from the flat wherever it reaches, whichever way the joints run.
+#[test]
+fn a_corner_relief_is_centered_where_the_bends_cross() {
+    let ba = FRAC_PI_2 * (R + K * T);
+    let center = Vec2::new(96.0 + ba / 2.0, 4.0 - ba / 2.0);
+    for (round, area) in [(true, PI * 16.0), (false, 64.0)] {
+        let cut = |flip: bool| {
+            let dev = develop(&corner(round, flip), 0).unwrap_or_default();
+            let [cut] = dev.cuts.as_slice() else { panic!("one cut: {:?}", dev.cuts) };
+            cut.clone()
+        };
+        let (plain, flipped) = (cut(false), cut(true));
+        for c in [&plain, &flipped] {
+            let b = bounds(c);
+            assert!((c.area() - area).abs() < 1e-9, "{round}: {}", c.area());
+            assert!(b.min.dist(center - Vec2::new(4.0, 4.0)) < 1e-5 && b.max.dist(center + Vec2::new(4.0, 4.0)) < 1e-5, "{round}: {b:?}");
+        }
+    }
+}
+
+/// A bend relief: where the base runs on past the bend's end at x = 80, a slot 2 wide past it,
+/// from 1 inside the base's tangent line (y = 4) out through the base's edge. At the end at
+/// x = 20 the base runs on less far than a slot 30 wide, and none is cut.
+#[test]
+fn a_bend_relief_is_cut_where_the_base_runs_on_past_the_end() {
+    let mut b = bend(FRAC_PI_2, Datum::Sharp, (20.0, 80.0));
+    b.relief = (Relief::Slot { width: 30.0, depth: 1.0 }, Relief::Slot { width: 2.0, depth: 1.0 });
+    let dev = develop(&bracket(b), 0).unwrap_or_default();
+    let cuts = reliefs(&dev);
+    let [slot] = cuts.as_slice() else { panic!("one relief: {:?}", dev.trims) };
+    let sb = bounds(slot);
+    assert!((sb.min.x - 80.0).abs() < 1e-9 && (sb.max.x - 82.0).abs() < 1e-9 && (sb.max.y - 5.0).abs() < 1e-9 && sb.min.y < 0.0, "{sb:?}");
+}
+
+/// A torn end follows its plane tight all the way round the bend. At the corner of the floor of
+/// [`corner`], its first bend is torn against the plane halfway between the two walls (x + y =
+/// 100), from the floor's corner, where its metal touches the plane, to the wall's end, a gap of
+/// 0.5 cut off the plane: a couple of cubic spans in the flat that, folded, keep its metal,
+/// through the whole thickness, off the plane by the gap's share for how far it has turned,
+/// within a micron.
+#[test]
+fn a_torn_end_follows_its_plane_tight_round_the_bend() {
+    let gap = 0.5;
+    let wall_end = 100.0 - T - gap / std::f64::consts::SQRT_2;
+    let mut skin = corner(true, false);
+    skin.corners.clear();
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    if let Some(JointKind::Bend(b)) = skin.joints.first_mut().map(|j| &mut j.kind) {
+        // The plane in the bend's frame at the floor's anchor: x along the joint, y up into the
+        // material, z toward the wall (-y on the floor).
+        b.relief = (Relief::None, Relief::Tear { normal: Vec3::new(-s, 0.0, s), offset: -100.0 * s });
+        b.ends = ZoneEnds { near: (0.0, 96.0), far: (0.0, wall_end) };
+    }
+    let dev = develop(&skin, 0).unwrap_or_default();
+    let folded = fold(&skin, &dev, &[Rigid3::IDENTITY]).unwrap_or_else(|e| panic!("{e}"));
+    let (Some(zone), Some(Some(bent))) = (dev.zones.iter().find(|z| z.joint == 0), folded.bends.first()) else {
+        panic!("the bend is laid out and folded")
+    };
+    let torn: Vec<&Seg2> = zone.region.outer.segs.iter().filter(|s| !matches!(s, Seg2::Line { .. })).collect();
+    assert!(
+        (1..=3).contains(&torn.len()) && torn.iter().all(|s| matches!(s, Seg2::Cubic { .. })),
+        "a couple of cubic spans: {:?}",
+        zone.region.outer.segs
+    );
+    let theta = bent.angle();
+    let mut widest: f64 = 0.0;
+    for seg in torn {
+        for k in 0..=8 {
+            let p = seg.point_at(k as f64 / 8.0);
+            let (_, phi) = bent.wrapped(p);
+            let off = |depth: f64| {
+                let q = bent.point(p, depth);
+                (100.0 - q.x - q.y) * s
+            };
+            let least = off(0.0).min(off(T));
+            let want = gap / 2.0 * phi / theta;
+            assert!((least - want).abs() < 1e-3, "at {phi}: {least} off the plane, not {want}");
+            widest = widest.max(least);
+        }
+    }
+    assert!((widest - gap / 2.0).abs() < 1e-9, "{widest}");
 }

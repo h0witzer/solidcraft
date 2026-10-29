@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use solidcraft_geom::bspline::NurbsSurface;
-use solidcraft_geom::{Region2, Vec2};
+use solidcraft_geom::{Region2, Vec2, Vec3};
 
 /// One skin of a sheet: the panels and the joints between them. The material lies on the side
 /// of the skin that a chart's `u × v` points to, `thickness` deep.
@@ -15,6 +15,20 @@ pub struct Skin {
     pub k_factor: f64,
     pub panels: Vec<Panel>,
     pub joints: Vec<Joint>,
+    /// The reliefs cut where bends meet.
+    pub corners: Vec<Corner>,
+}
+
+/// A relief where two bends meet at a corner, cut from the flat pattern wherever it reaches:
+/// both bends' zones and every panel round the corner alike, none of them first. It is centered
+/// where the two zones' center lines cross, `size` across: a round, or else the four-sided
+/// relief whose sides run along the two bends, `size` apart.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Corner {
+    /// The two bend joints.
+    pub joints: [usize; 2],
+    pub round: bool,
+    pub size: f64,
 }
 
 /// A face of the skin. Its region is drawn in its surface's own parameters, so whatever is drawn
@@ -96,10 +110,35 @@ pub struct Bend {
     /// What each panel keeps beyond the zone's ends, between its anchor and where the bend
     /// would start: `(a, b)`.
     pub tails: (Tail, Tail),
-    /// Which of the zone's ends, `(start, end)` along the joint, is a corner relief: there
-    /// each panel keeps nothing past the zone whatever its tail, as at a corner where a rip cuts
-    /// the panels beside the bend and the bend stops short of it.
-    pub relieved: (bool, bool),
+    /// What is cut at each of the zone's ends, `(start, end)` along the joint.
+    pub relief: (Relief, Relief),
+}
+
+/// What is cut at one end of a bend's zone, from both its panels alike. Reliefs are the bend's,
+/// never drawn on its panels: they move with its radius, its thickness and its ends.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Relief {
+    /// Nothing: past the end each panel keeps or trims its material as its tail says, so a kept
+    /// tail is torn from the bend along the end.
+    #[default]
+    None,
+    /// Past the end both panels stop at their tangent lines: where the bend meets another at a
+    /// corner, or where a rip cuts the panels beside it.
+    Notch,
+    /// A bend relief in each panel that runs on past the end: a slot `width` along past the
+    /// end, cut from `depth` inside the panel's tangent line out through its edge. None is cut
+    /// in a panel that runs on less far than that.
+    Slot { width: f64, depth: f64 },
+    /// Torn tight against a surface across the bend, as where a rip parts the panels beyond a
+    /// corner: past the end both panels stop at their tangent lines, as at a notch, and the
+    /// zone's end runs from its given end on the `a` panel's tangent line to its given end on
+    /// the `b` panel's, its metal kept off the surface by as much as at those two ends and, in
+    /// between, in proportion to how far the bend has turned, so that it follows the surface
+    /// all the way round. The surface is the plane of the points `p` with `p · normal = offset`
+    /// in the bend's frame at its `a` anchor (`x` along the joint, `y` toward the material, `z`
+    /// toward the `b` panel), `normal` toward the bend's side; a lap or a free-form rip will
+    /// part the panels along other surfaces.
+    Tear { normal: Vec3, offset: f64 },
 }
 
 /// The line the anchors mark.

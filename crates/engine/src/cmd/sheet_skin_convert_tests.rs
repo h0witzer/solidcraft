@@ -1,11 +1,12 @@
 //! Convert to Sheet Metal through the skin (#6748): no face is fixed, every face but the skipped
 //! ones converts, sharp edges are cut open until picked as bends, modeled rolls keep their
-//! radius, and a ring of bends is refused.
+//! radius, a ring of bends is refused, and the body becomes its folded sheet.
 
-use std::f64::consts::PI;
+use std::f64::consts::{FRAC_PI_2, PI, SQRT_2};
 
+use solidcraft_doc::sheet::ReliefShape;
 use solidcraft_doc::{SkinConversion, SkinRule, convert_skin};
-use solidcraft_geom::{Region2, Vec3};
+use solidcraft_geom::{Aabb3, Region2, Vec3};
 
 use super::*;
 
@@ -33,7 +34,28 @@ fn area(c: &SkinConversion) -> f64 {
     c.flat().unwrap_or_else(|e| panic!("{e}")).iter().map(|r| r.area()).sum()
 }
 
-const TEST: SkinRule = SkinRule { thickness: 2.0, k_factor: 0.44, bend_radius: 2.0, gap: 0.5 };
+/// A volume finely enough meshed to tell sheets apart that differ by more than a few parts in a
+/// million.
+fn fine_volume(b: &solidcraft_kernel::Body) -> f64 {
+    b.volume_at(1e-5).unwrap_or(f64::NAN)
+}
+
+/// The folded sheet's volume and box.
+fn folded(c: &SkinConversion) -> (f64, Aabb3) {
+    let b = c.solid().unwrap_or_else(|e| panic!("{e}"));
+    (fine_volume(&b), b.outline_bounds())
+}
+
+const TEST: SkinRule = SkinRule {
+    thickness: 2.0,
+    k_factor: 0.44,
+    bend_radius: 2.0,
+    gap: 0.5,
+    corner_relief: ReliefShape::Notch,
+    corner_relief_size: 8.0,
+    relief_width: 2.0,
+    relief_depth: 1.0,
+};
 
 /// A channel whose bends are modeled with the rule's radius: through the skin, its round
 /// corners are rolls joined to the flat walls by seams, with no pick at all, and the flat is the
@@ -44,7 +66,7 @@ fn a_channel_converts_with_its_corners_as_rolls_to_the_bends_flat() {
     let mut s = Session::default();
     rule(&mut s, "Test", t, k, r, 0.5);
     let corners = bent_section(&mut s, &[(0.0, 30.0), (0.0, 0.0), (80.0, 0.0), (80.0, 30.0)], t, r, 60.0);
-    let c = skin(&s, "Section", SkinRule { thickness: t, k_factor: k, bend_radius: r, gap: 0.5 }, &[], &[], false).unwrap_or_else(|e| panic!("{e}"));
+    let c = skin(&s, "Section", SkinRule { thickness: t, k_factor: k, bend_radius: r, ..TEST }, &[], &[], false).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(c.skin.panels.len(), 5, "the web, its two corners and its two legs");
     assert!(c.thickness == t && c.development.zones.is_empty(), "a shell's own thickness, and rolls rather than bends");
     let across = 140.0 - 2.0 * deduction(std::f64::consts::FRAC_PI_2, r, t, k);
@@ -52,6 +74,10 @@ fn a_channel_converts_with_its_corners_as_rolls_to_the_bends_flat() {
     assert!(same_size(got, (across, 60.0), 1e-6), "{got:?} vs {across}");
     run(&mut s, "sheet.convert", json!({"body": "Section", "face": [65, 0, 10], "bends": [corners[0].0, corners[1].0]}));
     assert!(same_size(flat_size(&mut s), got, 1e-6), "{:?} vs {got:?}", flat_size(&mut s));
+    // Folded, its rolls are the bends today's Convert makes of them.
+    let (rolled, _) = folded(&c);
+    let today = s.model.state().bodies.iter().find(|b| b.name == "Section").map_or(f64::NAN, |b| fine_volume(&b.body));
+    assert!((rolled - today).abs() < 1e-9 * today, "{rolled} vs {today}");
 }
 
 /// A roll keeps its modeled radius, whatever the rule's: a channel rounded R 10 inside flattens
@@ -63,8 +89,7 @@ fn a_roll_keeps_its_modeled_radius() {
     let mut s = Session::default();
     rule(&mut s, "Test", t, k, 2.0, 0.5);
     bent_section(&mut s, &[(0.0, 30.0), (0.0, 0.0), (80.0, 0.0), (80.0, 30.0)], t, r, 60.0);
-    let c =
-        skin(&s, "Section", SkinRule { thickness: t, k_factor: k, bend_radius: 2.0, gap: 0.5 }, &[], &[], false).unwrap_or_else(|e| panic!("{e}"));
+    let c = skin(&s, "Section", SkinRule { thickness: t, k_factor: k, bend_radius: 2.0, ..TEST }, &[], &[], false).unwrap_or_else(|e| panic!("{e}"));
     let across = 2.0 * (30.0 - (r + t)) + (80.0 - 2.0 * (r + t)) + PI * (r + k * t);
     let got = size(&c);
     assert!(same_size(got, (across, 60.0), 1e-6), "{got:?} vs {across}");
@@ -96,8 +121,8 @@ fn a_shell_is_cut_open_until_its_edges_are_picked_as_bends() {
 /// A solid converts whole: every face but the skipped top, the rule's thickness inside it, to
 /// the shelled tray's flat. Drawn from the inside instead, a box the tray's cavity converted with
 /// its material outside is the same metal, and so the same flat, corners and all: each bend ends
-/// where the rip planes at its corners cut it, R + T + gap / sqrt 2 short of each end of the edge
-/// drawn outside, whichever side the sheet is drawn from.
+/// at the base's corner, where the bends' tangent lines cross, R + T short of each end of the
+/// edge drawn outside and R short of each end of the one drawn inside.
 #[test]
 fn a_solid_converts_whole_with_its_material_inside_or_outside() {
     let shelled = {
@@ -120,7 +145,7 @@ fn a_solid_converts_whole_with_its_material_inside_or_outside() {
     let outside = skin(&s, "Cavity", TEST, &floor, &[[50.0, 30.0, 30.0]], true).unwrap_or_else(|e| panic!("{e}"));
     let bd = deduction(std::f64::consts::FRAC_PI_2, TEST.bend_radius, TEST.thickness, TEST.k_factor);
     assert!(same_size(size(&inside), (160.0 - 2.0 * bd, 120.0 - 2.0 * bd), 1e-6), "{:?}", size(&inside));
-    let short = 2.0 * (TEST.bend_radius + TEST.thickness) + std::f64::consts::SQRT_2 * TEST.gap;
+    let short = 2.0 * (TEST.bend_radius + TEST.thickness);
     let want = [60.0 - short, 60.0 - short, 100.0 - short, 100.0 - short];
     for (what, c) in [("shelled", &shelled), ("inside", &inside), ("outside", &outside)] {
         let mut lengths: Vec<f64> = c.development.zones.iter().map(|z| z.near[0].dist(z.near[1])).collect();
@@ -148,25 +173,38 @@ fn a_ring_of_bends_is_refused_and_opens_where_a_corner_is_left_unpicked() {
     }
     let c = skin(&s, "Tube", TEST, &corners[..3], &[], false).unwrap_or_else(|e| panic!("{e}"));
     assert!(c.development.loops.is_empty() && c.development.zones.len() == 3);
+    // Folded: four walls 40 tall between three full-height bends, the walls at the open corner
+    // cut back from it as a rip cuts them.
+    let (sb, cut) = (r + t, t + 0.5 / SQRT_2);
+    let walls = (100.0 - cut - sb) + (60.0 - 2.0 * sb) + (100.0 - 2.0 * sb) + (60.0 - sb - cut);
+    let want = t * 40.0 * (walls + 3.0 * FRAC_PI_2 * (r + t / 2.0));
+    let (v, _) = folded(&c);
+    assert!((v - want).abs() < 1e-5 * want, "{v} vs {want}");
     let got = size(&c);
     // Last, since it makes the body a sheet.
     run(&mut s, "sheet.convert", json!({"body": "Tube", "face": [50, 0, 20], "bends": &corners[..3]}));
     assert!(same_size(flat_size(&mut s), got, 1e-6), "{:?} vs {got:?}", flat_size(&mut s));
+    // Its bends end where its walls do, so today's Convert folds it to the same metal.
+    let today = s.model.state().bodies.iter().find(|b| b.name == "Tube").map_or(f64::NAN, |b| fine_volume(&b.body));
+    assert!((v - today).abs() < 1e-9 * today, "{v} vs {today}");
 }
 
-/// Through the commands, as the app runs them: `sheet.convert` with `skin: true` leaves the body
-/// as modeled, and `sheet.flat_pattern` shows the skin's flat, its rolls counted. The flat
-/// survives saving and reopening the design.
+/// Through the commands, as the app runs them: `sheet.convert` with `skin: true` makes the body
+/// its folded sheet, which this channel already is, rolls and all, so it keeps its volume; and
+/// `sheet.flat_pattern` shows the skin's flat, its rolls counted. The flat survives saving and
+/// reopening the design.
 #[test]
 fn a_skin_conversion_shows_in_the_flat_pattern() {
     let (t, k, r) = (2.0, 0.4, 10.0);
     let mut s = Session::default();
     rule(&mut s, "Test", t, k, 2.0, 0.5);
     bent_section(&mut s, &[(0.0, 30.0), (0.0, 0.0), (80.0, 0.0), (80.0, 30.0)], t, r, 60.0);
-    let solid = volume(&mut s);
+    let section = |s: &Session| s.model.state().bodies.iter().find(|b| b.name == "Section").map_or(f64::NAN, |b| fine_volume(&b.body));
+    let modeled = section(&s);
     run(&mut s, "sheet.convert", json!({"body": "Section", "skin": true}));
     assert!(s.model.results.iter().all(|x| x.error.is_none()), "{:?}", s.model.results.iter().map(|x| &x.error).collect::<Vec<_>>());
-    assert!((volume(&mut s) - solid).abs() < 1e-9 * solid, "the body stays as modeled");
+    let sheet = section(&s);
+    assert!((sheet - modeled).abs() < 1e-6 * modeled, "the folded sheet is the channel: {sheet} vs {modeled}");
     let across = 2.0 * (30.0 - (r + t)) + (80.0 - 2.0 * (r + t)) + PI * (r + k * t);
     let flat = run(&mut s, "sheet.flat_pattern", json!({"body": "Section"}));
     let size = |f: &Value| (f["flat_size_mm"][0].as_f64().unwrap_or(0.0), f["flat_size_mm"][1].as_f64().unwrap_or(0.0));
@@ -206,4 +244,225 @@ fn a_ring_through_the_commands_is_refused_and_the_skins_parameters_are_its_own()
     let flat = run(&mut s, "sheet.flat_pattern", json!({"body": "Tube"}));
     let bends = flat["bends"].as_array().cloned().unwrap_or_default();
     assert!(bends.len() == 3 && bends.iter().all(|b| (b["angle_deg"].as_f64().unwrap_or(0.0) - 90.0).abs() < 1e-9), "{flat}");
+}
+
+/// The shapes of corner relief a rule can ask for.
+const SHAPES: [(&str, ReliefShape); 4] =
+    [("notch", ReliefShape::Notch), ("round", ReliefShape::Round), ("rectangular", ReliefShape::Rectangular), ("tear", ReliefShape::Tear)];
+
+/// Today's Convert of a box `size` big at `corner`, shelled 2 thick with its top open, its floor
+/// edges bent under the test rule with a corner relief of `shape` 8 across: the folded sheet's
+/// volume.
+fn todays_tray(shape: &str, corner: [f64; 3], size: [f64; 3]) -> f64 {
+    let mut s = Session::default();
+    relief_rule(&mut s, shape);
+    let ([x, y, z], [l, w, h]) = (corner, size);
+    run(&mut s, "solid.box", json!({"length": l, "width": w, "height": h, "corner": corner, "body_name": "Tray"}));
+    run(&mut s, "solid.shell", json!({"faces": [[x + l / 2.0, y + w / 2.0, z + h]], "thickness": 2.0}));
+    let floor = [[x + l / 2.0, y, z], [x + l, y + w / 2.0, z], [x + l / 2.0, y + w, z], [x, y + w / 2.0, z]];
+    let out = run(&mut s, "sheet.convert", json!({"body": "Tray", "face": [x + l / 2.0, y + w / 2.0, z], "bends": floor}));
+    assert!(out["warning"].is_null(), "{shape}: {out}");
+    s.model.state().bodies.iter().find(|b| b.name == "Tray").map_or(f64::NAN, |b| fine_volume(&b.body))
+}
+
+/// The flat of the tray a box l x w x h drawn outside makes under the test rule with notched
+/// corners: its floor between the bends' tangent lines, R + T in from the sharps; its bends BA
+/// wide, meeting at the floor's corners; its walls cut back g/√2 + T from each corner.
+fn notched_tray_flat(l: f64, w: f64, h: f64) -> f64 {
+    let (t, r, k, gap) = (TEST.thickness, TEST.bend_radius, TEST.k_factor, TEST.gap);
+    let (s, ba, cut) = (r + t, FRAC_PI_2 * (r + k * t), t + gap / SQRT_2);
+    (l - 2.0 * s) * (w - 2.0 * s) + ba * 2.0 * ((l - 2.0 * s) + (w - 2.0 * s)) + (h - s) * 2.0 * ((l - 2.0 * cut) + (w - 2.0 * cut))
+}
+
+/// The centers of the flat's round reliefs of radius `r`: its arcs of that radius, one center
+/// for each.
+fn relief_centers(c: &SkinConversion, r: f64) -> Vec<solidcraft_geom::Vec2> {
+    let mut centers: Vec<solidcraft_geom::Vec2> = Vec::new();
+    for region in c.flat().unwrap_or_else(|e| panic!("{e}")) {
+        for seg in std::iter::once(&region.outer).chain(&region.holes).flat_map(|l| &l.segs) {
+            if let solidcraft_geom::Seg2::Arc { center, radius, .. } = *seg
+                && (radius - r).abs() < 1e-6
+                && !centers.iter().any(|q| q.dist(center) < 1e-6)
+            {
+                centers.push(center);
+            }
+        }
+    }
+    centers
+}
+
+/// Converted through the skin, a body becomes one sheet however it was drawn: the shelled
+/// tray, the block drawn from outside and its cavity drawn from inside with the material out
+/// fold to one solid, whatever the rule's corner relief, and the block with its material outside
+/// to the tray a box T bigger all round makes. Notched, that is the solid today's Convert makes,
+/// and the flanged tray's flat.
+#[test]
+fn a_skin_folds_into_one_sheet_however_it_is_drawn() {
+    let top = [[50.0, 30.0, 30.0]];
+    let cavity_floor = [[50.0, 2.0, 2.0], [98.0, 30.0, 2.0], [50.0, 58.0, 2.0], [2.0, 30.0, 2.0]];
+    let mut shelled = Session::default();
+    tray(&mut shelled, TEST.thickness);
+    let mut block = Session::default();
+    run(&mut block, "solid.box", json!({"length": 100, "width": 60, "height": 30, "body_name": "Block"}));
+    let mut cavity = Session::default();
+    run(&mut cavity, "solid.box", json!({"length": 96, "width": 56, "height": 28, "corner": [2, 2, 2], "body_name": "Cavity"}));
+    for (name, shape) in SHAPES {
+        let rule = SkinRule { corner_relief: shape, ..TEST };
+        let drawn = [
+            ("shelled", skin(&shelled, "Tray", rule, &BOTTOM_EDGES, &[], false)),
+            ("inside", skin(&block, "Block", rule, &BOTTOM_EDGES, &top, false)),
+            ("outside", skin(&cavity, "Cavity", rule, &cavity_floor, &top, true)),
+        ];
+        let mut one: Option<(f64, f64)> = None;
+        for (what, c) in drawn {
+            let c = c.unwrap_or_else(|e| panic!("{name} {what}: {e}"));
+            assert!(c.notes.is_empty(), "{name} {what}: {:?}", c.notes);
+            let (v, a) = (folded(&c).0, area(&c));
+            let (v0, a0) = *one.get_or_insert((v, a));
+            // A torn end folds to chains within 1e-7 mm of its curve, each drawing's a little
+            // differently.
+            let within = if shape == ReliefShape::Tear { 1e-8 } else { 1e-9 };
+            assert!((v - v0).abs() < within * v0 && (a - a0).abs() < 1e-6 * a0, "{name} {what}: {v} {a} vs {v0} {a0}");
+        }
+        let bigger = skin(&block, "Block", rule, &BOTTOM_EDGES, &top, true).unwrap_or_else(|e| panic!("{name} bigger: {e}"));
+        if shape == ReliefShape::Notch {
+            for (what, c, volume, flat) in [
+                (
+                    "shelled",
+                    skin(&shelled, "Tray", rule, &BOTTOM_EDGES, &[], false),
+                    todays_tray(name, [0.0; 3], [100.0, 60.0, 30.0]),
+                    notched_tray_flat(100.0, 60.0, 30.0),
+                ),
+                ("bigger", Ok(bigger), todays_tray(name, [-2.0; 3], [104.0, 64.0, 32.0]), notched_tray_flat(104.0, 64.0, 32.0)),
+            ] {
+                let c = c.unwrap_or_else(|e| panic!("{what}: {e}"));
+                let (v, _) = folded(&c);
+                assert!((v - volume).abs() < 1e-9 * volume, "{what}: folded {v} vs today's {volume}");
+                assert!((area(&c) - flat).abs() < 1e-6 * flat, "{what}: flat {} vs {flat}", area(&c));
+            }
+        }
+    }
+}
+
+/// A corner relief belongs to the corner, not to any sheet round it: in a tray whose walls are
+/// larger than its floor, as in a shallow one, each of the four corners gets a round relief
+/// centered where its two bends' center lines cross, BA / 2 out from the floor's tangent lines
+/// both ways, so their centers stand 92 + BA by 52 + BA apart.
+#[test]
+fn a_corner_relief_belongs_to_the_corner_whichever_sheet_is_largest() {
+    let ba = FRAC_PI_2 * (TEST.bend_radius + TEST.k_factor * TEST.thickness);
+    let rule = SkinRule { corner_relief: ReliefShape::Round, ..TEST };
+    for height in [30.0, 120.0] {
+        let mut s = Session::default();
+        run(&mut s, "solid.box", json!({"length": 100, "width": 60, "height": height, "body_name": "Tray"}));
+        run(&mut s, "solid.shell", json!({"faces": [[50, 30, height]], "thickness": TEST.thickness}));
+        let c = skin(&s, "Tray", rule, &BOTTOM_EDGES, &[], false).unwrap_or_else(|e| panic!("{height}: {e}"));
+        assert!(c.notes.is_empty() && c.skin.corners.len() == 4, "{height}: {:?} {:?}", c.notes, c.skin.corners);
+        let centers = relief_centers(&c, rule.corner_relief_size / 2.0);
+        assert_eq!(centers.len(), 4, "{height}: {centers:?}");
+        let mut b = solidcraft_geom::Aabb2::EMPTY;
+        for p in &centers {
+            b = b.union(&solidcraft_geom::Aabb2 { min: *p, max: *p });
+        }
+        let got = (b.size().x.max(b.size().y), b.size().x.min(b.size().y));
+        assert!(same_size(got, (92.0 + ba, 52.0 + ba), 1e-6), "{height}: {got:?}");
+        folded(&c);
+    }
+}
+
+/// A plate with a wall along its whole edge y = 0 and one on its edge x = 100 from y = 0 to 30
+/// only: the shorter wall bends only where it stands, and where it ends beside more of the
+/// plate the plate gets the rule's bend relief. Notched where the walls meet, the bends are 96
+/// and 26 long, the flat is a flanged sheet's, and the folded sheet the one today's Convert
+/// makes.
+#[test]
+fn a_shorter_wall_bends_where_it_stands_beside_its_bend_relief() {
+    let (t, r, k) = (2.0, 2.0, 0.44);
+    let ba = FRAC_PI_2 * (r + k * t);
+    let mut s = Session::default();
+    relief_rule(&mut s, "notch");
+    run(&mut s, "solid.box", json!({"length": 100, "width": 60, "height": 2, "body_name": "Part"}));
+    run(&mut s, "solid.box", json!({"length": 100, "width": 2, "height": 30, "operation": "join", "targets": ["Part"]}));
+    run(&mut s, "solid.box", json!({"length": 2, "width": 30, "height": 30, "corner": [98, 0, 0], "operation": "join", "targets": ["Part"]}));
+    let bends = [[50.0, 0.0, 0.0], [100.0, 15.0, 0.0]];
+    let c = skin(&s, "Part", TEST, &bends, &[], false).unwrap_or_else(|e| panic!("{e}"));
+    assert!(c.notes.is_empty(), "{:?}", c.notes);
+    let mut lengths: Vec<f64> = c.development.zones.iter().map(|z| z.near[0].dist(z.near[1])).collect();
+    lengths.sort_by(f64::total_cmp);
+    assert!(lengths.len() == 2 && (lengths[0] - 26.0).abs() < 1e-9 && (lengths[1] - 96.0).abs() < 1e-9, "{lengths:?}");
+    // The plate less the setbacks and the bend relief (2 by 5), the walls 26 high from the
+    // corner's closed end, and the bends.
+    let cut = t + 0.5 / SQRT_2;
+    let flat = 100.0 * 56.0 - 4.0 * 26.0 - 10.0 + 26.0 * ((100.0 - cut) + (30.0 - cut)) + ba * 122.0;
+    assert!((area(&c) - flat).abs() < 1e-6 * flat, "{} vs {flat}", area(&c));
+    let (v, _) = folded(&c);
+    // Last, since it makes the body a sheet.
+    let out = run(&mut s, "sheet.convert", json!({"body": "Part", "face": [50, 30, 0], "bends": bends}));
+    assert!(out["warning"].is_null(), "{out}");
+    let today = s.model.state().bodies.iter().find(|b| b.name == "Part").map_or(f64::NAN, |b| fine_volume(&b.body));
+    assert!((v - today).abs() < 1e-9 * today, "{v} vs {today}");
+}
+
+/// An icosahedron, edge 50, as a solid body.
+fn icosahedron() -> (solidcraft_doc::ModelBody, Vec<Vec3>, Vec<[usize; 3]>) {
+    use solidcraft_kernel::{EdgeSpec, FaceSpec, SurfSpec};
+    let g = (1.0 + 5f64.sqrt()) / 2.0;
+    let mut v = Vec::new();
+    for a in [-1.0, 1.0] {
+        for b in [-g, g] {
+            v.extend([Vec3::new(0.0, a, b), Vec3::new(a, b, 0.0), Vec3::new(b, 0.0, a)]);
+        }
+    }
+    let v: Vec<Vec3> = v.into_iter().map(|p| p * 25.0).collect();
+    let close = |a: Vec3, b: Vec3| (a.dist(b) - 50.0).abs() < 1e-6;
+    let mut faces = Vec::new();
+    for i in 0..12 {
+        for j in i + 1..12 {
+            for k in j + 1..12 {
+                if close(v[i], v[j]) && close(v[j], v[k]) && close(v[i], v[k]) {
+                    let n = (v[j] - v[i]).cross(v[k] - v[i]);
+                    faces.push(if n.dot(v[i] + v[j] + v[k]) > 0.0 { [i, j, k] } else { [i, k, j] });
+                }
+            }
+        }
+    }
+    assert_eq!(faces.len(), 20);
+    let specs: Vec<FaceSpec> = faces
+        .iter()
+        .map(|f| FaceSpec {
+            loops: vec![(0..3).map(|e| EdgeSpec::Line { a: v[f[e]], b: v[f[(e + 1) % 3]] }).collect()],
+            surface: SurfSpec::Plane,
+            probe: None,
+        })
+        .collect();
+    let body = solidcraft_kernel::sew(&specs).unwrap_or_else(|e| panic!("{e}"));
+    (solidcraft_doc::ModelBody::new("Ico".into(), body, 0), v, faces)
+}
+
+/// An icosahedron converted whole, its faces bent along a spanning tree of them and every other
+/// edge cut open. A triangle's sides slant across its bends' tangent lines, and its bends still
+/// run their whole edges, to the corners: where two of them meet on a face a round relief is cut,
+/// ten times, and the sheet folds.
+#[test]
+fn an_icosahedron_bends_whole_edges_to_its_corners() {
+    let (mb, v, faces) = icosahedron();
+    let mut seen = vec![false; faces.len()];
+    seen[0] = true;
+    let mut queue = std::collections::VecDeque::from([0usize]);
+    let mut picks = Vec::new();
+    while let Some(f) = queue.pop_front() {
+        for (g, other) in faces.iter().enumerate() {
+            let shared: Vec<usize> = faces[f].iter().copied().filter(|p| other.contains(p)).collect();
+            if !seen[g] && shared.len() == 2 {
+                seen[g] = true;
+                queue.push_back(g);
+                picks.push((v[shared[0]] + v[shared[1]]) * 0.5);
+            }
+        }
+    }
+    let c = convert_skin(&mb, &SkinRule { corner_relief: ReliefShape::Round, ..TEST }, &picks, &[], false).unwrap_or_else(|e| panic!("{e}"));
+    assert!(c.notes.is_empty(), "{:?}", c.notes);
+    assert_eq!((c.skin.panels.len(), c.development.zones.len(), c.skin.corners.len()), (20, 19, 10));
+    let (v, _) = folded(&c);
+    assert!(v.is_finite() && v > 0.0, "{v}");
 }

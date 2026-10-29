@@ -15,6 +15,10 @@
 //! each seam's panels meet edge to edge. A rigid motion maps every kind of profile segment to
 //! one of its own kind, so lines, arcs, conics and splines come out as the panels have them. The
 //! pieces (each panel less its trims, and the zones) are joined by the caller's planar booleans.
+//!
+//! [`fold`] puts the developed skin back in space: each piece where the caller says it lies, and
+//! each of its panels where its bends and seams put it, so that every point of the flat pattern,
+//! at any depth through the sheet, has its place on the folded sheet.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 #![forbid(unsafe_code)]
@@ -22,12 +26,14 @@
 mod chart;
 mod develop;
 mod fitted;
+mod fold;
 mod rigid;
 mod skin;
 
 pub use develop::{DevelopError, Development, FlatPanel, Mismatch, Trim, Zone, develop};
-pub use rigid::Rigid2;
-pub use skin::{Anchor, Bend, Datum, Joint, JointKind, Panel, Skin, Surface, Tail, ZoneEnds};
+pub use fold::{Bent, Fold, fold};
+pub use rigid::{Rigid2, Rigid3};
+pub use skin::{Anchor, Bend, Corner, Datum, Joint, JointKind, Panel, Relief, Skin, Surface, Tail, ZoneEnds};
 
 #[cfg(test)]
 mod tests;

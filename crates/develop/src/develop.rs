@@ -3,10 +3,11 @@
 use std::collections::VecDeque;
 use std::f64::consts::PI;
 
-use solidcraft_geom::{Aabb2, Loop2, Region2, Vec2};
+use solidcraft_geom::{Aabb2, Loop2, Region2, Seg2, Vec2, Vec3};
 
 use crate::chart::Flatten;
-use crate::{Anchor, Bend, Joint, JointKind, Panel, Rigid2, Skin, Surface, Tail};
+use crate::fold::Wrap;
+use crate::{Anchor, Bend, Corner, Joint, JointKind, Panel, Relief, Rigid2, Skin, Surface, Tail};
 
 /// The most panels and joints one development takes: a work limit, never a truncation.
 const MAX_PANELS: usize = 10_000;
@@ -20,6 +21,13 @@ const REACH_TOL: f64 = 1e-3;
 
 /// A panel's edge this close (mm) to a bend zone's end ends with it.
 const EDGE_TOL: f64 = 1e-6;
+
+/// How far (mm) a torn end's spline may lie from the curve the tear follows: well inside what a
+/// press brake holds, so that a couple of spans do; the most spans it takes; and how many points
+/// along it are looked at.
+const TEAR_TOL: f64 = 1e-3;
+const MAX_TEAR_SPANS: usize = 16;
+const TEAR_SAMPLES: usize = 64;
 
 /// A skin laid out flat.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -40,6 +48,8 @@ pub struct Development {
     pub trims: Vec<Trim>,
     /// Bends and seams that close a loop, where the layout reached both panels another way.
     pub loops: Vec<Mismatch>,
+    /// What the corners' reliefs cut from the flat, from every piece they reach.
+    pub cuts: Vec<Region2>,
 }
 
 /// A panel laid flat. For each loop of its region, `origins` gives each segment's index in the
@@ -95,6 +105,8 @@ pub enum DevelopError {
     Joint(usize, &'static str),
     #[error("the skin exceeds the development's work limit")]
     TooLarge,
+    #[error("the fold takes a place in space for each of the flat's {0} pieces")]
+    Roots(usize),
 }
 
 /// A joint's frame in the flat: where its `a` anchor lies, the joint's direction, and the
@@ -178,6 +190,7 @@ pub fn develop(skin: &Skin, root: usize) -> Result<Development, DevelopError> {
         k_factor: skin.k_factor,
         panels: Vec::with_capacity(skin.panels.len()),
         joints: Vec::with_capacity(skin.joints.len()),
+        corners: skin.corners.clone(),
     };
     let mut origins = Vec::with_capacity(skin.panels.len());
     for (i, (panel, map)) in skin.panels.iter().zip(&maps).enumerate() {
@@ -263,6 +276,7 @@ pub fn develop(skin: &Skin, root: usize) -> Result<Development, DevelopError> {
             JointKind::Rip { cut } => add_rip(&mut out, skin, j, joint, *cut, (&a, &b))?,
         }
     }
+    out.cuts = skin.corners.iter().filter_map(|c| corner_cut(&out, c)).collect();
     Ok(out)
 }
 
@@ -393,13 +407,23 @@ fn add_zone(
     let (near, far) = (bend.ends.near, bend.ends.far);
     if width > 0.0 && (near.1 > near.0 || far.1 > far.0) {
         let (n0, n1, f0, f1) = (frame.at(near.0, near_line), frame.at(near.1, near_line), frame.at(far.0, far_line), frame.at(far.1, far_line));
-        let region = Region2 { outer: Loop2::polygon(&[n0, n1, f1, f0]).ccw(), holes: Vec::new() };
-        out.zones.push(Zone { joint: j, region, near: [n0, n1], far: [f0, f1] });
+        // Each end straight across, or torn along the curve it follows; the loop runs along the
+        // `a` side, up the end, back along the `b` side and down the start.
+        let end = |relief: &Relief, (from, to): (f64, f64)| match *relief {
+            Relief::Tear { normal, offset } => torn(skin, bend, frame, (normal, offset), (from, to)),
+            _ => vec![Seg2::Line { a: frame.at(from, near_line), b: frame.at(to, far_line) }],
+        };
+        let mut segs = vec![Seg2::Line { a: n0, b: n1 }];
+        segs.extend(end(&bend.relief.1, (near.1, far.1)));
+        segs.push(Seg2::Line { a: f1, b: f0 });
+        segs.extend(end(&bend.relief.0, (near.0, far.0)).iter().rev().map(Seg2::reversed));
+        out.zones.push(Zone { joint: j, region: Region2 { outer: Loop2 { segs }.ccw(), holes: Vec::new() }, near: [n0, n1], far: [f0, f1] });
     }
     // A panel's band runs from its tangent line across its anchor, and a thickness past it so
     // that an edge lying on the anchor leaves no sliver.
     let depth = setback + skin.thickness.max(REACH_TOL);
     let bands = [(joint.a.panel, placed.0, near, near_line, depth, bend.tails.0), (joint.b.panel, placed.1, far, far_line, -depth, bend.tails.1)];
+    let relieved = |r: &Relief| matches!(r, Relief::Notch | Relief::Tear { .. });
     for (panel, place, (u0, u1), line, depth, tail) in bands {
         // The band's ends run on past the panel wherever nothing of the panel lies beyond them
         // in the band: always for a trimmed tail, which goes the same way, and for a kept one
@@ -407,23 +431,189 @@ fn add_zone(
         // on the panel's own edge would be a rounding away from it, for the planar booleans to
         // trip on.
         let reach = panel_reach(skin, panel)?;
-        let (s0, s1) = match tail {
-            Tail::Trim => (u0.min(u1) - reach, u0.max(u1) + reach),
-            Tail::Keep => match band_extent(skin, panel, place, frame, line, depth)? {
-                None => continue,
-                Some((lo, hi)) => (
-                    if lo >= u0 - EDGE_TOL || bend.relieved.0 { u0 - reach } else { u0 },
-                    if hi <= u1 + EDGE_TOL || bend.relieved.1 { u1 + reach } else { u1 },
-                ),
-            },
+        let extent = if tail == Tail::Keep { band_extent(skin, panel, place, frame, line, depth)? } else { None };
+        let (s0, s1) = match (tail, extent) {
+            (Tail::Trim, _) => (u0.min(u1) - reach, u0.max(u1) + reach),
+            (Tail::Keep, None) => continue,
+            (Tail::Keep, Some((lo, hi))) => (
+                if lo >= u0 - EDGE_TOL || relieved(&bend.relief.0) { u0 - reach } else { u0 },
+                if hi <= u1 + EDGE_TOL || relieved(&bend.relief.1) { u1 + reach } else { u1 },
+            ),
         };
         if s1 > s0 {
             let corners = [frame.at(s0, line), frame.at(s1, line), frame.at(s1, line + depth), frame.at(s0, line + depth)];
             let region = Region2 { outer: Loop2::polygon(&corners).ccw(), holes: Vec::new() };
             out.trims.push(Trim { panel, joint: j, region, line: [corners[0], corners[1]] });
         }
+        // A bend relief where the panel runs on past an end: a slot past the end, from inside
+        // the panel's tangent line out through the band. `out_dir` runs past the end.
+        let Some((lo, hi)) = extent else { continue };
+        for (relief, u, out_dir) in [(bend.relief.0, u0, -1.0), (bend.relief.1, u1, 1.0)] {
+            let Relief::Slot { width: w, depth: d } = relief else { continue };
+            let runs_on = if out_dir < 0.0 { lo < u - w - EDGE_TOL } else { hi > u + w + EDGE_TOL };
+            if !(runs_on && w > 0.0) {
+                continue;
+            }
+            let (s0, s1) = if out_dir < 0.0 { (u - w, u) } else { (u, u + w) };
+            let (l0, l1) = (line - depth.signum() * d.max(0.0), line + depth);
+            let corners = [frame.at(s0, l0), frame.at(s1, l0), frame.at(s1, l1), frame.at(s0, l1)];
+            let region = Region2 { outer: Loop2::polygon(&corners).ccw(), holes: Vec::new() };
+            out.trims.push(Trim { panel, joint: j, region, line: [corners[0], corners[1]] });
+        }
     }
     Ok(())
+}
+
+/// A torn end of a bend's zone in the flat, from `from` along the joint on the `a` panel's tangent
+/// line to `to` on the `b` panel's, as a cubic spline within [`TEAR_TOL`] of the curve it follows:
+/// at each turn round the bend, the length along the joint where the bend's metal, through its
+/// whole thickness, keeps off the tear's plane by as much as the ends give in proportion.
+fn torn(skin: &Skin, bend: &Bend, frame: &JointFrame, (normal, offset): (Vec3, f64), (from, to): (f64, f64)) -> Vec<Seg2> {
+    let (t, theta) = (skin.thickness, bend.angle);
+    let wrap = Wrap::of(bend, t, skin.k_factor);
+    let neutral = bend.radius + skin.k_factor * t;
+    let straight = vec![Seg2::Line { a: frame.at(from, -bend.setback(t)), b: frame.at(to, theta * neutral - bend.setback(t)) }];
+    // Along the joint, the distance off the plane changes alike at every depth.
+    if !(normal.x.abs() > 1e-9 && neutral > 0.0 && theta > 0.0) {
+        return straight;
+    }
+    let off = |along: f64, phi: f64, depth: f64| wrap.at(along, phi, depth).dot(normal) - offset;
+    let least = |along: f64, phi: f64| off(along, phi, 0.0).min(off(along, phi, t));
+    let (c0, c1) = (least(from, 0.0), least(to, theta));
+    // Where along the joint each face of the sheet would keep its share off the plane: the
+    // nearer of the two to the plane keeps the metal off it.
+    let need = |phi: f64| {
+        let clear = c0 + (c1 - c0) * phi / theta;
+        [0.0, t].map(|depth| from + (clear - off(from, phi, depth)) / normal.x)
+    };
+    let deep = |phi: f64| {
+        let [skin, deep] = need(phi);
+        if normal.x > 0.0 { deep > skin } else { deep < skin }
+    };
+    let at = |phi: f64| -> Vec2 {
+        let [skin, deep] = need(phi);
+        let along = if normal.x > 0.0 { skin.max(deep) } else { skin.min(deep) };
+        frame.at(along, phi * neutral - bend.setback(t))
+    };
+    // The curve is smooth but where the face that keeps the metal off changes: there it turns a
+    // corner. Each smooth run is a cubic spline through it.
+    let mut breaks = vec![0.0];
+    let mid = |k: usize| theta * (k as f64 + 0.5) / TEAR_SAMPLES as f64;
+    for k in 1..TEAR_SAMPLES {
+        let (mut lo, mut hi) = (mid(k - 1), mid(k));
+        if deep(lo) != deep(hi) {
+            let side = deep(lo);
+            for _ in 0..60 {
+                let m = (lo + hi) / 2.0;
+                if deep(m) == side {
+                    lo = m;
+                } else {
+                    hi = m;
+                }
+            }
+            breaks.push((lo + hi) / 2.0);
+        }
+    }
+    breaks.push(theta);
+    let mut out = Vec::new();
+    for w in breaks.windows(2) {
+        if let [p0, p1] = w {
+            out.extend(spline(&at, *p0, *p1));
+        }
+    }
+    out
+}
+
+/// The curve `at` from `a` to `b` as a cubic spline in the fewest even spans that keep within
+/// [`TEAR_TOL`] of it: through the curve at the spans' ends, along it at its two ends (its
+/// direction there taken from inside the run), and joined with no change of curvature.
+fn spline(at: &dyn Fn(f64) -> Vec2, a: f64, b: f64) -> Vec<Seg2> {
+    let rate = |x: f64, h: f64| (at(x) * -3.0 + at(x + h) * 4.0 - at(x + 2.0 * h)) * (1.0 / (2.0 * h));
+    let step = (b - a) * 1e-5;
+    let (start, end) = (rate(a, step), rate(b, -step));
+    let mut segs = Vec::new();
+    for spans in 1..=MAX_TEAR_SPANS {
+        let h = (b - a) / spans as f64;
+        let points: Vec<Vec2> = (0..=spans).map(|i| at(a + h * i as f64)).collect();
+        let rates = clamped_rates(&points, h, start, end);
+        segs = points
+            .windows(2)
+            .zip(rates.windows(2))
+            .filter_map(|(p, m)| match (p, m) {
+                ([p0, p1], [m0, m1]) => Some(Seg2::Cubic { p0: *p0, p1: *p0 + *m0 * (h / 3.0), p2: *p1 - *m1 * (h / 3.0), p3: *p1 }),
+                _ => None,
+            })
+            .collect();
+        let strays = (0..=TEAR_SAMPLES).any(|k| {
+            let x = k as f64 / TEAR_SAMPLES as f64 * spans as f64;
+            let i = (x.floor() as usize).min(spans - 1);
+            segs.get(i).is_some_and(|seg| seg.point_at(x - i as f64).dist(at(a + h * x)) > TEAR_TOL)
+        });
+        if !strays {
+            break;
+        }
+    }
+    segs
+}
+
+/// A clamped cubic spline's rates (per unit of its parameter) at `points`, `h` apart: `start` and
+/// `end` at its ends, and between them those that keep its curvature unbroken,
+/// `m[i - 1] + 4 m[i] + m[i + 1] = 3 (p[i + 1] - p[i - 1]) / h`, solved down the tridiagonal.
+fn clamped_rates(points: &[Vec2], h: f64, start: Vec2, end: Vec2) -> Vec<Vec2> {
+    let n = points.len().saturating_sub(1);
+    let mut m = vec![start; n + 1];
+    if let Some(last) = m.last_mut() {
+        *last = end;
+    }
+    if n < 2 {
+        return m;
+    }
+    // Forward sweep over the inner rates 1 ..= n - 1, then back.
+    let (mut diag, mut rhs) = (vec![4.0; n + 1], vec![Vec2::ZERO; n + 1]);
+    for i in 1..n {
+        rhs[i] = (points[i + 1] - points[i - 1]) * (3.0 / h);
+    }
+    rhs[1] -= start;
+    rhs[n - 1] -= end;
+    for i in 2..n {
+        let f = 1.0 / diag[i - 1];
+        diag[i] -= f;
+        let carried = rhs[i - 1] * f;
+        rhs[i] -= carried;
+    }
+    for i in (1..n).rev() {
+        let next = if i + 1 < n { m[i + 1] } else { Vec2::ZERO };
+        m[i] = (rhs[i] - next) * (1.0 / diag[i]);
+    }
+    m
+}
+
+/// The relief a corner cuts from the flat: centered where its two bends' zones' center lines
+/// cross. `None` where either bend has no zone, or the two run alike.
+fn corner_cut(dev: &Development, corner: &Corner) -> Option<Region2> {
+    let center_line = |j: usize| {
+        let z = dev.zones.iter().find(|z| z.joint == j)?;
+        let [n0, n1] = z.near;
+        let [f0, f1] = z.far;
+        let (a, b) = ((n0 + f0) * 0.5, (n1 + f1) * 0.5);
+        Some((a, (b - a).normalized()?))
+    };
+    let [ja, jb] = corner.joints;
+    let ((p, u), (q, w)) = (center_line(ja)?, center_line(jb)?);
+    let cross = u.cross(w);
+    let r = corner.size / 2.0;
+    if !(cross.abs() > 1e-9 && r > 0.0) {
+        return None;
+    }
+    let c = p + u * ((q - p).cross(w) / cross);
+    let outer = if corner.round {
+        Loop2 { segs: vec![Seg2::Arc { center: c, radius: r, start: 0.0, sweep: PI }, Seg2::Arc { center: c, radius: r, start: PI, sweep: PI }] }
+    } else {
+        // Its sides run along the two bends, each `r` from the center.
+        let k = r / cross.abs();
+        Loop2::polygon(&[c + (u + w) * k, c + (w - u) * k, c - (u + w) * k, c + (u - w) * k])
+    };
+    Some(Region2 { outer: outer.ccw(), holes: Vec::new() })
 }
 
 /// Where along a bend a panel's outline lies inside the band from `line` to `line + depth`

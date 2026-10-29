@@ -63,7 +63,7 @@ pub static COMMANDS: &[CommandSpec] = &[
              the faces' holes become cut-outs and their engravings, up to half the thickness deep, pockets); \
              skin?: true converts through the skin (#6748) instead: no `face`; every face of a solid, or of one side of a shell or \
              a plate, becomes the sheet, a cylinder or cone a roll at its own radius; every sharp edge between two of its faces is \
-             cut open but the `bends`; a ring of bends is refused; the body stays as modeled while sheet.flat_pattern shows its \
+             cut open but the `bends`; a ring of bends is refused; the body becomes the folded sheet, and sheet.flat_pattern shows its \
              flat; skip?: [faces left out, as points or names]; direction?: inside (default) | outside (the side of a solid's \
              faces its material lies on; a shell or a plate keeps its own)",
         ),
