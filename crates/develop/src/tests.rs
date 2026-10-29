@@ -1,6 +1,6 @@
 use std::f64::consts::{FRAC_PI_2, PI};
 
-use solidcraft_geom::{Aabb2, Loop2, Region2, Seg2, Vec2};
+use solidcraft_geom::{Aabb2, Loop2, Region2, Seg2, Vec2, Vec3};
 
 use crate::{Anchor, Bend, Datum, DevelopError, Joint, JointKind, Panel, Rigid2, Skin, Surface, Tail, ZoneEnds, develop};
 
@@ -196,8 +196,9 @@ fn a_rip_lays_its_panels_out_apart_and_bad_joints_are_refused() {
     assert!(matches!(develop(&skin, 0), Err(DevelopError::Joint(0, _))));
 }
 
-fn roll(radius: f64, material_inward: bool, length: f64, around: f64) -> Panel {
-    Panel { name: "roll".into(), surface: Surface::Cylinder { radius, material_inward }, region: rect(0.0, 0.0, length, around) }
+/// A roll `length` long along its axis, turning through `angle` (radians) round it.
+fn roll(radius: f64, material_inward: bool, length: f64, angle: f64) -> Panel {
+    Panel { name: "roll".into(), surface: Surface::Cylinder { radius, material_inward }, region: rect(0.0, 0.0, length, angle) }
 }
 
 /// Panels 100 long whose seams run along x: `a`'s at `ya` with its material below, `b`'s at
@@ -217,17 +218,16 @@ fn seam(a: usize, ya: f64, b: usize, yb: f64) -> Joint {
 #[test]
 fn a_roll_flattens_through_its_neutral_surface() {
     let r = 30.0;
-    let around = FRAC_PI_2 * r;
     for (inward, neutral_radius) in [(false, r + K * T), (true, r - (1.0 - K) * T)] {
         let skin = Skin {
             thickness: T,
             k_factor: K,
             panels: vec![
                 Panel { name: "floor".into(), region: rect(0.0, 0.0, 100.0, 40.0), ..Panel::default() },
-                roll(r, inward, 100.0, around),
+                roll(r, inward, 100.0, FRAC_PI_2),
                 Panel { name: "wall".into(), region: rect(0.0, 0.0, 100.0, 30.0), ..Panel::default() },
             ],
-            joints: vec![seam(0, 40.0, 1, 0.0), seam(1, around, 2, 0.0)],
+            joints: vec![seam(0, 40.0, 1, 0.0), seam(1, FRAC_PI_2, 2, 0.0)],
         };
         let dev = develop(&skin, 0).unwrap_or_default();
         assert!(dev.loops.is_empty() && dev.zones.is_empty() && dev.trims.is_empty() && dev.pieces.len() == 1);
@@ -237,29 +237,23 @@ fn a_roll_flattens_through_its_neutral_surface() {
     }
 }
 
-/// A cone opened along a ruling flattens to a sector of a ring: its arcs about the apex keep
-/// their sweep and move by the neutral surface's offset along the rulings, K x T / tan(half
-/// angle), and its rulings stay lines.
+/// A cone opened along a ruling flattens to a sector of a ring. Drawn in its parameters
+/// (distance from the apex, angle round the axis), the panel is a rectangle: its rulings stay
+/// lines, and its circles round the axis become arcs about the apex that keep their sweep
+/// (a whole turn times the sine of the half angle) and move by the neutral surface's offset along
+/// the rulings, K x T / tan(half angle).
 #[test]
 fn a_cone_flattens_to_a_sector_at_its_neutral_radii() {
     let half_angle: f64 = 0.5;
-    let sweep = std::f64::consts::TAU * half_angle.sin();
-    let ray = |r: f64, a: f64| Vec2::from_angle(a) * r;
-    let outer = Loop2 {
-        segs: vec![
-            Seg2::Line { a: ray(40.0, 0.0), b: ray(90.0, 0.0) },
-            Seg2::Arc { center: Vec2::ZERO, radius: 90.0, start: 0.0, sweep },
-            Seg2::Line { a: ray(90.0, sweep), b: ray(40.0, sweep) },
-            Seg2::Arc { center: Vec2::ZERO, radius: 40.0, start: sweep, sweep: -sweep },
-        ],
-    };
+    let turn = std::f64::consts::TAU;
+    let sweep = turn * half_angle.sin();
     let skin = Skin {
         thickness: T,
         k_factor: K,
         panels: vec![Panel {
             name: "hopper".into(),
             surface: Surface::Cone { half_angle, material_inward: false },
-            region: Region2 { outer, holes: Vec::new() },
+            region: rect(40.0, 0.0, 90.0, turn),
         }],
         joints: Vec::new(),
     };
@@ -279,12 +273,11 @@ fn a_cone_flattens_to_a_sector_at_its_neutral_radii() {
 #[test]
 fn a_tube_of_rolls_opens_with_a_rip() {
     let r = 25.0;
-    let half = PI * r;
     let mut skin = Skin {
         thickness: T,
         k_factor: K,
-        panels: vec![roll(r, true, 100.0, half), roll(r, true, 100.0, half)],
-        joints: vec![seam(0, half, 1, 0.0), seam(1, half, 0, 0.0)],
+        panels: vec![roll(r, true, 100.0, PI), roll(r, true, 100.0, PI)],
+        joints: vec![seam(0, PI, 1, 0.0), seam(1, PI, 0, 0.0)],
     };
     assert_eq!(develop(&skin, 0).unwrap_or_default().loops.len(), 1);
     if let Some(j) = skin.joints.get_mut(1) {
@@ -297,20 +290,29 @@ fn a_tube_of_rolls_opens_with_a_rip() {
     assert!((bounds(&second.region).max.y - around).abs() < 1e-9, "{:?}", bounds(&second.region));
 }
 
-/// A round hole in a roll is no circle on the neutral surface: stretched round the roll it is an
-/// exact ellipse, as conics that each say which of the hole's arcs they came from.
+/// A round hole on a roll, 10 mm across the skin, is an ellipse in the roll's parameters (the
+/// angle round it is length over the radius). Flattened, it lies on the neutral circle: still an
+/// exact ellipse, as conics that each say which of the hole's segments they came from.
 #[test]
 fn a_hole_in_a_roll_flattens_to_an_exact_ellipse() {
     let (r, c, hole) = (40.0, Vec2::new(50.0, 30.0), 10.0);
-    let mut panel = roll(r, false, 100.0, 60.0);
-    panel.region.holes.push(Loop2::circle(c, hole).reversed());
+    let on_skin = |p: Vec2| Vec2::new(p.x, p.y / r);
+    let quarters: Vec<Seg2> = crate::chart::arc_as_conics(c, hole, 0.0, std::f64::consts::TAU)
+        .into_iter()
+        .map(|s| match s {
+            Seg2::Conic { a, apex, b, w } => Seg2::Conic { a: on_skin(a), apex: on_skin(apex), b: on_skin(b), w },
+            other => other,
+        })
+        .collect();
+    let mut panel = roll(r, false, 100.0, 60.0 / r);
+    panel.region.holes.push(Loop2 { segs: quarters }.reversed());
     let skin = Skin { thickness: T, k_factor: K, panels: vec![panel], joints: Vec::new() };
     let dev = develop(&skin, 0).unwrap_or_default();
     let Some(Some(flat)) = dev.panels.first() else { panic!("laid out: {dev:?}") };
     let (Some(ellipse), Some(from)) = (flat.region.holes.first(), flat.origins.get(1)) else { panic!("{flat:?}") };
     let k = (r + K * T) / r;
     assert!(ellipse.segs.iter().all(|s| matches!(s, Seg2::Conic { .. })), "{ellipse:?}");
-    assert_eq!(from, &[0, 0, 1, 1], "each half circle became two quarter conics");
+    assert_eq!(from, &[0, 1, 2, 3], "each quarter stays one conic");
     for s in &ellipse.segs {
         for t in [0.0, 0.3, 0.7, 1.0] {
             let p = s.point_at(t);
@@ -327,4 +329,135 @@ fn a_bend_on_the_edge_of_a_roll_is_refused() {
         p.surface = Surface::Cylinder { radius: 50.0, material_inward: false };
     }
     assert!(matches!(develop(&skin, 0), Err(DevelopError::Joint(0, _))));
+}
+
+fn spline(degree: [usize; 2], knots: [Vec<f64>; 2], points: &[Vec3], weights: &[f64]) -> Surface {
+    match solidcraft_geom::bspline::NurbsSurface::new(degree, knots, points, weights) {
+        Ok(s) => Surface::Spline(std::sync::Arc::new(s)),
+        Err(e) => panic!("{e:?}"),
+    }
+}
+
+/// A free-form panel over its whole parameter square.
+fn free(surface: Surface) -> Skin {
+    Skin { thickness: T, k_factor: K, panels: vec![Panel { name: "free".into(), surface, region: rect(0.0, 0.0, 1.0, 1.0) }], joints: Vec::new() }
+}
+
+/// The flat length of the parameter line from `a` to `b`, along the flattened segments.
+fn flat_length(skin: &Skin, a: Vec2, b: Vec2) -> f64 {
+    let mut probe = skin.clone();
+    if let Some(p) = probe.panels.first_mut() {
+        p.region = Region2 { outer: Loop2 { segs: vec![Seg2::Line { a, b }, Seg2::Line { a: b, b: a }] }, holes: Vec::new() };
+    }
+    let dev = develop(&probe, 0).unwrap_or_default();
+    let Some(Some(flat)) = dev.panels.first() else { panic!("laid out: {dev:?}") };
+    // Every piece the line came back as: one per knot span it crosses.
+    let from = flat.origins.first().cloned().unwrap_or_default();
+    flat.region.outer.segs.iter().zip(from).filter(|(_, o)| *o == 0).map(|(s, _)| s.length()).sum()
+}
+
+/// A quarter of a cylinder of radius 40, 100 long, written as a rational spline (its angle is no
+/// parameter of it), its skin on the inside: fitted in its own spline space, it flattens to the
+/// neutral arc's length, a quarter turn at 40 + K x T, with next to no stretch.
+#[test]
+fn a_spline_cylinder_flattens_like_a_roll() {
+    let r = 40.0;
+    let w = std::f64::consts::FRAC_1_SQRT_2;
+    let mut points = Vec::new();
+    let mut weights = Vec::new();
+    for (x, z, wt) in [(r, 0.0, 1.0), (r, r, w), (0.0, r, 1.0)] {
+        for y in [0.0, 100.0] {
+            points.push(Vec3::new(x, y, z));
+            weights.push(wt);
+        }
+    }
+    let skin = free(spline([1, 2], [vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0]], &points, &weights));
+    let dev = develop(&skin, 0).unwrap_or_default();
+    let Some(Some(flat)) = dev.panels.first() else { panic!("laid out: {dev:?}") };
+    assert!(flat.stretch < 1e-6, "{}", flat.stretch);
+    let around = flat_length(&skin, Vec2::new(0.0, 0.0), Vec2::new(0.0, 1.0));
+    let along = flat_length(&skin, Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0));
+    assert!((around - FRAC_PI_2 * (r + K * T)).abs() < 1e-7, "{around} vs {}", FRAC_PI_2 * (r + K * T));
+    assert!((along - 100.0).abs() < 1e-6, "{along}");
+}
+
+/// A strip 80 long bent along a cubic curve: developable, so it flattens with next to no stretch,
+/// to the length of its neutral curve, measured here independently as a fine polyline of the
+/// curve moved by the neutral surface's depth along its normal.
+#[test]
+fn a_bent_strip_flattens_to_its_neutral_curves_length() {
+    let c = [Vec2::new(0.0, 0.0), Vec2::new(40.0, 10.0), Vec2::new(80.0, 50.0), Vec2::new(90.0, 100.0)];
+    let mut points = Vec::new();
+    for p in c {
+        for y in [0.0, 80.0] {
+            points.push(Vec3::new(p.x, y, p.y));
+        }
+    }
+    let skin = free(spline([1, 3], [vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]], &points, &[1.0; 8]));
+    let dev = develop(&skin, 0).unwrap_or_default();
+    let Some(Some(flat)) = dev.panels.first() else { panic!("laid out: {dev:?}") };
+    assert!(flat.stretch < 1e-6, "{}", flat.stretch);
+    // The curve in (x, z), its normal Su x Sv with Su along +y, and the neutral surface at K x T
+    // or (1 - K) x T along it depending on which side the curve bends to.
+    let at = |t: f64| {
+        let s = 1.0 - t;
+        let p = c[0] * (s * s * s) + c[1] * (3.0 * s * s * t) + c[2] * (3.0 * s * t * t) + c[3] * (t * t * t);
+        let d = (c[1] - c[0]) * (3.0 * s * s) + (c[2] - c[1]) * (6.0 * s * t) + (c[3] - c[2]) * (3.0 * t * t);
+        let dd = (c[2] - c[1] * 2.0 + c[0]) * (6.0 * s) + (c[3] - c[2] * 2.0 + c[1]) * (6.0 * t);
+        // Su x Sv = (0, 1, 0) x (d.x, 0, d.y) = (d.y, 0, -d.x): in (x, z), (d.y, -d.x).
+        let n = Vec2::new(d.y, -d.x) * (1.0 / d.len());
+        let toward = dd.dot(n) > 0.0;
+        p + n * if toward { (1.0 - K) * T } else { K * T }
+    };
+    let steps = 200_000;
+    let expected: f64 = (0..steps).map(|k| at(k as f64 / steps as f64).dist(at((k + 1) as f64 / steps as f64))).sum();
+    let got = flat_length(&skin, Vec2::new(0.0, 0.0), Vec2::new(0.0, 1.0));
+    assert!((got - expected).abs() < 1e-7, "{got} vs {expected}");
+}
+
+/// A saddle is not developable: it still flattens, and says what that costs.
+#[test]
+fn a_saddle_flattens_and_reports_its_stretch() {
+    let mut points = Vec::new();
+    for v in [0.0, 1.0] {
+        for u in [0.0, 1.0] {
+            points.push(Vec3::new(u * 60.0, v * 60.0, if (u + v) == 1.0 { 15.0 } else { 0.0 }));
+        }
+    }
+    let skin = free(spline([1, 1], [vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 0.0, 1.0, 1.0]], &points, &[1.0; 4]));
+    let dev = develop(&skin, 0).unwrap_or_default();
+    let Some(Some(flat)) = dev.panels.first() else { panic!("laid out: {dev:?}") };
+    assert!(flat.stretch > 1e-3 && flat.stretch < 0.5, "{}", flat.stretch);
+}
+
+/// A straight line across a free-form panel's parameters flattens to exact Bezier pieces, one for
+/// each knot span it crosses, of the spaces' degrees added: every point of the pieces is the
+/// fitted map's point at the matching parameter.
+#[test]
+fn a_straight_trim_flattens_to_exact_bezier_pieces() {
+    let c = [Vec2::new(0.0, 0.0), Vec2::new(40.0, 10.0), Vec2::new(80.0, 50.0), Vec2::new(90.0, 100.0)];
+    let mut points = Vec::new();
+    for p in c {
+        for y in [0.0, 80.0] {
+            points.push(Vec3::new(p.x, y, p.y));
+        }
+    }
+    let surface = spline([1, 3], [vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]], &points, &[1.0; 8]);
+    let map = match crate::chart::Flatten::of(&surface, &Skin { thickness: T, k_factor: K, ..Skin::default() }) {
+        Ok(m) => m,
+        Err(e) => panic!("{e}"),
+    };
+    let (a, b) = (Vec2::new(0.1, 0.2), Vec2::new(0.9, 0.7));
+    let line = Region2 { outer: Loop2 { segs: vec![Seg2::Line { a, b }] }, holes: Vec::new() };
+    let Ok((flat, _)) = map.region(&line) else { panic!() };
+    assert!(flat.outer.segs.iter().all(|s| matches!(s, Seg2::Bezier { n: 4, .. })), "{:?}", flat.outer.segs);
+    // The pieces end to end follow the map along the line.
+    let total: usize = flat.outer.segs.len();
+    for (k, s) in flat.outer.segs.iter().enumerate() {
+        for t in [0.0, 0.37, 1.0] {
+            let p = s.point_at(t);
+            let best = (0..=2000).map(|i| map.point(a.lerp(b, i as f64 / 2000.0)).dist(p)).fold(f64::INFINITY, f64::min);
+            assert!(best < 0.05, "piece {k} of {total} at {t}: {best}");
+        }
+    }
 }

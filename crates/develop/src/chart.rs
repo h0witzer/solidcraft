@@ -1,98 +1,107 @@
-//! A panel's neutral chart: where the points of its skin chart lie on the neutral surface, the
-//! surface the flat pattern is a development of. A planar panel's neutral surface is its own
-//! shape; a roll's is longer or shorter round it, by how far the neutral surface lies from the
-//! skin.
+//! How a panel's parameters flatten: where each point of the panel's parameter space lies once
+//! its neutral surface, the surface the flat pattern is a development of, is laid flat. A panel
+//! keeps its region in its own surface's parameters, so the surface's flow (its parameter
+//! lines) maps exactly to the flat and back.
 
 use std::f64::consts::FRAC_PI_2;
+use std::sync::Arc;
 
 use solidcraft_geom::{Loop2, Region2, Seg2, Vec2};
 
+use crate::fitted::{FlatMap, fit};
 use crate::{Skin, Surface};
 
 /// A segment a map does not keep is followed by chords this close to it (mm).
 const CHORD_TOL: f64 = 1e-4;
 
-/// Nearer the apex than this (mm), a point is the apex; a line whose ends' cross product is this
-/// small against their lengths runs through it.
-const APEX_TOL: f64 = 1e-9;
+/// Parameters this close are one: a line of one angle on a cone, or of one distance.
+const PARAM_TOL: f64 = 1e-12;
 
-/// From a panel's skin chart to its neutral chart.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Neutral {
-    /// A planar panel: the neutral surface has its shape.
+/// From a panel's parameters to its neutral surface laid flat.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Flatten {
+    /// A planar panel: its parameters are its plane's coordinates, and the neutral surface has
+    /// its shape.
     Same,
-    /// A cylinder: lengths round it (the chart's y) scale by the neutral radius over the skin's.
-    /// A line stays a line, and a circular arc becomes an exact elliptical one.
-    Stretch(f64),
-    /// A cone: distances from the apex grow by this much, the neutral surface being the skin
-    /// offset along the cone's normal. Rulings and arcs about the apex stay exact; anything else
-    /// is followed by chords.
-    Radial(f64),
+    /// A cylinder: length along the axis stays, and the angle round it becomes arc length on
+    /// the neutral circle of this radius. The map is affine, so a line stays a line, a circular
+    /// arc becomes exact elliptical conics, and every Bezier and conic keeps its kind.
+    Roll { radius: f64 },
+    /// A cone: (distance from the apex along a ruling, angle round the axis) to polar
+    /// coordinates in the flat, the distance moved by `shift` (the neutral surface's offset
+    /// along the rulings) and the angle scaled by `scale` (the sine of the half angle). A line of
+    /// one angle (a ruling) stays a line, and a line of one distance (a circle round the axis)
+    /// becomes an arc about the apex; anything else is followed by chords.
+    Cone { shift: f64, scale: f64 },
+    /// A free-form panel: its map fitted in its surface's own spline space. A straight segment
+    /// of its parameters comes back as exact Bezier pieces; anything else is followed by chords.
+    Fitted(Arc<FlatMap>),
 }
 
-impl Neutral {
-    pub(crate) fn of(surface: &Surface, skin: &Skin) -> Result<Neutral, &'static str> {
+impl Flatten {
+    pub(crate) fn of(surface: &Surface, skin: &Skin) -> Result<Flatten, &'static str> {
         let (t, k) = (skin.thickness, skin.k_factor);
-        match *surface {
-            Surface::Plane => Ok(Neutral::Same),
-            Surface::Cylinder { radius, material_inward } => {
+        match surface {
+            Surface::Plane => Ok(Flatten::Same),
+            &Surface::Cylinder { radius, material_inward } => {
                 // The neutral surface lies K x T from the inside of the roll.
                 let neutral = if material_inward { radius - (1.0 - k) * t } else { radius + k * t };
                 if !(radius > 0.0 && neutral > 0.0 && neutral.is_finite()) {
                     return Err("a roll's radius must be more than the sheet's thickness");
                 }
-                Ok(Neutral::Stretch(neutral / radius))
+                Ok(Flatten::Roll { radius: neutral })
             }
-            Surface::Cone { half_angle, material_inward } => {
+            &Surface::Cone { half_angle, material_inward } => {
                 if !(half_angle > 0.0 && half_angle < FRAC_PI_2) {
                     return Err("a cone's rulings make more than 0 and less than a quarter turn with its axis");
                 }
                 // Offset along the normal by h, a cone's apex moves along the axis and every
                 // point's distance from it along its ruling changes by h / tan(half angle).
                 let h = if material_inward { -(1.0 - k) * t } else { k * t };
-                Ok(Neutral::Radial(h / half_angle.tan()))
+                Ok(Flatten::Cone { shift: h / half_angle.tan(), scale: half_angle.sin() })
             }
+            Surface::Spline(s) => Ok(Flatten::Fitted(Arc::new(fit(s, t, k)?))),
+        }
+    }
+
+    /// The largest strain the flat leaves on the neutral surface: none but on a free-form panel.
+    pub(crate) fn stretch(&self) -> f64 {
+        match self {
+            Flatten::Fitted(m) => m.stretch,
+            _ => 0.0,
         }
     }
 
     pub(crate) fn point(&self, p: Vec2) -> Vec2 {
         match *self {
-            Neutral::Same => p,
-            Neutral::Stretch(s) => Vec2::new(p.x, p.y * s),
-            Neutral::Radial(d) => {
-                let r = p.len();
-                if r > APEX_TOL { p * ((r + d) / r) } else { p }
-            }
+            Flatten::Same => p,
+            Flatten::Roll { radius } => Vec2::new(p.x, p.y * radius),
+            Flatten::Cone { shift, scale } => Vec2::from_angle(p.y * scale) * (p.x + shift),
+            Flatten::Fitted(ref m) => m.point(p),
         }
     }
 
-    /// The direction `v` at `p`, mapped (the map's derivative there), as a unit vector.
+    /// The parameter direction `v` at `p`, flattened (the map's derivative there), as a unit
+    /// vector.
     pub(crate) fn dir(&self, p: Vec2, v: Vec2) -> Option<Vec2> {
         match *self {
-            Neutral::Same => v.normalized(),
-            Neutral::Stretch(s) => Vec2::new(v.x, v.y * s).normalized(),
-            Neutral::Radial(d) => {
-                let r = p.len();
-                if !(r > APEX_TOL) {
-                    return v.normalized();
-                }
-                // p (1 + d / r): along the ruling it is the identity, across it a scale.
-                let u = p * (1.0 / r);
-                let along = u * u.dot(v);
-                (along + (v - along) * ((r + d) / r)).normalized()
+            Flatten::Same => v.normalized(),
+            Flatten::Roll { radius } => Vec2::new(v.x, v.y * radius).normalized(),
+            Flatten::Cone { shift, scale } => {
+                let out = Vec2::from_angle(p.y * scale);
+                (out * v.x + out.perp() * ((p.x + shift) * scale * v.y)).normalized()
             }
+            Flatten::Fitted(ref m) => m.dir(p, v),
         }
     }
 
-    /// The region mapped, and for every segment of each of its loops the index of the segment
-    /// of the panel's own loop it came from: an arc stretched becomes several conics, and a
-    /// curve the map does not keep becomes chords.
+    /// The region flattened, and for every segment of each of its loops the index of the
+    /// segment of the panel's own loop it came from: an arc on a roll becomes several conics,
+    /// and a curve the map does not keep becomes chords.
     pub(crate) fn region(&self, r: &Region2) -> Result<(Region2, Vec<Vec<usize>>), &'static str> {
-        if let Neutral::Radial(d) = *self
-            && d < 0.0
-        {
+        if let Flatten::Cone { shift, .. } = *self {
             for lp in std::iter::once(&r.outer).chain(&r.holes) {
-                if (&lp.polyline(CHORD_TOL)).into_iter().any(|p| !(p.len() + d > 0.0)) {
+                if (&lp.polyline(CHORD_TOL)).into_iter().any(|p| !(p.x + shift > 0.0)) {
                     return Err("the cone's neutral surface would pass its apex inside the panel");
                 }
             }
@@ -114,21 +123,36 @@ impl Neutral {
     }
 
     fn seg(&self, s: &Seg2, out: &mut Vec<Seg2>) {
-        match (*self, *s) {
-            (Neutral::Same, _) => out.push(*s),
-            (Neutral::Stretch(_), Seg2::Arc { center, radius, start, sweep }) => {
+        match (self, *s) {
+            (Flatten::Fitted(m), Seg2::Line { a, b }) => m.line(a, b, CHORD_TOL, out),
+            (Flatten::Fitted(m), _) => {
+                // Chords close enough in the flat: a parameter step moves a point by about the
+                // map's rate of change there.
+                let p = s.start();
+                let rate = [Vec2::X, Vec2::Y].iter().map(|d| m.point(p).dist(m.point(p + *d * 1e-3)) * 1e3).fold(1.0, f64::max);
+                let pts: Vec<Vec2> = s.polyline(CHORD_TOL / rate).into_iter().map(|p| m.point(p)).collect();
+                out.extend(pts.windows(2).filter_map(|w| match w {
+                    [a, b] => Some(Seg2::Line { a: *a, b: *b }),
+                    _ => None,
+                }));
+            }
+            (Flatten::Same, _) => out.push(*s),
+            (Flatten::Roll { .. }, Seg2::Arc { center, radius, start, sweep }) => {
                 out.extend(arc_as_conics(center, radius, start, sweep).iter().map(|c| self.controls(c)));
             }
             // An affine map keeps every Bezier and conic: its control points move.
-            (Neutral::Stretch(_), _) => out.push(self.controls(s)),
-            (Neutral::Radial(_), Seg2::Line { a, b }) if a.cross(b).abs() <= APEX_TOL * a.len() * b.len() && a.dot(b) > 0.0 => {
+            (Flatten::Roll { .. }, _) => out.push(self.controls(s)),
+            (&Flatten::Cone { .. }, Seg2::Line { a, b }) if (a.y - b.y).abs() <= PARAM_TOL => {
                 out.push(Seg2::Line { a: self.point(a), b: self.point(b) });
             }
-            (Neutral::Radial(d), Seg2::Arc { center, radius, start, sweep }) if center.len() <= APEX_TOL => {
-                out.push(Seg2::Arc { center, radius: radius + d, start, sweep });
+            (&Flatten::Cone { shift, scale }, Seg2::Line { a, b }) if (a.x - b.x).abs() <= PARAM_TOL => {
+                out.push(Seg2::Arc { center: Vec2::ZERO, radius: a.x + shift, start: a.y * scale, sweep: (b.y - a.y) * scale });
             }
-            (Neutral::Radial(_), _) => {
-                let pts: Vec<Vec2> = s.polyline(CHORD_TOL).into_iter().map(|p| self.point(p)).collect();
+            (&Flatten::Cone { shift, .. }, _) => {
+                // Chords close enough in the flat: an angle step moves a point by its distance
+                // from the apex times the step.
+                let reach = 1.0 + s.start().x.abs().max(s.end().x.abs()) + shift.abs();
+                let pts: Vec<Vec2> = s.polyline(CHORD_TOL / reach).into_iter().map(|p| self.point(p)).collect();
                 out.extend(pts.windows(2).filter_map(|w| match w {
                     [a, b] => Some(Seg2::Line { a: *a, b: *b }),
                     _ => None,
@@ -157,7 +181,7 @@ impl Neutral {
 
 /// A circular arc as rational quadratic pieces of at most a quarter turn each: exact, and kept
 /// exact by any affine map.
-fn arc_as_conics(center: Vec2, radius: f64, start: f64, sweep: f64) -> Vec<Seg2> {
+pub(crate) fn arc_as_conics(center: Vec2, radius: f64, start: f64, sweep: f64) -> Vec<Seg2> {
     let n = (sweep.abs() / FRAC_PI_2).ceil().clamp(1.0, 8.0) as usize;
     let step = sweep / n as f64;
     (0..n)
