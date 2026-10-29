@@ -3,7 +3,7 @@
 //! keeps its region in its own surface's parameters, so the surface's flow (its parameter
 //! lines) maps exactly to the flat and back.
 
-use std::f64::consts::FRAC_PI_2;
+use std::f64::consts::{FRAC_PI_2, TAU};
 use std::sync::Arc;
 
 use solidcraft_geom::{Loop2, Region2, Seg2, Vec2};
@@ -78,6 +78,22 @@ impl Flatten {
             Flatten::Roll { radius } => Vec2::new(p.x, p.y * radius),
             Flatten::Cone { shift, scale } => Vec2::from_angle(p.y * scale) * (p.x + shift),
             Flatten::Fitted(ref m) => m.point(p),
+        }
+    }
+
+    /// The parameters of a point of the neutral surface laid flat: [`Flatten::point`] undone. A
+    /// cone's angle is the one nearest `near` (radians round its axis). `None` for a free-form
+    /// panel, whose map is not undone yet.
+    pub(crate) fn param(&self, p: Vec2, near: f64) -> Option<Vec2> {
+        match *self {
+            Flatten::Same => Some(p),
+            Flatten::Roll { radius } => Some(Vec2::new(p.x, p.y / radius)),
+            Flatten::Cone { shift, scale } => {
+                let turn = p.y.atan2(p.x);
+                let turn = turn + ((near * scale - turn) / TAU).round() * TAU;
+                Some(Vec2::new(p.len() - shift, turn / scale))
+            }
+            Flatten::Fitted(_) => None,
         }
     }
 

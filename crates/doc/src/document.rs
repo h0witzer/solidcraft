@@ -1277,8 +1277,8 @@ pub enum FeatureKind {
     /// Convert a body to sheet metal through its skin (#6748): every face of a solid, or of one
     /// side of a shell or a plate, less the faces at `skip`. The sharp edges at `bends` become
     /// bends and every other sharp edge between two faces of the sheet is cut open; cylinders
-    /// and cones become rolls. No face is fixed. The body stays as modeled and the model keeps
-    /// its flat pattern.
+    /// and cones become rolls. No face is fixed. The body becomes the folded sheet and the model
+    /// keeps its flat pattern.
     SheetSkinConvert {
         body: BodyName,
         #[serde(default, skip_serializing_if = "Option::is_none")]

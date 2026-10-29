@@ -853,7 +853,7 @@ pub struct ModelState {
     /// Sheet metal bodies (by body name) and their flat patterns.
     pub sheets: Vec<crate::sheet::SheetBody>,
     /// Bodies converted to sheet metal through their skin (#6748): their flat patterns. Such a
-    /// body stays the solid as modelled.
+    /// body is the folded sheet.
     pub skins: Vec<crate::SkinFlat>,
     /// Construction planes, axes and points as evaluated (by feature).
     pub construct: Vec<crate::construct::Construct>,

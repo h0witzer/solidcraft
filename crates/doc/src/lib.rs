@@ -71,6 +71,7 @@ pub mod sheet;
 mod sheet_flat_lineage;
 mod sheet_skin;
 mod sheet_skin_convert;
+mod sheet_skin_fold;
 pub use sheet_skin_convert::{SkinBendLine, SkinConversion, SkinFlat, SkinRule, convert_skin};
 pub mod text_params;
 
