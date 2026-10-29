@@ -21,6 +21,7 @@
 
 mod chart;
 mod develop;
+mod fitted;
 mod rigid;
 mod skin;
 

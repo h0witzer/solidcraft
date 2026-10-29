@@ -5,7 +5,7 @@ use std::f64::consts::PI;
 
 use solidcraft_geom::{Aabb2, Loop2, Region2, Vec2};
 
-use crate::chart::Neutral;
+use crate::chart::Flatten;
 use crate::{Anchor, Bend, Joint, JointKind, Panel, Rigid2, Skin, Surface, Tail};
 
 /// The most panels and joints one development takes: a work limit, never a truncation.
@@ -48,6 +48,10 @@ pub struct Development {
 pub struct FlatPanel {
     pub region: Region2,
     pub origins: Vec<Vec<usize>>,
+    /// The largest strain the flat leaves on the panel's neutral surface: none on a plane, a
+    /// cylinder or a cone; on a free-form panel what its fit could not avoid, which is more than
+    /// a rounding only where the panel is not developable.
+    pub stretch: f64,
 }
 
 /// A bend's zone in the flat frame: its region, its edge on the `a` panel's side (`near`) and on
@@ -163,11 +167,11 @@ pub fn develop(skin: &Skin, root: usize) -> Result<Development, DevelopError> {
     }
     // Every panel on its neutral surface, and the joints' anchors with them: from here on the
     // layout works on planar charts.
-    let maps: Vec<Neutral> = skin
+    let maps: Vec<Flatten> = skin
         .panels
         .iter()
         .enumerate()
-        .map(|(i, p)| Neutral::of(&p.surface, skin).map_err(|e| DevelopError::Panel(i, e)))
+        .map(|(i, p)| Flatten::of(&p.surface, skin).map_err(|e| DevelopError::Panel(i, e)))
         .collect::<Result<_, _>>()?;
     let mut neutral = Skin {
         thickness: skin.thickness,
@@ -189,6 +193,7 @@ pub fn develop(skin: &Skin, root: usize) -> Result<Development, DevelopError> {
         };
         neutral.joints.push(Joint { a: moved(&joint.a)?, b: moved(&joint.b)?, kind: joint.kind.clone() });
     }
+    let stretch: Vec<f64> = maps.iter().map(Flatten::stretch).collect();
     let skin = &neutral;
 
     let mut touching: Vec<Vec<usize>> = vec![Vec::new(); skin.panels.len()];
@@ -233,8 +238,9 @@ pub fn develop(skin: &Skin, root: usize) -> Result<Development, DevelopError> {
         .iter()
         .zip(&placements)
         .zip(origins)
-        .map(|((panel, place), origins)| match place {
-            Some(place) if !panel.region.outer.segs.is_empty() => Some(FlatPanel { region: place.region(&panel.region), origins }),
+        .zip(stretch)
+        .map(|(((panel, place), origins), stretch)| match place {
+            Some(place) if !panel.region.outer.segs.is_empty() => Some(FlatPanel { region: place.region(&panel.region), origins, stretch }),
             _ => None,
         })
         .collect();

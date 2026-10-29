@@ -1,5 +1,8 @@
 //! The skin of a sheet: its panels, each drawn in its own chart, and the joints where they meet.
 
+use std::sync::Arc;
+
+use solidcraft_geom::bspline::NurbsSurface;
 use solidcraft_geom::{Region2, Vec2};
 
 /// One skin of a sheet: the panels and the joints between them. The material lies on the side
@@ -14,10 +17,10 @@ pub struct Skin {
     pub joints: Vec<Joint>,
 }
 
-/// A face of the skin. Its region is drawn in the panel's chart: a map of the skin's surface
-/// onto the plane that keeps lengths and angles, so the region is the panel's own shape on the
-/// skin. An empty region is a panel with no material of its own, which still carries the joints
-/// on it.
+/// A face of the skin. Its region is drawn in its surface's own parameters, so whatever is drawn
+/// on the panel keeps its place on the surface, and the surface's flow (its parameter lines)
+/// carries to the flat exactly. An empty region is a panel with no material of its own, which
+/// still carries the joints on it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Panel {
     pub name: String,
@@ -25,24 +28,28 @@ pub struct Panel {
     pub region: Region2,
 }
 
-/// The surface a panel lies on, and so what its chart is. A curved panel is a roll: its radius
-/// is the panel's own geometry, where a bend's is a value of the joint. It flattens through its
-/// neutral surface, as a bend does, so a roll and a bend of one radius give the same flat.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// The surface a panel lies on, and so what its parameters are. A curved panel is a roll: its
+/// radius is the panel's own geometry, where a bend's is a value of the joint. It flattens
+/// through its neutral surface, as a bend does, so a roll and a bend of one radius give the same
+/// flat. The parameters run so that the material lies on the side their `u x v` points to.
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum Surface {
-    /// A planar panel: its chart is its plane's coordinates.
+    /// A planar panel: its parameters are its plane's coordinates.
     #[default]
     Plane,
-    /// A panel rolled on a cylinder of `radius` (the skin's). The chart's x runs along the axis
-    /// and its y round it, as length on the skin.
+    /// A panel rolled on a cylinder of `radius` (the skin's). Its parameters are length along
+    /// the axis and angle round it (radians).
     Cylinder { radius: f64, material_inward: bool },
-    /// A panel rolled on a cone whose rulings make `half_angle` (radians) with its axis. The
-    /// chart is the skin's development: the apex at the origin, a point at its distance from the
-    /// apex along its ruling.
+    /// A panel rolled on a cone whose rulings make `half_angle` (radians) with its axis. Its
+    /// parameters are distance from the apex along a ruling and angle round the axis (radians).
     Cone { half_angle: f64, material_inward: bool },
+    /// A free-form panel on a spline surface, whose parameters are the surface's own. It
+    /// flattens without stretch where it is developable; any stretch it cannot avoid is
+    /// reported with the flat, never forced.
+    Spline(Arc<NurbsSurface>),
 }
 
-/// Where a joint lies on one of its panels: a straight line in the panel's chart, through
+/// Where a joint lies on one of its panels: a straight line in the panel's parameters, through
 /// `origin` along the unit `dir`. The two anchors of a joint are the same line on the sheet,
 /// with the same origin and direction, and the `a` panel's material lies on the left of it.
 #[derive(Clone, Copy, Debug, PartialEq)]
