@@ -4112,6 +4112,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "solidcraft-develop"
+version = "0.25.1"
+dependencies = [
+ "solidcraft-geom",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "solidcraft-doc"
 version = "0.24.0"
 dependencies = [
@@ -4120,6 +4128,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "solidcraft-derive",
+ "solidcraft-develop",
  "solidcraft-geom",
  "solidcraft-kernel",
  "solidcraft-profile",
