@@ -14,14 +14,32 @@ pub struct Skin {
     pub joints: Vec<Joint>,
 }
 
-/// A face of the skin. Its region is drawn in the panel's chart: a map of the panel's surface
-/// onto the plane that keeps lengths and angles, so the region is the panel's own flat shape.
-/// A planar panel's chart is its plane's coordinates. An empty region is a panel with no
-/// material of its own, which still carries the joints on it.
+/// A face of the skin. Its region is drawn in the panel's chart: a map of the skin's surface
+/// onto the plane that keeps lengths and angles, so the region is the panel's own shape on the
+/// skin. An empty region is a panel with no material of its own, which still carries the joints
+/// on it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Panel {
     pub name: String,
+    pub surface: Surface,
     pub region: Region2,
+}
+
+/// The surface a panel lies on, and so what its chart is. A curved panel is a roll: its radius
+/// is the panel's own geometry, where a bend's is a value of the joint. It flattens through its
+/// neutral surface, as a bend does, so a roll and a bend of one radius give the same flat.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Surface {
+    /// A planar panel: its chart is its plane's coordinates.
+    #[default]
+    Plane,
+    /// A panel rolled on a cylinder of `radius` (the skin's). The chart's x runs along the axis
+    /// and its y round it, as length on the skin.
+    Cylinder { radius: f64, material_inward: bool },
+    /// A panel rolled on a cone whose rulings make `half_angle` (radians) with its axis. The
+    /// chart is the skin's development: the apex at the origin, a point at its distance from the
+    /// apex along its ruling.
+    Cone { half_angle: f64, material_inward: bool },
 }
 
 /// Where a joint lies on one of its panels: a straight line in the panel's chart, through
@@ -46,8 +64,12 @@ pub struct Joint {
 pub enum JointKind {
     /// The sheet runs on from one panel to the other round a bend.
     Bend(Bend),
-    /// The panels are cut apart: the flat pattern lays them out separately.
-    Rip,
+    /// The sheet runs on from one panel into the next with no bend between: where a roll
+    /// meets a flat panel or another roll tangent to it.
+    Seam,
+    /// The panels are cut apart. Each loses `cut` (mm, `(a, b)`) from its edge along the
+    /// joint, and the flat pattern lays them out apart unless other joints hold them together.
+    Rip { cut: (f64, f64) },
 }
 
 /// A bend between two panels.
