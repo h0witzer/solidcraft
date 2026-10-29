@@ -32,12 +32,12 @@ pub struct Development {
     /// The pieces of the flat pattern: the panels that bends and seams hold together. The root's
     /// piece is first and keeps the flat frame; the others are laid beside it, left to right.
     pub pieces: Vec<Vec<usize>>,
-    /// Each bend's zone in the flat frame, with its joint's index.
-    pub zones: Vec<(usize, Region2)>,
-    /// What to take out of each panel before the pieces are joined, with the panel's index: its
-    /// material between its tangent line and a bend's anchor, along the zone and, where its
-    /// tail is trimmed, beyond it; and what a rip cuts from its edge.
-    pub trims: Vec<(usize, Region2)>,
+    /// Each bend's zone in the flat frame.
+    pub zones: Vec<Zone>,
+    /// What to take out of each panel before the pieces are joined: its material between its
+    /// tangent line and a bend's anchor, along the zone and, where its tail is trimmed, beyond
+    /// it; and what a rip cuts from its edge.
+    pub trims: Vec<Trim>,
     /// Bends and seams that close a loop, where the layout reached both panels another way.
     pub loops: Vec<Mismatch>,
 }
@@ -48,6 +48,27 @@ pub struct Development {
 pub struct FlatPanel {
     pub region: Region2,
     pub origins: Vec<Vec<usize>>,
+}
+
+/// A bend's zone in the flat frame: its region, its edge on the `a` panel's side (`near`) and on
+/// the `b` panel's side (`far`), each from the end at the anchors' origin to the other. Its
+/// ends join `near[k]` to `far[k]`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Zone {
+    pub joint: usize,
+    pub region: Region2,
+    pub near: [Vec2; 2],
+    pub far: [Vec2; 2],
+}
+
+/// What a joint takes from a panel: the region to cut, and the line along which the panel's
+/// material ends once it is cut (its tangent line at a bend, its cut edge at a rip).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Trim {
+    pub panel: usize,
+    pub joint: usize,
+    pub region: Region2,
+    pub line: [Vec2; 2],
 }
 
 /// How far a joint that closes a loop is from fitting: laid out through the rest of the loop,
@@ -233,7 +254,7 @@ pub fn develop(skin: &Skin, root: usize) -> Result<Development, DevelopError> {
         match &joint.kind {
             JointKind::Bend(bend) => add_zone(&mut out, skin, j, joint, bend, &frame, (&a, &b))?,
             JointKind::Seam => {}
-            JointKind::Rip { cut } => add_rip(&mut out, skin, joint, *cut, (&a, &b))?,
+            JointKind::Rip { cut } => add_rip(&mut out, skin, j, joint, *cut, (&a, &b))?,
         }
     }
     Ok(out)
@@ -333,7 +354,7 @@ fn check_joint(skin: &Skin, j: usize, joint: &Joint) -> Result<(), DevelopError>
 
 /// What a rip cuts from each panel: a band along its edge, as deep as that side's cut, laid
 /// out with the panel wherever its piece put it.
-fn add_rip(out: &mut Development, skin: &Skin, joint: &Joint, cut: (f64, f64), placed: (&Rigid2, &Rigid2)) -> Result<(), DevelopError> {
+fn add_rip(out: &mut Development, skin: &Skin, j: usize, joint: &Joint, cut: (f64, f64), placed: (&Rigid2, &Rigid2)) -> Result<(), DevelopError> {
     for (anchor, place, depth, into) in [(&joint.a, placed.0, cut.0, -1.0), (&joint.b, placed.1, cut.1, 1.0)] {
         if !(depth > 0.0) {
             continue;
@@ -342,7 +363,8 @@ fn add_rip(out: &mut Development, skin: &Skin, joint: &Joint, cut: (f64, f64), p
         let (o, across) = (place.point(anchor.origin), right_of(along) * into);
         let reach = panel_reach(skin, anchor.panel)?;
         let corners = [o - along * reach, o + along * reach, o + along * reach + across * depth, o - along * reach + across * depth];
-        out.trims.push((anchor.panel, Region2 { outer: Loop2::polygon(&corners).ccw(), holes: Vec::new() }));
+        let region = Region2 { outer: Loop2::polygon(&corners).ccw(), holes: Vec::new() };
+        out.trims.push(Trim { panel: anchor.panel, joint: j, region, line: [corners[3], corners[2]] });
     }
     Ok(())
 }
@@ -364,8 +386,9 @@ fn add_zone(
     let (near_line, far_line) = (-setback, width - setback);
     let (near, far) = (bend.ends.near, bend.ends.far);
     if width > 0.0 && (near.1 > near.0 || far.1 > far.0) {
-        let corners = [frame.at(near.0, near_line), frame.at(near.1, near_line), frame.at(far.1, far_line), frame.at(far.0, far_line)];
-        out.zones.push((j, Region2 { outer: Loop2::polygon(&corners).ccw(), holes: Vec::new() }));
+        let (n0, n1, f0, f1) = (frame.at(near.0, near_line), frame.at(near.1, near_line), frame.at(far.0, far_line), frame.at(far.1, far_line));
+        let region = Region2 { outer: Loop2::polygon(&[n0, n1, f1, f0]).ccw(), holes: Vec::new() };
+        out.zones.push(Zone { joint: j, region, near: [n0, n1], far: [f0, f1] });
     }
     // A panel's band runs from its tangent line across its anchor, and a thickness past it so
     // that an edge lying on the anchor leaves no sliver.
@@ -387,7 +410,8 @@ fn add_zone(
         };
         if s1 > s0 {
             let corners = [frame.at(s0, line), frame.at(s1, line), frame.at(s1, line + depth), frame.at(s0, line + depth)];
-            out.trims.push((panel, Region2 { outer: Loop2::polygon(&corners).ccw(), holes: Vec::new() }));
+            let region = Region2 { outer: Loop2::polygon(&corners).ccw(), holes: Vec::new() };
+            out.trims.push(Trim { panel, joint: j, region, line: [corners[0], corners[1]] });
         }
     }
     Ok(())

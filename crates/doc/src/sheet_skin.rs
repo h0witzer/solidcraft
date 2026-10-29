@@ -4,11 +4,12 @@
 //! `SOLIDCRAFT_SKIN_REPORT` to a file makes every sheet body that is built append one line to it,
 //! naming the thread (a test's name under `cargo test`) and how far the two flats differ.
 
-use solidcraft_develop::{Anchor, Bend, Datum, Joint, JointKind, Panel, Rigid2, Skin, Tail, ZoneEnds, develop};
+use solidcraft_develop::{Anchor, Bend, Datum, Development, Joint, JointKind, Panel, Rigid2, Skin, Tail, ZoneEnds, develop};
 use solidcraft_geom::{Loop2, Region2, Seg2, Vec2};
 use solidcraft_kernel::BoolOp;
 
 use crate::sheet::{FlatWork, SheetBody, SheetFlange, material_boolean, material_union};
+use crate::sheet_flat_lineage::{self, Resolution};
 use crate::{DocError, Result};
 
 /// Bends closer to a half turn than this (radians) have no usable sharp: they are anchored at
@@ -170,31 +171,34 @@ fn sheet_flat(sh: &SheetBody, work: &mut FlatWork) -> Result<Vec<Region2>> {
     material_union(pieces, work)
 }
 
-/// The skin's flat: each placed panel less its trims, and the zones.
-fn skin_flat(skin: &Skin, work: &mut FlatWork) -> Result<(Vec<Region2>, usize)> {
+/// The skin's flat: each placed panel less its trims, and the zones; with the development it
+/// was joined from.
+fn skin_flat(skin: &Skin, work: &mut FlatWork) -> Result<(Vec<Region2>, Development)> {
     let dev = develop(skin, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
     let mut pieces = Vec::new();
     for (i, flat) in dev.panels.iter().enumerate() {
         let Some(flat) = flat else { continue };
         let placed = on_grid(&flat.region);
-        let trims: Vec<Region2> = dev.trims.iter().filter(|(p, _)| *p == i).map(|(_, r)| on_grid(r)).collect();
+        let trims: Vec<Region2> = dev.trims.iter().filter(|t| t.panel == i).map(|t| on_grid(&t.region)).collect();
         if trims.is_empty() {
             pieces.push(placed);
         } else {
-            // Trims of two bends can share an edge and a corner with the panel, which the
-            // planar booleans take apart only one tool at a time: join them first.
+            // Until the kernel's planar booleans take several tools that share an edge (#6748):
+            // trims of two bends can share an edge and a corner with the panel, which the
+            // planar booleans take apart only one tool at a time, so join them first.
             let trims = stage(&format!("joining panel {i}'s trims"), material_union(trims, work))?;
             pieces.extend(stage(&format!("trimming panel {i}"), material_boolean(&[placed], &trims, BoolOp::Cut, work))?);
         }
     }
-    pieces.extend(dev.zones.iter().map(|(_, z)| on_grid(z)));
-    Ok((stage("joining the skin's pieces", material_union(pieces, work))?, dev.loops.len()))
+    pieces.extend(dev.zones.iter().map(|z| on_grid(&z.region)));
+    Ok((stage("joining the skin's pieces", material_union(pieces, work))?, dev))
 }
 
 /// A region with its points on the sheet's nanometre grid, as the sheet model rounds its
-/// corners. The development is exact, but a corner it reaches by another sum than the sheet
-/// model does can land a rounding from the sheet's; the planar booleans take two edges that
-/// nearly coincide for two, where on the grid they coincide.
+/// corners. Until the kernel's planar booleans weld edges that nearly coincide (#6748): the
+/// development is exact, but a corner it reaches by another sum than the sheet model does can
+/// land a rounding from the sheet's, and the planar booleans take two edges that nearly
+/// coincide for two, where on the grid they coincide.
 fn on_grid(r: &Region2) -> Region2 {
     let g = |v: Vec2| Vec2::new((v.x * 1e9).round() / 1e9, (v.y * 1e9).round() / 1e9);
     let seg = |s: &Seg2| match *s {
@@ -218,22 +222,32 @@ fn stage<T>(what: &str, r: Result<T>) -> Result<T> {
     r.map_err(|e| DocError::Invalid(format!("{what}: {e}")))
 }
 
-/// How far the skin's flat is from the sheet's: the area between them over the length of the
-/// sheet's outline (mm).
-pub(crate) fn round_trip(sh: &SheetBody) -> Result<(f64, usize)> {
-    apart(sh, &stage("building the skin", skin_of(sh))?)
+/// A sheet's flat laid out again from its skin.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct RoundTrip {
+    /// How far the skin's flat is from the sheet's: the area between them over the length of
+    /// the sheet's outline (mm).
+    pub apart: f64,
+    /// How many joints close loops.
+    pub loops: usize,
+    /// How the skin's flat edges resolve to the skin.
+    pub edges: Resolution,
 }
 
-/// How far a skin's flat is from the sheet's, and how many of its bends close loops.
-fn apart(sh: &SheetBody, skin: &Skin) -> Result<(f64, usize)> {
+pub(crate) fn round_trip(sh: &SheetBody) -> Result<RoundTrip> {
+    compare(sh, &stage("building the skin", skin_of(sh))?)
+}
+
+fn compare(sh: &SheetBody, skin: &Skin) -> Result<RoundTrip> {
     let mut work = FlatWork::new();
     let mine = stage("joining the sheet's pieces", sheet_flat(sh, &mut work))?;
-    let (theirs, loops) = skin_flat(skin, &mut work)?;
+    let (theirs, dev) = skin_flat(skin, &mut work)?;
     let area = |rs: &[Region2]| rs.iter().map(Region2::area).sum::<f64>();
     let apart = area(&stage("comparing", material_boolean(&mine, &theirs, BoolOp::Cut, &mut work))?)
         + area(&stage("comparing", material_boolean(&theirs, &mine, BoolOp::Cut, &mut work))?);
     let outline: f64 = mine.iter().flat_map(|r| std::iter::once(&r.outer).chain(&r.holes)).flat_map(|l| &l.segs).map(|s| s.length()).sum();
-    Ok((apart / outline.max(1e-9), loops))
+    let edges = sheet_flat_lineage::resolve(&theirs, &sheet_flat_lineage::sources(&dev));
+    Ok(RoundTrip { apart: apart / outline.max(1e-9), loops: dev.loops.len(), edges })
 }
 
 /// Appends this sheet's round trip to the file `SOLIDCRAFT_SKIN_REPORT` names, when it is set.
@@ -265,7 +279,11 @@ pub(crate) fn report(sh: &SheetBody) {
             .collect::<Vec<_>>()
             .join(",");
         let result = match round_trip(sh) {
-            Ok((apart, loops)) => format!("{}\t{apart:.3e}\t{loops}", if apart <= SAME_FLAT { "same" } else { "differs" }),
+            Ok(rt) => {
+                let e = rt.edges;
+                let same = if rt.apart <= SAME_FLAT { "same" } else { "differs" };
+                format!("{same}\t{:.3e}\t{}\t{}\t{}\t{}\t{}", rt.apart, rt.loops, e.exact, e.merged, e.pieces, e.geometry_only)
+            }
             Err(e) => format!("error\t{}", e.to_string().replace(['\t', '\n'], " ")),
         };
         let thread = std::thread::current().name().unwrap_or("main").to_string();
@@ -309,9 +327,15 @@ mod tests {
 
     const EDGES: [Vec3; 4] = [Vec3::new(50.0, 0.0, T), Vec3::new(100.0, 30.0, T), Vec3::new(50.0, 60.0, T), Vec3::new(0.0, 30.0, T)];
 
+    /// The skin's flat is the sheet's, closes no loop, and every edge of it is something in the
+    /// skin.
     fn same(sh: &SheetBody) {
-        let (apart, loops) = round_trip(sh).unwrap_or((f64::INFINITY, 0));
-        assert!(apart <= SAME_FLAT && loops == 0, "the skin's flat is {apart:e} mm from the sheet's ({loops} loops)");
+        let rt = match round_trip(sh) {
+            Ok(rt) => rt,
+            Err(e) => panic!("{e}"),
+        };
+        assert!(rt.apart <= SAME_FLAT && rt.loops == 0, "the skin's flat is {:e} mm from the sheet's ({} loops)", rt.apart, rt.loops);
+        assert!(rt.edges.geometry_only == 0 && rt.edges.exact > 0, "{:?}", rt.edges);
     }
 
     #[test]
@@ -365,7 +389,7 @@ mod tests {
         assert!(sh.add_flange(Vec3::new(50.0, 0.0, T), 20.0, FRAC_PI_2, R, "inside", false).is_ok());
         let Ok(mut skin) = super::skin_of(&sh) else { panic!("a skin") };
         skin.k_factor += 0.1;
-        let (apart, _) = super::apart(&sh, &skin).unwrap_or((0.0, 0));
+        let apart = super::compare(&sh, &skin).map_or(0.0, |rt| rt.apart);
         // The flange and its far edge shift 0.1 pi mm: 100 mm long, over a 2 x (100 + 80.something)
         // outline, a fraction of that on average.
         assert!(apart > 0.01, "{apart}");

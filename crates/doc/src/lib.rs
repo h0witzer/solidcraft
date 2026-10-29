@@ -68,6 +68,7 @@ pub mod render_resources;
 pub mod render_settings;
 pub mod render_surface;
 pub mod sheet;
+mod sheet_flat_lineage;
 mod sheet_skin;
 pub mod text_params;
 pub mod thread_forms;

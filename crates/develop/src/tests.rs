@@ -89,16 +89,17 @@ fn an_l_bracket_lays_out_with_its_bend_deduction() {
     // The whole flat: 60 + 20 less the deduction.
     assert!(((60.0 - b.min.y) - (80.0 - (8.0 - ba))).abs() < 1e-9);
     // The zone runs from the base's tangent line, 4 into the base, BA toward the flange.
-    let [(0, zone)] = dev.zones.as_slice() else { panic!("one zone: {dev:?}") };
-    let z = bounds(zone);
-    assert!((z.max.y - 4.0).abs() < 1e-9 && (z.min.y - (4.0 - ba)).abs() < 1e-9 && (zone.area() - 100.0 * ba).abs() < 1e-9, "{z:?}");
+    let [zone] = dev.zones.as_slice() else { panic!("one zone: {dev:?}") };
+    assert_eq!(zone.joint, 0);
+    let z = bounds(&zone.region);
+    assert!((z.max.y - 4.0).abs() < 1e-9 && (z.min.y - (4.0 - ba)).abs() < 1e-9 && (zone.region.area() - 100.0 * ba).abs() < 1e-9, "{z:?}");
     // The base loses what lies between its tangent line and the sharp along the zone, and keeps
     // its tail; the flange loses its own along the zone and past both ends.
-    let base: Vec<&Region2> = dev.trims.iter().filter(|(p, _)| *p == 0).map(|(_, r)| r).collect();
+    let base: Vec<&Region2> = dev.trims.iter().filter(|t| t.panel == 0).map(|t| &t.region).collect();
     let [band] = base.as_slice() else { panic!("one trim of the base: {:?}", dev.trims) };
     let bb = bounds(band);
     assert!((bb.max.y - 4.0).abs() < 1e-9 && bb.min.y < 0.0, "{bb:?}");
-    let flange: Vec<&Region2> = dev.trims.iter().filter(|(p, _)| *p == 1).map(|(_, r)| r).collect();
+    let flange: Vec<&Region2> = dev.trims.iter().filter(|t| t.panel == 1).map(|t| &t.region).collect();
     let [band] = flange.as_slice() else { panic!("one trim of the flange: {:?}", dev.trims) };
     let fb = bounds(band);
     assert!(fb.min.x < 0.0 && fb.max.x > 100.0 && (fb.min.y - (4.0 - ba)).abs() < 1e-9, "{fb:?}");
@@ -140,8 +141,8 @@ fn a_torn_end_slants_the_zone() {
     b.ends.far = (0.0, 95.0);
     let dev = develop(&bracket(b), 0).unwrap_or_default();
     let ba = FRAC_PI_2 * (R + K * T);
-    let [(_, zone)] = dev.zones.as_slice() else { panic!() };
-    assert!((zone.area() - ba * (90.0 + 95.0) / 2.0).abs() < 1e-9, "{}", zone.area());
+    let [zone] = dev.zones.as_slice() else { panic!() };
+    assert!((zone.region.area() - ba * (90.0 + 95.0) / 2.0).abs() < 1e-9, "{}", zone.region.area());
 }
 
 /// Four walls of a square tube joined by four bends close a ring: the layout follows three of
@@ -184,8 +185,9 @@ fn a_rip_lays_its_panels_out_apart_and_bad_joints_are_refused() {
     let fb = bounds(&flange.region);
     assert!((fb.min.x - 120.0).abs() < 1e-9 && fb.min.y.abs() < 1e-9, "{fb:?}");
     // The base loses 0.5 along the rip, into its material above y = 0.
-    let [(0, base), (1, _)] = dev.trims.as_slice() else { panic!("a trim of each: {:?}", dev.trims) };
-    let bb = bounds(base);
+    let [base, flange] = dev.trims.as_slice() else { panic!("a trim of each: {:?}", dev.trims) };
+    assert!(base.panel == 0 && flange.panel == 1 && (base.line[0].y - 0.5).abs() < 1e-9);
+    let bb = bounds(&base.region);
     assert!(bb.min.y.abs() < 1e-9 && (bb.max.y - 0.5).abs() < 1e-9, "{bb:?}");
     assert_eq!(develop(&skin, 5), Err(DevelopError::NoPanel(5)));
     if let Some(j) = skin.joints.get_mut(0) {
