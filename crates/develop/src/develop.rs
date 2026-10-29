@@ -1,0 +1,288 @@
+//! Laying a skin's panels out in one flat frame through its bends.
+
+use std::collections::VecDeque;
+use std::f64::consts::PI;
+
+use solidcraft_geom::{Loop2, Region2, Vec2};
+
+use crate::{Bend, Joint, JointKind, Rigid2, Skin, Tail};
+
+/// The most panels and joints one development takes: a work limit, never a truncation.
+const MAX_PANELS: usize = 10_000;
+const MAX_JOINTS: usize = 20_000;
+
+/// How far from a unit vector an anchor's direction may be.
+const UNIT_TOL: f64 = 1e-9;
+
+/// Points closer than this (mm) along a polyline are one point when a panel's reach is measured.
+const REACH_TOL: f64 = 1e-3;
+
+/// A panel's edge this close (mm) to a bend zone's end ends with it.
+const EDGE_TOL: f64 = 1e-6;
+
+/// A skin laid out flat.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Development {
+    /// Where each panel's chart lies in the flat frame (chart to flat), or `None` for a panel
+    /// that no chain of bends reaches from the root.
+    pub placements: Vec<Option<Rigid2>>,
+    /// Each bend's zone in the flat frame, with its joint's index.
+    pub zones: Vec<(usize, Region2)>,
+    /// What to take out of each panel before the pieces are joined, with the panel's index:
+    /// its material between its tangent line and its anchor, along the zone, and beyond the
+    /// zone's ends where its tail is trimmed.
+    pub trims: Vec<(usize, Region2)>,
+    /// Bends that close a loop, where the layout reached both panels by other bends first.
+    pub loops: Vec<Mismatch>,
+}
+
+/// How far a bend that closes a loop is from fitting: laid out through the rest of the loop,
+/// its second panel lands `distance` (mm) and `angle` (radians) from where the bend itself
+/// would put it. A ring of bends never fits; it needs a rip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Mismatch {
+    pub joint: usize,
+    pub distance: f64,
+    pub angle: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+pub enum DevelopError {
+    #[error("the skin has no panel {0}")]
+    NoPanel(usize),
+    #[error("joint {0}: {1}")]
+    Joint(usize, &'static str),
+    #[error("the skin exceeds the development's work limit")]
+    TooLarge,
+}
+
+/// A bend's frame in the flat: where its `a` anchor lies, the joint's direction, and the
+/// direction from the `a` panel toward the `b` panel.
+struct BendFrame {
+    origin: Vec2,
+    along: Vec2,
+    toward_b: Vec2,
+}
+
+impl BendFrame {
+    fn from_a(joint: &Joint, a: &Rigid2) -> Option<BendFrame> {
+        let along = a.vector(joint.a.dir).normalized()?;
+        Some(BendFrame { origin: a.point(joint.a.origin), along, toward_b: right_of(along) })
+    }
+
+    /// The frame seen from the `b` panel, whose anchor lies `offset` from the `a` one.
+    fn from_b(joint: &Joint, b: &Rigid2, offset: f64) -> Option<BendFrame> {
+        let along = b.vector(joint.b.dir).normalized()?;
+        let toward_b = right_of(along);
+        Some(BendFrame { origin: b.point(joint.b.origin) - toward_b * offset, along, toward_b })
+    }
+
+    fn place_b(&self, joint: &Joint, offset: f64) -> Option<Rigid2> {
+        Rigid2::onto(joint.b.origin, joint.b.dir, self.origin + self.toward_b * offset, self.along)
+    }
+
+    fn place_a(&self, joint: &Joint) -> Option<Rigid2> {
+        Rigid2::onto(joint.a.origin, joint.a.dir, self.origin, self.along)
+    }
+
+    fn at(&self, along: f64, across: f64) -> Vec2 {
+        self.origin + self.along * along + self.toward_b * across
+    }
+}
+
+/// Rotated -90 degrees: with a panel's material on the left of an anchor, the other panel's
+/// side.
+fn right_of(v: Vec2) -> Vec2 {
+    Vec2::new(v.y, -v.x)
+}
+
+/// How far the `b` anchor lies from the `a` one in the flat, toward the `b` panel: the zone's
+/// width, less each panel's setback from its tangent line to its anchor.
+fn anchor_offset(bend: &Bend, skin: &Skin) -> f64 {
+    bend.allowance(skin.thickness, skin.k_factor) - 2.0 * bend.setback(skin.thickness)
+}
+
+/// Lays the skin out flat: the `root` panel's chart is the flat frame, and every panel a chain
+/// of bends reaches from it is turned and shifted so that each bend's zone fits between its
+/// two panels. Rips are not followed. A bend that closes a loop is laid out once, through the
+/// rest of the loop, and reported in [`Development::loops`].
+pub fn develop(skin: &Skin, root: usize) -> Result<Development, DevelopError> {
+    if skin.panels.len() > MAX_PANELS || skin.joints.len() > MAX_JOINTS {
+        return Err(DevelopError::TooLarge);
+    }
+    if root >= skin.panels.len() {
+        return Err(DevelopError::NoPanel(root));
+    }
+    let mut touching: Vec<Vec<usize>> = vec![Vec::new(); skin.panels.len()];
+    for (j, joint) in skin.joints.iter().enumerate() {
+        check_joint(skin, j, joint)?;
+        if let JointKind::Bend(_) = joint.kind {
+            for p in [joint.a.panel, joint.b.panel] {
+                touching.get_mut(p).ok_or(DevelopError::NoPanel(p))?.push(j);
+            }
+        }
+    }
+
+    let mut placements: Vec<Option<Rigid2>> = vec![None; skin.panels.len()];
+    if let Some(p) = placements.get_mut(root) {
+        *p = Some(Rigid2::IDENTITY);
+    }
+    let mut followed = vec![false; skin.joints.len()];
+    let mut queue = VecDeque::from([root]);
+    while let Some(panel) = queue.pop_front() {
+        let Some(at) = placements.get(panel).copied().flatten() else { continue };
+        for &j in touching.get(panel).map(Vec::as_slice).unwrap_or_default() {
+            let (Some(joint), Some(false)) = (skin.joints.get(j), followed.get(j).copied()) else { continue };
+            let JointKind::Bend(bend) = &joint.kind else { continue };
+            let offset = anchor_offset(bend, skin);
+            let (other, placed) = if joint.a.panel == panel {
+                (joint.b.panel, BendFrame::from_a(joint, &at).and_then(|f| f.place_b(joint, offset)))
+            } else {
+                (joint.a.panel, BendFrame::from_b(joint, &at, offset).and_then(|f| f.place_a(joint)))
+            };
+            if placements.get(other).copied().flatten().is_some() {
+                continue;
+            }
+            let placed = placed.ok_or(DevelopError::Joint(j, "an anchor has no direction"))?;
+            if let Some(slot) = placements.get_mut(other) {
+                *slot = Some(placed);
+            }
+            if let Some(f) = followed.get_mut(j) {
+                *f = true;
+            }
+            queue.push_back(other);
+        }
+    }
+
+    let mut out = Development { placements, ..Development::default() };
+    for (j, joint) in skin.joints.iter().enumerate() {
+        let JointKind::Bend(bend) = &joint.kind else { continue };
+        let (Some(a), Some(b)) = (out.placements.get(joint.a.panel).copied().flatten(), out.placements.get(joint.b.panel).copied().flatten()) else {
+            continue;
+        };
+        let offset = anchor_offset(bend, skin);
+        let frame = BendFrame::from_a(joint, &a).ok_or(DevelopError::Joint(j, "an anchor has no direction"))?;
+        if !followed.get(j).copied().unwrap_or(false)
+            && let Some(fits) = frame.place_b(joint, offset)
+        {
+            let distance = b.point(joint.b.origin).dist(fits.point(joint.b.origin));
+            out.loops.push(Mismatch { joint: j, distance, angle: fits.inverse().then(&b).angle().abs() });
+        }
+        add_zone(&mut out, skin, j, joint, bend, &frame, (&a, &b))?;
+    }
+    Ok(out)
+}
+
+fn check_joint(skin: &Skin, j: usize, joint: &Joint) -> Result<(), DevelopError> {
+    for anchor in [&joint.a, &joint.b] {
+        if anchor.panel >= skin.panels.len() {
+            return Err(DevelopError::NoPanel(anchor.panel));
+        }
+        if !anchor.origin.is_finite() || !((anchor.dir.len() - 1.0).abs() <= UNIT_TOL) {
+            return Err(DevelopError::Joint(j, "an anchor's direction is not a unit vector"));
+        }
+    }
+    if joint.a.panel == joint.b.panel {
+        return Err(DevelopError::Joint(j, "both anchors are on one panel"));
+    }
+    if let JointKind::Bend(bend) = &joint.kind {
+        if !(bend.angle > 0.0 && bend.angle <= PI) || !(bend.radius >= 0.0) || !bend.radius.is_finite() {
+            return Err(DevelopError::Joint(j, "a bend turns more than 0 and at most a half turn, round a radius of 0 or more"));
+        }
+        if bend.datum == crate::Datum::Sharp && !(bend.setback(skin.thickness).is_finite() && bend.angle < PI) {
+            return Err(DevelopError::Joint(j, "a half turn has no virtual sharp: anchor it at its tangent lines"));
+        }
+        let (near, far) = (bend.ends.near, bend.ends.far);
+        if ![near.0, near.1, far.0, far.1].iter().all(|v| v.is_finite()) {
+            return Err(DevelopError::Joint(j, "the zone's ends are not numbers"));
+        }
+    }
+    Ok(())
+}
+
+/// The bend's zone, and what each panel loses to it.
+fn add_zone(
+    out: &mut Development,
+    skin: &Skin,
+    j: usize,
+    joint: &Joint,
+    bend: &Bend,
+    frame: &BendFrame,
+    placed: (&Rigid2, &Rigid2),
+) -> Result<(), DevelopError> {
+    let width = bend.allowance(skin.thickness, skin.k_factor);
+    let setback = bend.setback(skin.thickness);
+    // Across the joint, from the `a` anchor: the `a` panel's tangent line, then the zone, then
+    // the `b` panel's tangent line.
+    let (near_line, far_line) = (-setback, width - setback);
+    let (near, far) = (bend.ends.near, bend.ends.far);
+    if width > 0.0 && (near.1 > near.0 || far.1 > far.0) {
+        let corners = [frame.at(near.0, near_line), frame.at(near.1, near_line), frame.at(far.1, far_line), frame.at(far.0, far_line)];
+        out.zones.push((j, Region2 { outer: Loop2::polygon(&corners).ccw(), holes: Vec::new() }));
+    }
+    // A panel's band runs from its tangent line across its anchor, and a thickness past it so
+    // that an edge lying on the anchor leaves no sliver.
+    let depth = setback + skin.thickness.max(REACH_TOL);
+    let bands = [(joint.a.panel, placed.0, near, near_line, depth, bend.tails.0), (joint.b.panel, placed.1, far, far_line, -depth, bend.tails.1)];
+    for (panel, place, (u0, u1), line, depth, tail) in bands {
+        // The band's ends run on past the panel wherever nothing of the panel lies beyond them
+        // in the band: always for a trimmed tail, which goes the same way, and for a kept one
+        // where the panel ends with the zone. Either way the cut is the same, and an end left
+        // on the panel's own edge would be a rounding away from it, for the planar booleans to
+        // trip on.
+        let reach = panel_reach(skin, panel)?;
+        let (s0, s1) = match tail {
+            Tail::Trim => (u0.min(u1) - reach, u0.max(u1) + reach),
+            Tail::Keep => match band_extent(skin, panel, place, frame, line, depth)? {
+                None => continue,
+                Some((lo, hi)) => (if lo >= u0 - EDGE_TOL { u0 - reach } else { u0 }, if hi <= u1 + EDGE_TOL { u1 + reach } else { u1 }),
+            },
+        };
+        if s1 > s0 {
+            let corners = [frame.at(s0, line), frame.at(s1, line), frame.at(s1, line + depth), frame.at(s0, line + depth)];
+            out.trims.push((panel, Region2 { outer: Loop2::polygon(&corners).ccw(), holes: Vec::new() }));
+        }
+    }
+    Ok(())
+}
+
+/// Where along a bend a panel's outline lies inside the band from `line` to `line + depth`
+/// across it, in the flat: the least and greatest lengths along the bend, or `None` when none
+/// of it does.
+fn band_extent(skin: &Skin, panel: usize, place: &Rigid2, frame: &BendFrame, line: f64, depth: f64) -> Result<Option<(f64, f64)>, DevelopError> {
+    let region = &skin.panels.get(panel).ok_or(DevelopError::NoPanel(panel))?.region;
+    let (lo, hi) = (line.min(line + depth) - EDGE_TOL, line.max(line + depth) + EDGE_TOL);
+    let pts: Vec<(f64, f64)> = (&region.outer.polyline(REACH_TOL))
+        .into_iter()
+        .map(|q| {
+            let p = place.point(*q) - frame.origin;
+            (p.dot(frame.along), p.dot(frame.toward_b))
+        })
+        .collect();
+    let mut extent: Option<(f64, f64)> = None;
+    let mut take = |u: f64| extent = Some(extent.map_or((u, u), |(a, b)| (a.min(u), b.max(u))));
+    // Each edge of the outline, clipped to the band.
+    for (k, &(u_a, v_a)) in pts.iter().enumerate() {
+        let Some(&(u_b, v_b)) = pts.get((k + 1) % pts.len()) else { continue };
+        let at = |v: f64| if (v_b - v_a).abs() > 1e-15 { u_a + (u_b - u_a) * (v - v_a) / (v_b - v_a) } else { u_a };
+        let (t0, t1) = (v_a.min(v_b).max(lo), v_a.max(v_b).min(hi));
+        if t0 <= t1 {
+            take(at(t0));
+            take(at(t1));
+            if (lo..=hi).contains(&v_a) {
+                take(u_a);
+            }
+        }
+    }
+    Ok(extent)
+}
+
+/// How far a panel's material reaches: the diagonal of its region's bounding box, which bounds
+/// how far along a joint a trimmed tail must go.
+fn panel_reach(skin: &Skin, panel: usize) -> Result<f64, DevelopError> {
+    let region = &skin.panels.get(panel).ok_or(DevelopError::NoPanel(panel))?.region;
+    if region.outer.segs.is_empty() {
+        return Ok(0.0);
+    }
+    Ok(region.outer.polyline(REACH_TOL).bounds().size().len())
+}
