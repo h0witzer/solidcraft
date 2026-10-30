@@ -6,7 +6,7 @@ use std::f64::consts::{FRAC_PI_2, PI, SQRT_2};
 
 use solidcraft_doc::sheet::ReliefShape;
 use solidcraft_doc::{SkinConversion, SkinRule, convert_skin};
-use solidcraft_geom::{Aabb3, Region2, Vec3};
+use solidcraft_geom::{Aabb3, Region2, Seg2, Vec3};
 
 use super::*;
 
@@ -35,7 +35,8 @@ fn area(c: &SkinConversion) -> f64 {
 }
 
 /// A volume finely enough meshed to tell sheets apart that differ by more than a few parts in a
-/// million.
+/// million. Until the kernel measures a body exactly (#1597): measured on a tessellation, whose
+/// facets fall as each solid's faces happen to be split.
 fn fine_volume(b: &solidcraft_kernel::Body) -> f64 {
     b.volume_at(1e-5).unwrap_or(f64::NAN)
 }
@@ -465,4 +466,133 @@ fn an_icosahedron_bends_whole_edges_to_its_corners() {
     assert_eq!((c.skin.panels.len(), c.development.zones.len(), c.skin.corners.len()), (20, 19, 10));
     let (v, _) = folded(&c);
     assert!(v.is_finite() && v > 0.0, "{v}");
+}
+
+/// A tombstone as a solid: a plate `r` either side of x = 0 from `y0` up to y = 23, topped by a
+/// half round of radius `r` about (0, 23), standing from `z0` to `z1`.
+fn tombstone_body(name: &str, r: f64, y0: f64, z0: f64, z1: f64) -> solidcraft_doc::ModelBody {
+    use solidcraft_kernel::{EdgeSpec, FaceSpec, SurfSpec};
+    let at = |x: f64, y: f64, z: f64| Vec3::new(x, y, z);
+    // The outline counter-clockwise from above: the bottom, the right side, the half round, the
+    // left side.
+    let outline = |z: f64| {
+        vec![
+            EdgeSpec::Line { a: at(-r, y0, z), b: at(r, y0, z) },
+            EdgeSpec::Line { a: at(r, y0, z), b: at(r, 23.0, z) },
+            EdgeSpec::Arc { a: at(r, 23.0, z), b: at(-r, 23.0, z), mid: at(0.0, 23.0 + r, z) },
+            EdgeSpec::Line { a: at(-r, 23.0, z), b: at(-r, y0, z) },
+        ]
+    };
+    let (bottom, top) = (outline(z0), outline(z1));
+    let mut faces = vec![
+        FaceSpec { loops: vec![top.clone()], surface: SurfSpec::Plane, probe: None },
+        FaceSpec { loops: vec![bottom.iter().rev().map(EdgeSpec::reversed).collect()], surface: SurfSpec::Plane, probe: None },
+    ];
+    for (low, high) in bottom.iter().zip(&top) {
+        let ((a, b), (c, d)) = (ends(low), ends(high));
+        let surface = match low {
+            EdgeSpec::Arc { a, b, mid } => SurfSpec::Extruded { a: *a, b: *b, mid: *mid, dir: Vec3::new(0.0, 0.0, z1 - z0) },
+            _ => SurfSpec::Plane,
+        };
+        let probe = matches!(low, EdgeSpec::Arc { .. }).then(|| (at(0.0, 23.0 + r, (z0 + z1) / 2.0), Vec3::Y));
+        faces.push(FaceSpec {
+            loops: vec![vec![low.clone(), EdgeSpec::Line { a: b, b: d }, high.reversed(), EdgeSpec::Line { a: c, b: a }]],
+            surface,
+            probe,
+        });
+    }
+    let body = solidcraft_kernel::sew(&faces).unwrap_or_else(|e| panic!("{e}"));
+    solidcraft_doc::ModelBody::new(name.into(), body, 0)
+}
+
+fn ends(e: &solidcraft_kernel::EdgeSpec) -> (Vec3, Vec3) {
+    match e {
+        solidcraft_kernel::EdgeSpec::Line { a, b } | solidcraft_kernel::EdgeSpec::Arc { a, b, .. } => (*a, *b),
+        solidcraft_kernel::EdgeSpec::Chain { ctrl, .. } => (ctrl.first().copied().unwrap_or_default(), ctrl.last().copied().unwrap_or_default()),
+    }
+}
+
+/// A tombstone 55 wide, 46 to the top of its sides and topped by a half round, 36 deep, converted
+/// whole with 2.5 mm steel inside, bent along two edges of its base. Its rips run every way: along
+/// the half round's rims, where the plates meet the roll, as well as straight. Each panel is cut
+/// back along each rip as the rip runs, so the base and the lid keep their half rounds, cut back as
+/// arcs: the flat is the base with the walls round it, and the lid. The same metal drawn from inside, its cavity
+/// converted with the material outside, unfolds and folds alike.
+#[test]
+fn a_tombstone_rips_along_its_round_as_along_its_sides() {
+    let rule = SkinRule {
+        thickness: 2.5,
+        k_factor: 0.44,
+        bend_radius: 2.5,
+        gap: 2.5,
+        corner_relief: ReliefShape::Notch,
+        corner_relief_size: 10.0,
+        relief_width: 0.1,
+        relief_depth: 1.25,
+    };
+    let outside = tombstone_body("Outside", 27.5, -23.0, 0.0, 36.0);
+    let inside = tombstone_body("Inside", 25.0, -20.5, 2.5, 33.5);
+    let drawn = [
+        ("outside", convert_skin(&outside, &rule, &[Vec3::new(0.0, -23.0, 0.0), Vec3::new(27.5, 0.0, 0.0)], &[], false)),
+        ("inside", convert_skin(&inside, &rule, &[Vec3::new(0.0, -20.5, 2.5), Vec3::new(25.0, 0.0, 2.5)], &[], true)),
+    ];
+    let mut one: Option<(f64, f64)> = None;
+    for (what, c) in drawn {
+        let c = c.unwrap_or_else(|e| panic!("{what}: {e}"));
+        assert!(c.notes.is_empty(), "{what}: {:?}", c.notes);
+        let regions = c.flat().unwrap_or_else(|e| panic!("{what}: {e}"));
+        assert_eq!(regions.len(), 2, "{what}: the base with its walls, and the lid");
+        let free = regions.iter().flat_map(|r| r.outer.segs.iter().chain(r.holes.iter().flat_map(|h| &h.segs))).filter(|s| !s.is_line_or_arc());
+        assert_eq!(free.count(), 0, "{what}: the half rounds' rims cut back as the arcs they are");
+        // No edge in pieces: on no panel does the outline run straight on from an edge into more
+        // of the same edge, as where a rim's cut once carried on along a side's. (Two edges that
+        // only line up, as the walls' tops either side of a seam, are two.)
+        for flat in c.development.panels.iter().flatten() {
+            for (lp, from) in std::iter::once(&flat.region.outer).chain(&flat.region.holes).zip(&flat.origins) {
+                let n = lp.segs.len();
+                for (k, (p, o)) in lp.segs.iter().zip(from).enumerate() {
+                    let (Some(q), Some(next)) = (lp.segs.get((k + 1) % n), from.get((k + 1) % n)) else { continue };
+                    if let (Seg2::Line { a, b }, Seg2::Line { b: c, .. }) = (p, q)
+                        && o == next
+                    {
+                        let bent = (*b - *a).normalized().zip((*c - *b).normalized()).is_none_or(|(u, v)| u.cross(v).abs() > 1e-9 || u.dot(v) < 0.0);
+                        assert!(bent, "{what}: {o:?} in pieces at {b:?}");
+                    }
+                }
+            }
+        }
+        let (v, a) = (folded(&c).0, area(&c));
+        // The volume is measured on a mesh, whose facets on the rounds fall as each solid's faces
+        // happen to be split: a few parts in a million.
+        let (v0, a0) = *one.get_or_insert((v, a));
+        assert!((v - v0).abs() < 1e-5 * v0 && (a - a0).abs() < 1e-9 * a0, "{what}: {v} {a} vs {v0} {a0}");
+    }
+}
+
+/// A rolled surface needs no flat face, and nothing about it is primary. A half pipe of radius
+/// 20, 30 long, drawn as a surface, rolls out to its neutral width; a whole pipe, smooth all
+/// round, is ripped open at one seam (where its walk closes) and rolls out less the rip's gap,
+/// cut on the roll.
+#[test]
+fn a_pipe_rolls_out_from_its_surface_alone() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Round"}));
+    run(&mut s, "sketch.circle.center", json!({"center": [0, 0], "radius": 20}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "surface.extrude", json!({"sketch": "Round", "distance": "30 mm", "name": "Pipe", "body_name": "Pipe"}));
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Arc"}));
+    let arc = run(&mut s, "sketch.arc.center_point", json!({"center": [100, 0], "start": [120, 0], "sweep": 180}));
+    let curve = arc["created"]["curves"][0].clone();
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "surface.extrude", json!({"sketch": "Arc", "curves": [curve], "distance": "30 mm", "name": "Half", "body_name": "Half"}));
+    let neutral = 20.0 - (1.0 - TEST.k_factor) * TEST.thickness;
+    for (name, width) in [("Half", PI * neutral), ("Pipe", 2.0 * PI * neutral - TEST.gap * neutral / 20.0)] {
+        let c = skin(&s, name, TEST, &[], &[], false).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let flat = c.flat().unwrap_or_else(|e| panic!("{name}: {e}"));
+        let [one] = flat.as_slice() else { panic!("{name}: one piece: {flat:?}") };
+        assert!((one.area() - width * 30.0).abs() < 1e-6 * width * 30.0, "{name}: {} vs {}", one.area(), width * 30.0);
+        let (v, _) = folded(&c);
+        let skin_side = 30.0 * width / neutral * 20.0;
+        assert!(v > 0.9 * skin_side * TEST.thickness && v < skin_side * TEST.thickness, "{name}: folded {v}");
+    }
 }

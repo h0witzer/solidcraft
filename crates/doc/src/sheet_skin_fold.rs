@@ -151,18 +151,26 @@ pub(crate) fn solid(dev: &Development, fold: &Fold, t: f64, pieces: &[(Piece, Re
             faces.push(FaceSpec { loops: vec![vec![bottom.clone(), up_b, top.reversed(), down_a]], surface, probe: Some((pm, outward)) });
         }
     }
+    // Until the kernel sews faces that touch along an edge face to face (#1597): two walls on one
+    // edge are refused as "ambiguous edge contact", so no edge may get a wall from both sides.
     Ok(kernel::sew_touching(&faces)?)
 }
 
 /// The pieces as cells: edges shorter than the model's tolerance dropped (the sew welds their
-/// ends), arcs of more than a half turn halved, and straight edges split where other cells'
+/// ends), arcs of more than three quarters of a turn halved (so that an arc's ends stay well
+/// apart, as the kernel's own profiles keep them), and straight edges split where other cells'
 /// corners touch them, so that neighbors share whole edges.
+///
+/// Until the kernel (solidcore, #1597) takes a circular edge round any sweep, a whole circle on
+/// one vertex too, and sews edges that share only part of their length: keep every edge whole.
+/// Both splits here are the kernel's limits, not the sheet's: each makes one edge of the flat
+/// two edges of the solid.
 fn cells(pieces: Vec<(Piece, Region2)>, work: &mut FlatWork) -> Result<Vec<Cell>> {
     let clean = |l: Loop2| -> Vec<Seg2> {
         let mut v = Vec::with_capacity(l.segs.len());
         for e in l.segs.into_iter().filter(|e| e.length() >= LINEAR_TOL) {
             match e {
-                Seg2::Arc { center, radius, start, sweep } if sweep.abs() > std::f64::consts::PI => {
+                Seg2::Arc { center, radius, start, sweep } if sweep.abs() > std::f64::consts::PI * 1.5 => {
                     let half = sweep / 2.0;
                     v.push(Seg2::Arc { center, radius, start, sweep: half });
                     v.push(Seg2::Arc { center, radius, start: start + half, sweep: half });

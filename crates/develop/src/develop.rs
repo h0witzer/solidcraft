@@ -7,7 +7,7 @@ use solidcraft_geom::{Aabb2, Loop2, Region2, Seg2, Vec2, Vec3};
 
 use crate::chart::Flatten;
 use crate::fold::Wrap;
-use crate::{Anchor, Bend, Corner, Joint, JointKind, Panel, Relief, Rigid2, Skin, Surface, Tail};
+use crate::{Anchor, Bend, Corner, Joint, JointKind, Lap, Panel, Relief, Rigid2, Rip, Skin, Surface, Tail};
 
 /// The most panels and joints one development takes: a work limit, never a truncation.
 const MAX_PANELS: usize = 10_000;
@@ -21,6 +21,9 @@ const REACH_TOL: f64 = 1e-3;
 
 /// A panel's edge this close (mm) to a bend zone's end ends with it.
 const EDGE_TOL: f64 = 1e-6;
+
+/// How far (mm) a rip's cut points may lie off the line through its ends and still be drawn as it.
+const RIP_TOL: f64 = 1e-9;
 
 /// How far (mm) a torn end's spline may lie from the curve the tear follows: well inside what a
 /// press brake holds, so that a couple of spans do; the most spans it takes; and how many points
@@ -44,7 +47,7 @@ pub struct Development {
     pub zones: Vec<Zone>,
     /// What to take out of each panel before the pieces are joined: its material between its
     /// tangent line and a bend's anchor, along the zone and, where its tail is trimmed, beyond
-    /// it; and what a rip cuts from its edge.
+    /// it. A rip's cut is no trim: it is in its panels' outlines (see [`FlatPanel`]).
     pub trims: Vec<Trim>,
     /// Bends and seams that close a loop, where the layout reached both panels another way.
     pub loops: Vec<Mismatch>,
@@ -52,16 +55,25 @@ pub struct Development {
     pub cuts: Vec<Region2>,
 }
 
-/// A panel laid flat. For each loop of its region, `origins` gives each segment's index in the
-/// same loop of the panel's own region: what the flat edge is in the skin.
+/// A panel laid flat, its rips' cuts taken off. For each loop of its region, `origins` gives what
+/// each segment is in the skin (see [`EdgeFrom`]).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FlatPanel {
     pub region: Region2,
-    pub origins: Vec<Vec<usize>>,
+    pub origins: Vec<Vec<EdgeFrom>>,
     /// The largest strain the flat leaves on the panel's neutral surface: none on a plane, a
     /// cylinder or a cone; on a free-form panel what its fit could not avoid, which is more than
     /// a rounding only where the panel is not developable.
     pub stretch: f64,
+}
+
+/// What an edge of a flat panel is in its skin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EdgeFrom {
+    /// Segment `k` of the same loop of the panel's own region, or what a rip left of it.
+    Own(usize),
+    /// The panel's new edge along joint `j`'s rip, with what joins it to the edges beside it.
+    Rip(usize),
 }
 
 /// A bend's zone in the flat frame: its region, its edge on the `a` panel's side (`near`) and on
@@ -156,7 +168,7 @@ fn anchor_offset(kind: &JointKind, skin: &Skin) -> Option<f64> {
     match kind {
         JointKind::Bend(bend) => Some(bend.allowance(skin.thickness, skin.k_factor) - 2.0 * bend.setback(skin.thickness)),
         JointKind::Seam => Some(0.0),
-        JointKind::Rip { .. } => None,
+        JointKind::Rip(_) => None,
     }
 }
 
@@ -196,7 +208,16 @@ pub fn develop(skin: &Skin, root: usize) -> Result<Development, DevelopError> {
     for (i, (panel, map)) in skin.panels.iter().zip(&maps).enumerate() {
         let (region, from) = map.region(&panel.region).map_err(|e| DevelopError::Panel(i, e))?;
         neutral.panels.push(Panel { name: panel.name.clone(), surface: Surface::Plane, region });
-        origins.push(from);
+        origins.push(from.into_iter().map(|l| l.into_iter().map(EdgeFrom::Own).collect::<Vec<_>>()).collect::<Vec<_>>());
+    }
+    // What each rip takes off its panels, worked out on their own surfaces and carried into their
+    // neutral charts.
+    let mut bands: Vec<[Option<RipBand>; 2]> = Vec::with_capacity(skin.joints.len());
+    for (j, joint) in skin.joints.iter().enumerate() {
+        bands.push(match &joint.kind {
+            JointKind::Rip(rip) => rip_bands(skin, &maps, j, joint, rip)?,
+            _ => [None, None],
+        });
     }
     for (j, joint) in skin.joints.iter().enumerate() {
         let moved = |a: &Anchor| -> Result<Anchor, DevelopError> {
@@ -258,6 +279,7 @@ pub fn develop(skin: &Skin, root: usize) -> Result<Development, DevelopError> {
         })
         .collect();
     out.placements = placements;
+    let mut sides: Vec<Vec<RipSide>> = (0..skin.panels.len()).map(|_| Vec::new()).collect();
     for (j, joint) in skin.joints.iter().enumerate() {
         let (Some(a), Some(b)) = (out.placements.get(joint.a.panel).copied().flatten(), out.placements.get(joint.b.panel).copied().flatten()) else {
             continue;
@@ -273,7 +295,34 @@ pub fn develop(skin: &Skin, root: usize) -> Result<Development, DevelopError> {
         match &joint.kind {
             JointKind::Bend(bend) => add_zone(&mut out, skin, j, joint, bend, &frame, (&a, &b))?,
             JointKind::Seam => {}
-            JointKind::Rip { cut } => add_rip(&mut out, skin, j, joint, *cut, (&a, &b))?,
+            JointKind::Rip(_) => {
+                let Some(bands) = bands.get(j) else { continue };
+                // Each panel's loops run with its material on the left: the `a` panel's along
+                // the rip, the `b` panel's against it.
+                for ((band, place), (panel, along)) in bands.iter().zip([&a, &b]).zip([(joint.a.panel, true), (joint.b.panel, false)]) {
+                    let Some(band) = band else { continue };
+                    let cut: Vec<Seg2> = band.inner.iter().map(|s| place.seg(s)).collect();
+                    let ends = band.ends.map(|p| place.point(p));
+                    let side = if along {
+                        RipSide { joint: j, ends, middle: place.point(band.middle), cut }
+                    } else {
+                        RipSide {
+                            joint: j,
+                            ends: [ends[1], ends[0]],
+                            middle: place.point(band.middle),
+                            cut: cut.iter().rev().map(Seg2::reversed).collect(),
+                        }
+                    };
+                    sides.get_mut(panel).ok_or(DevelopError::NoPanel(panel))?.push(side);
+                }
+            }
+        }
+    }
+    for (flat, sides) in out.panels.iter_mut().zip(&sides) {
+        if let Some(flat) = flat
+            && !sides.is_empty()
+        {
+            *flat = cut_by_rips(flat, sides)?;
         }
     }
     out.cuts = skin.corners.iter().filter_map(|c| corner_cut(&out, c)).collect();
@@ -363,8 +412,23 @@ fn check_joint(skin: &Skin, j: usize, joint: &Joint) -> Result<(), DevelopError>
             }
         }
         JointKind::Seam => {}
-        JointKind::Rip { cut } => {
-            if !(cut.0 >= 0.0 && cut.1 >= 0.0 && cut.0.is_finite() && cut.1.is_finite()) {
+        JointKind::Rip(rip) => {
+            let n = rip.turns.len();
+            if n < 2 || rip.edges.0.len() != n || rip.edges.1.len() != n {
+                return Err(DevelopError::Joint(j, "a rip's edge has two or more points on each panel, and a turn at each"));
+            }
+            let finite = |s: &Seg2| s.start().is_finite() && s.end().is_finite();
+            if !rip.edges.0.iter().chain(&rip.edges.1).all(|p| p.is_finite())
+                || !rip.turns.iter().all(|t| t.is_finite())
+                || !rip.curves.0.iter().chain(&rip.curves.1).all(finite)
+            {
+                return Err(DevelopError::Joint(j, "a rip's edge is not numbers"));
+            }
+            let fine = match rip.lap {
+                Lap::Miter { gap } => gap >= 0.0 && gap.is_finite(),
+                Lap::Cut(a, b) => a >= 0.0 && b >= 0.0 && a.is_finite() && b.is_finite(),
+            };
+            if !fine {
                 return Err(DevelopError::Joint(j, "a rip cuts 0 or more from each side"));
             }
         }
@@ -372,21 +436,396 @@ fn check_joint(skin: &Skin, j: usize, joint: &Joint) -> Result<(), DevelopError>
     Ok(())
 }
 
-/// What a rip cuts from each panel: a band along its edge, as deep as that side's cut, laid
-/// out with the panel wherever its piece put it.
-fn add_rip(out: &mut Development, skin: &Skin, j: usize, joint: &Joint, cut: (f64, f64), placed: (&Rigid2, &Rigid2)) -> Result<(), DevelopError> {
-    for (anchor, place, depth, into) in [(&joint.a, placed.0, cut.0, -1.0), (&joint.b, placed.1, cut.1, 1.0)] {
-        if !(depth > 0.0) {
+/// What a rip leaves of one of its panels, in the panel's neutral chart: the panel's new edge,
+/// its edge moved into the panel by the cut at each point, square to the edge on the panel's own
+/// surface; and where its edge along the rip starts, ends and has its middle, for finding that
+/// stretch of the panel's outline. All run the edge's way.
+struct RipBand {
+    inner: Vec<Seg2>,
+    ends: [Vec2; 2],
+    middle: Vec2,
+}
+
+/// The bands a rip takes off its panels `[a, b]` (see [`RipBand`]), `None` where it takes
+/// nothing. The cut at each point of the edge is the lap's for the sheet's turn there; the way
+/// square to the edge is found with the panel's surface metric, so every kind of surface, and
+/// every course the edge takes on it, is one computation. Where the cut is the same all along
+/// and the edge is known exactly as lines and arcs in a plane, it is moved exactly.
+fn rip_bands(skin: &Skin, maps: &[Flatten], j: usize, joint: &Joint, rip: &Rip) -> Result<[Option<RipBand>; 2], DevelopError> {
+    let cuts: Vec<(f64, f64)> = rip.turns.iter().map(|turn| rip.lap.cuts(*turn, skin.thickness)).collect();
+    let off = || DevelopError::Joint(j, "a rip's edge leaves its panel's surface");
+    let mut out = [None, None];
+    // The `a` panel's material lies on the left of the edge's way, the `b` panel's on the right.
+    for (slot, (panel, edge, side)) in out.iter_mut().zip([(joint.a.panel, &rip.edges.0, 1.0), (joint.b.panel, &rip.edges.1, -1.0)]) {
+        let depth: Vec<f64> = cuts.iter().map(|c| if side > 0.0 { c.0 } else { c.1 }).collect();
+        if !depth.iter().any(|d| *d > 0.0) {
             continue;
         }
-        let Some(along) = place.vector(anchor.dir).normalized() else { continue };
-        let (o, across) = (place.point(anchor.origin), right_of(along) * into);
-        let reach = panel_reach(skin, anchor.panel)?;
-        let corners = [o - along * reach, o + along * reach, o + along * reach + across * depth, o - along * reach + across * depth];
-        let region = Region2 { outer: Loop2::polygon(&corners).ccw(), holes: Vec::new() };
-        out.trims.push(Trim { panel: anchor.panel, joint: j, region, line: [corners[3], corners[2]] });
+        let (Some(surface), Some(map)) = (skin.panels.get(panel).map(|p| &p.surface), maps.get(panel)) else {
+            return Err(DevelopError::NoPanel(panel));
+        };
+        let (Some(first), Some(last)) = (edge.first(), edge.last()) else { return Err(off()) };
+        let middle = if edge.len() == 2 { first.lerp(*last, 0.5) } else { edge.get(edge.len() / 2).copied().unwrap_or(*first) };
+        let (ends, middle) = ([map.point(*first), map.point(*last)], map.point(middle));
+        // A plane's chart is its neutral chart.
+        let curve = if side > 0.0 { &rip.curves.0 } else { &rip.curves.1 };
+        let even = depth.first().filter(|d0| depth.iter().all(|d| (*d - **d0).abs() <= RIP_TOL));
+        if let (Surface::Plane, Some(d)) = (surface, even)
+            && let Some(inner) = moved(curve, side * d)
+        {
+            *slot = Some(RipBand { inner, ends, middle });
+            continue;
+        }
+        let mut inner = Vec::with_capacity(edge.len());
+        for (k, (q, d)) in edge.iter().zip(&depth).enumerate() {
+            let way = edge_way(edge, k).ok_or_else(off)?;
+            let [e, f, g] = crate::fold::metric(surface, *q).ok_or_else(off)?;
+            let dot = |x: Vec2, y: Vec2| x.x * y.x * e + (x.x * y.y + x.y * y.x) * f + x.y * y.y * g;
+            // Square to the edge on the surface, toward the panel's material, a unit long there.
+            let across = Vec2::new(-way.y, way.x) * side;
+            let square = across - way * (dot(across, way) / dot(way, way));
+            let length = dot(square, square).sqrt();
+            if !(length > 0.0) {
+                return Err(off());
+            }
+            inner.push(map.point(*q + square * (*d / length)));
+        }
+        *slot = Some(RipBand { inner: through(&inner), ends, middle });
     }
-    Ok(())
+    Ok(out)
+}
+
+/// `curve` moved `d` to the left of its way (to its right for `d` below 0), exactly: in a plane
+/// a line moves to a line and a circular arc to an arc about the same center. None for a
+/// free-form span, for an arc that would turn inside out, and for pieces that would come apart.
+fn moved(curve: &[Seg2], d: f64) -> Option<Vec<Seg2>> {
+    let out: Vec<Seg2> = curve
+        .iter()
+        .map(|s| match *s {
+            Seg2::Line { a, b } => {
+                let u = (b - a).normalized()?;
+                let left = Vec2::new(-u.y, u.x) * d;
+                Some(Seg2::Line { a: a + left, b: b + left })
+            }
+            // Turning counter-clockwise, the left is toward the center.
+            Seg2::Arc { center, radius, start, sweep } => {
+                let radius = radius - d * sweep.signum();
+                (radius > 0.0).then_some(Seg2::Arc { center, radius, start, sweep })
+            }
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    let whole = out.windows(2).all(|w| matches!(w, [p, q] if p.end().dist(q.start()) <= RIP_TOL));
+    (whole && !out.is_empty()).then_some(out)
+}
+
+/// The way an edge given as points runs at its `k`th point: across its neighbors, and at its ends
+/// to second order, (-3 p0 + 4 p1 - p2) / 2, so that a curve's ends lean no more than its middle.
+fn edge_way(edge: &[Vec2], k: usize) -> Option<Vec2> {
+    let at = |i: usize| edge.get(i).copied();
+    let n = edge.len();
+    match (k, n) {
+        (_, 0 | 1) => None,
+        (_, 2) => Some(at(1)? - at(0)?),
+        (0, _) => Some((at(1)? * 4.0 - at(0)? * 3.0 - at(2)?) * 0.5),
+        (k, n) if k + 1 == n => Some((at(k)? * 3.0 - at(k - 1)? * 4.0 + at(k - 2)?) * 0.5),
+        (k, _) => Some((at(k + 1)? - at(k - 1)?) * 0.5),
+    }
+}
+
+/// A rip's cut on one of its panels, in the flat frame, run the way the panel's loops run (its
+/// material on the left): the panel's edge along the rip from `ends[0]` through `middle` to
+/// `ends[1]`, and the panel's new edge in its place.
+struct RipSide {
+    joint: usize,
+    ends: [Vec2; 2],
+    middle: Vec2,
+    cut: Vec<Seg2>,
+}
+
+/// A stretch of a loop's new outline, each edge with what it is.
+type Stretch = Vec<(Seg2, EdgeFrom)>;
+
+/// How near (mm) a rip's ends lie to its panel's outline, and two edges' ends that meet.
+const ON_OUTLINE: f64 = 1e-6;
+/// How near (mm) the middle of a rip's edge, drawn by its points, lies to the outline's curve.
+const MIDDLE_TOL: f64 = 1e-3;
+/// Chords each curved edge is looked at as, to find where two edges cross.
+const CROSSING_CHORDS: usize = 16;
+/// How far, in gaps it closes, a join carries two edges on to where they meet. Past that they
+/// run on nearly straight, and are stepped across instead of carried on in a long sliver.
+const MITER_LIMIT: f64 = 4.0;
+/// How far, in gaps it closes, a join finds two edges crossing: a crossing farther from the
+/// corner is another part of the outline, not this corner's.
+const CROSSING_LIMIT: f64 = 50.0;
+
+/// The panel with each rip's stretch of its outline replaced by the rip's new edge. Each new edge
+/// is joined to the edge before and after it: both trimmed back to where they cross; else carried
+/// on, the way they leave, to where they meet; else, where they run side by side (a cut ending on
+/// a tangent edge cut less), stepped square across. So the outline is made whole by what each
+/// edge is, never by cutting pieces away, and every edge of it says what it is.
+fn cut_by_rips(flat: &FlatPanel, sides: &[RipSide]) -> Result<FlatPanel, DevelopError> {
+    let loops: Vec<&Loop2> = std::iter::once(&flat.region.outer).chain(&flat.region.holes).collect();
+    let far = flat.region.outer.segs.iter().map(Seg2::length).sum::<f64>() + 1.0;
+    let mut on: Vec<Vec<(f64, f64, &RipSide)>> = vec![Vec::new(); loops.len()];
+    for side in sides {
+        let lost = || DevelopError::Joint(side.joint, "a rip's edge is not on its panel's outline");
+        let found = loops.iter().enumerate().find_map(|(li, l)| {
+            let (s, e) = (place_on(&l.segs, side.ends[0], ON_OUTLINE)?, place_on(&l.segs, side.ends[1], ON_OUTLINE)?);
+            Some((li, s, e, place_on(&l.segs, side.middle, MIDDLE_TOL)?))
+        });
+        let Some((li, s, e, m)) = found else { return Err(lost()) };
+        // The stretch from its start to its end the way the loop runs holds its middle.
+        let n = loops.get(li).map_or(1.0, |l| l.segs.len() as f64);
+        if (m - s).rem_euclid(n) > (e - s).rem_euclid(n) && (e - s).rem_euclid(n) > 0.0 {
+            return Err(DevelopError::Joint(side.joint, "a rip's edge runs against its panel's outline"));
+        }
+        on.get_mut(li).ok_or_else(lost)?.push((s, e, side));
+    }
+    let mut out = flat.clone();
+    for (li, rips) in on.iter_mut().enumerate() {
+        let (Some(lp), Some(from)) = (loops.get(li), flat.origins.get(li)) else { continue };
+        if rips.is_empty() {
+            continue;
+        }
+        rips.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let mut stretches: Vec<Stretch> = Vec::with_capacity(2 * rips.len());
+        for (i, (_, e, side)) in rips.iter().enumerate() {
+            stretches.push(side.cut.iter().map(|c| (*c, EdgeFrom::Rip(side.joint))).collect());
+            let next = rips.get((i + 1) % rips.len()).map_or(*e, |r| r.0);
+            let rest = portion(&lp.segs, *e, next);
+            stretches.push(rest.into_iter().map(|(seg, k)| (seg, from.get(k).copied().unwrap_or(EdgeFrom::Own(k)))).collect());
+        }
+        stretches.retain(|s| !s.is_empty());
+        let count = stretches.len();
+        for i in 0..count {
+            let next = (i + 1) % count;
+            if next == i {
+                continue;
+            }
+            let mut b = stretches.get_mut(next).map(std::mem::take).unwrap_or_default();
+            if let Some(a) = stretches.get_mut(i) {
+                join(a, &mut b, far);
+            }
+            if let Some(slot) = stretches.get_mut(next) {
+                *slot = b;
+            }
+        }
+        let edges: Stretch = stretches.into_iter().flatten().filter(|(s, _)| s.length() > 0.0).collect();
+        let new = Loop2 { segs: edges.iter().map(|e| e.0).collect() };
+        if li == 0 {
+            out.region.outer = new;
+        } else if let Some(h) = out.region.holes.get_mut(li - 1) {
+            *h = new;
+        }
+        if let Some(o) = out.origins.get_mut(li) {
+            *o = edges.iter().map(|e| e.1).collect();
+        }
+    }
+    Ok(out)
+}
+
+/// Where `p` lies on a loop, within `tol`: its segment's place in the loop plus the parameter
+/// along it, so that places compare along the loop.
+fn place_on(segs: &[Seg2], p: Vec2, tol: f64) -> Option<f64> {
+    let mut best: Option<(f64, f64)> = None;
+    for (k, s) in segs.iter().enumerate() {
+        let t = s.closest_param(p);
+        let d = s.point_at(t).dist(p);
+        if d <= tol && best.is_none_or(|b| d < b.1) {
+            best = Some((k as f64 + t, d));
+        }
+    }
+    best.map(|b| b.0)
+}
+
+/// The stretch of a loop from place `from` to place `to` the way it runs (see [`place_on`]), each
+/// piece with the index of the segment it is of; nothing where they are one place.
+fn portion(segs: &[Seg2], from: f64, to: f64) -> Vec<(Seg2, usize)> {
+    let n = segs.len();
+    let total = n as f64;
+    let snap = |x: f64| if (x - x.round()).abs() < 1e-9 { x.round() } else { x };
+    let (from, mut to) = (snap(from).rem_euclid(total), snap(to).rem_euclid(total));
+    if (to - from).abs() < 1e-9 {
+        return Vec::new();
+    }
+    if to < from {
+        to += total;
+    }
+    let mut out = Vec::new();
+    let mut x = from;
+    while to - x > 1e-9 {
+        let k = x.floor();
+        let end = (k + 1.0).min(to);
+        let i = (k as usize) % n.max(1);
+        if let Some(s) = segs.get(i) {
+            let piece = part(s, x - k, end - k);
+            if piece.length() > 0.0 {
+                out.push((piece, i));
+            }
+        }
+        x = end;
+    }
+    out
+}
+
+/// The part of `s` from parameter `t0` to `t1`.
+fn part(s: &Seg2, t0: f64, t1: f64) -> Seg2 {
+    let right = if t0 > 0.0 { s.split_at(t0).1 } else { *s };
+    let t = if t0 < 1.0 { (t1 - t0) / (1.0 - t0) } else { 1.0 };
+    if t >= 1.0 { right } else { right.split_at(t.max(0.0)).0 }
+}
+
+/// Joins the stretch `a` to the stretch `b` after it (see [`cut_by_rips`]). An edge the join adds
+/// is the rip's that made the corner: `a`'s where both are rips' and it carries `a` on.
+fn join(a: &mut Stretch, b: &mut Stretch, far: f64) {
+    let (Some(&(last, from_a)), Some(&(first, from_b))) = (a.last(), b.first()) else { return };
+    let (pa, pb) = (last.end(), first.start());
+    if pa.dist(pb) <= ON_OUTLINE {
+        return;
+    }
+    let made = |x: EdgeFrom, y: EdgeFrom| if matches!(x, EdgeFrom::Rip(_)) { x } else { y };
+    let gap = pa.dist(pb);
+    // The crossing nearest the corner within `limit` gaps of it, and not where either stretch
+    // meets the stretch on its far side.
+    let (a_far, b_far) = (a.first().map_or(pa, |e| e.0.start()), b.last().map_or(pb, |e| e.0.end()));
+    let nearest = |found: Vec<(usize, f64, usize, f64, Vec2)>, limit: f64| {
+        found
+            .into_iter()
+            .filter(|c| c.4.dist(pa) <= limit * gap && c.4.dist(pb) <= limit * gap)
+            .filter(|c| c.4.dist(a_far) > ON_OUTLINE && c.4.dist(b_far) > ON_OUTLINE)
+            .min_by(|p, q| (p.4.dist(pa) + p.4.dist(pb)).total_cmp(&(q.4.dist(pa) + q.4.dist(pb))))
+    };
+    let segs = |s: &Stretch| s.iter().map(|e| e.0).collect::<Vec<Seg2>>();
+    // Where they cross.
+    if let Some((ia, u, ib, v, _)) = nearest(crossings(&segs(a), &segs(b)), CROSSING_LIMIT) {
+        trim_end(a, ia, u);
+        trim_start(b, ib, v);
+        return;
+    }
+    let (Some(ta), Some(tb)) = (last.end_tangent().normalized(), first.start_tangent().normalized()) else {
+        a.push((Seg2::Line { a: pa, b: pb }, made(from_a, from_b)));
+        return;
+    };
+    // `a` carried on to `b`'s first edge.
+    if let Some((_, _, _, v, x)) = nearest(crossings(&[Seg2::Line { a: pa, b: pa + ta * far }], &[first]), MITER_LIMIT) {
+        a.push((Seg2::Line { a: pa, b: x }, made(from_a, from_b)));
+        trim_start(b, 0, v);
+        return;
+    }
+    // `b` carried back to `a`'s last edge.
+    if let Some((_, u, _, _, x)) = nearest(crossings(&[last], &[Seg2::Line { a: pb - tb * far, b: pb }]), MITER_LIMIT) {
+        trim_end(a, a.len() - 1, u);
+        b.insert(0, (Seg2::Line { a: x, b: pb }, made(from_b, from_a)));
+        return;
+    }
+    // Both carried on, to where they meet; else a step across.
+    let across = ta.cross(tb);
+    if across.abs() > 1e-12 {
+        let (u, v) = ((pb - pa).cross(tb) / across, (pb - pa).cross(ta) / across);
+        if u > 0.0 && v > 0.0 && u <= MITER_LIMIT * gap && v <= MITER_LIMIT * gap {
+            let x = pa + ta * u;
+            a.push((Seg2::Line { a: pa, b: x }, made(from_a, from_b)));
+            b.insert(0, (Seg2::Line { a: x, b: pb }, made(from_b, from_a)));
+            return;
+        }
+    }
+    a.push((Seg2::Line { a: pa, b: pb }, made(from_a, from_b)));
+}
+
+/// `a` ending at parameter `u` of its edge `ia`.
+fn trim_end(a: &mut Stretch, ia: usize, u: f64) {
+    a.truncate(ia + 1);
+    if let Some(last) = a.last_mut() {
+        last.0 = part(&last.0, 0.0, u);
+        if last.0.length() <= ON_OUTLINE * 1e-3 {
+            a.pop();
+        }
+    }
+}
+
+/// `b` starting at parameter `v` of its edge `ib`.
+fn trim_start(b: &mut Stretch, ib: usize, v: f64) {
+    b.drain(..ib.min(b.len()));
+    if let Some(first) = b.first_mut() {
+        first.0 = part(&first.0, v, 1.0);
+        if first.0.length() <= ON_OUTLINE * 1e-3 {
+            b.remove(0);
+        }
+    }
+}
+
+/// Where the edges of `a` cross those of `b`: each crossing's edge and parameter on either, and
+/// its point. Each edge is looked at as chords ([`CROSSING_CHORDS`] of a curve, one of a line),
+/// and a crossing of chords followed onto the edges themselves.
+fn crossings(a: &[Seg2], b: &[Seg2]) -> Vec<(usize, f64, usize, f64, Vec2)> {
+    let chords = |s: &Seg2| if matches!(s, Seg2::Line { .. }) { 1 } else { CROSSING_CHORDS };
+    let mut out: Vec<(usize, f64, usize, f64, Vec2)> = Vec::new();
+    for (ia, sa) in a.iter().enumerate() {
+        let na = chords(sa);
+        for (ib, sb) in b.iter().enumerate() {
+            let nb = chords(sb);
+            for i in 0..na {
+                let (p0, p1) = (sa.point_at(i as f64 / na as f64), sa.point_at((i + 1) as f64 / na as f64));
+                for k in 0..nb {
+                    let (q0, q1) = (sb.point_at(k as f64 / nb as f64), sb.point_at((k + 1) as f64 / nb as f64));
+                    let (d1, d2) = (p1 - p0, q1 - q0);
+                    let den = d1.cross(d2);
+                    if den.abs() <= 1e-15 * d1.len() * d2.len() {
+                        continue;
+                    }
+                    let (s, r) = ((q0 - p0).cross(d2) / den, (q0 - p0).cross(d1) / den);
+                    let slack = 1e-9;
+                    if !((-slack..=1.0 + slack).contains(&s) && (-slack..=1.0 + slack).contains(&r)) {
+                        continue;
+                    }
+                    let (mut u, mut v) = ((i as f64 + s.clamp(0.0, 1.0)) / na as f64, (k as f64 + r.clamp(0.0, 1.0)) / nb as f64);
+                    // Onto the edges themselves: Newton on a(u) = b(v).
+                    for _ in 0..20 {
+                        let f = sa.point_at(u) - sb.point_at(v);
+                        let (du, dv) = (sa.derivative(u), sb.derivative(v));
+                        let det = du.cross(-dv);
+                        if f.len() <= 1e-13 || det.abs() <= 1e-300 {
+                            break;
+                        }
+                        let (step_u, step_v) = ((-f).cross(-dv) / det, du.cross(-f) / det);
+                        (u, v) = ((u + step_u).clamp(0.0, 1.0), (v + step_v).clamp(0.0, 1.0));
+                    }
+                    let x = sa.point_at(u);
+                    let fresh = out.iter().all(|c| c.4.dist(x) > ON_OUTLINE);
+                    if x.dist(sb.point_at(v)) <= ON_OUTLINE && fresh {
+                        out.push((ia, u, ib, v, x));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A curve through `points` in order: a line where they lie on one, else a clamped cubic spline
+/// through every one of them, joined with no change of curvature.
+fn through(points: &[Vec2]) -> Vec<Seg2> {
+    let (Some(&a), Some(&b)) = (points.first(), points.last()) else { return Vec::new() };
+    let Some(d) = (b - a).normalized() else { return Vec::new() };
+    if points.iter().all(|p| (*p - a).cross(d).abs() <= RIP_TOL) {
+        return vec![Seg2::Line { a, b }];
+    }
+    let n = points.len();
+    // Its way at its ends to second order: (-3 p0 + 4 p1 - p2) / 2, and the same from the end.
+    let (start, end) = match (points.get(1), points.get(2), points.get(n - 2), points.get(n - 3)) {
+        (Some(p1), Some(p2), Some(q1), Some(q2)) if n > 2 => ((*p1 * 4.0 - a * 3.0 - *p2) * 0.5, (b * 3.0 - *q1 * 4.0 + *q2) * 0.5),
+        _ => (b - a, b - a),
+    };
+    let rates = clamped_rates(points, 1.0, start, end);
+    points
+        .windows(2)
+        .zip(rates.windows(2))
+        .filter_map(|(p, m)| match (p, m) {
+            ([p0, p1], [m0, m1]) => Some(Seg2::Cubic { p0: *p0, p1: *p0 + *m0 * (1.0 / 3.0), p2: *p1 - *m1 * (1.0 / 3.0), p3: *p1 }),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The bend's zone, and what each panel loses to it.
