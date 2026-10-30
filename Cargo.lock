@@ -4113,7 +4113,7 @@ dependencies = [
 
 [[package]]
 name = "solidcraft-develop"
-version = "0.25.1"
+version = "0.24.0"
 dependencies = [
  "solidcraft-geom",
  "thiserror 2.0.21",

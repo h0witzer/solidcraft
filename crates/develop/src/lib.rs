@@ -30,7 +30,7 @@ mod fold;
 mod rigid;
 mod skin;
 
-pub use develop::{DevelopError, Development, EdgeFrom, FlatPanel, Mismatch, Trim, Zone, develop};
+pub use develop::{DevelopError, Development, EdgeFrom, FlatPanel, Mismatch, Trim, Zone, curve_through, develop};
 pub use fold::{Bent, Fold, fold};
 pub use rigid::{Rigid2, Rigid3};
 pub use skin::{Anchor, Bend, Corner, Datum, Joint, JointKind, Lap, Panel, Relief, Rip, Skin, Surface, Tail, ZoneEnds};

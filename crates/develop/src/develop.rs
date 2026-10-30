@@ -391,7 +391,8 @@ fn check_joint(skin: &Skin, j: usize, joint: &Joint) -> Result<(), DevelopError>
             return Err(DevelopError::Joint(j, "an anchor's direction is not a unit vector"));
         }
     }
-    if joint.a.panel == joint.b.panel {
+    // A rip may part a panel from itself: a tube cut open along its own seam.
+    if joint.a.panel == joint.b.panel && !matches!(joint.kind, JointKind::Rip(_)) {
         return Err(DevelopError::Joint(j, "both anchors are on one panel"));
     }
     match &joint.kind {
@@ -490,7 +491,7 @@ fn rip_bands(skin: &Skin, maps: &[Flatten], j: usize, joint: &Joint, rip: &Rip) 
             }
             inner.push(map.point(*q + square * (*d / length)));
         }
-        *slot = Some(RipBand { inner: through(&inner), ends, middle });
+        *slot = Some(RipBand { inner: curve_through(&inner), ends, middle });
     }
     Ok(out)
 }
@@ -805,7 +806,7 @@ fn crossings(a: &[Seg2], b: &[Seg2]) -> Vec<(usize, f64, usize, f64, Vec2)> {
 
 /// A curve through `points` in order: a line where they lie on one, else a clamped cubic spline
 /// through every one of them, joined with no change of curvature.
-fn through(points: &[Vec2]) -> Vec<Seg2> {
+pub fn curve_through(points: &[Vec2]) -> Vec<Seg2> {
     let (Some(&a), Some(&b)) = (points.first(), points.last()) else { return Vec::new() };
     let Some(d) = (b - a).normalized() else { return Vec::new() };
     if points.iter().all(|p| (*p - a).cross(d).abs() <= RIP_TOL) {

@@ -34,11 +34,10 @@ fn area(c: &SkinConversion) -> f64 {
     c.flat().unwrap_or_else(|e| panic!("{e}")).iter().map(|r| r.area()).sum()
 }
 
-/// A volume finely enough meshed to tell sheets apart that differ by more than a few parts in a
-/// million. Until the kernel measures a body exactly (#1597): measured on a tessellation, whose
-/// facets fall as each solid's faces happen to be split.
+/// A body's volume, integrated on its exact faces (to `solidcraft_smlib::MEASURE_ACCURACY`), so
+/// however its faces happen to be split it measures alike.
 fn fine_volume(b: &solidcraft_kernel::Body) -> f64 {
-    b.volume_at(1e-5).unwrap_or(f64::NAN)
+    solidcraft_kernel::measure_mass(b).map_or(f64::NAN, |m| m.volume)
 }
 
 /// The folded sheet's volume and box.
@@ -374,8 +373,8 @@ fn a_corner_relief_belongs_to_the_corner_whichever_sheet_is_largest() {
 /// A plate with a wall along its whole edge y = 0 and one on its edge x = 100 from y = 0 to 30
 /// only: the shorter wall bends only where it stands, and where it ends beside more of the
 /// plate the plate gets the rule's bend relief. Notched where the walls meet, the bends are 96
-/// and 26 long, the flat is a flanged sheet's, and the folded sheet the one today's Convert
-/// makes.
+/// and 26 long, the flat is a flanged sheet's, and the folded sheet holds the metal that flat
+/// folds to.
 #[test]
 fn a_shorter_wall_bends_where_it_stands_beside_its_bend_relief() {
     let (t, r, k) = (2.0, 2.0, 0.44);
@@ -396,12 +395,11 @@ fn a_shorter_wall_bends_where_it_stands_beside_its_bend_relief() {
     let cut = t + 0.5 / SQRT_2;
     let flat = 100.0 * 56.0 - 4.0 * 26.0 - 10.0 + 26.0 * ((100.0 - cut) + (30.0 - cut)) + ba * 122.0;
     assert!((area(&c) - flat).abs() < 1e-6 * flat, "{} vs {flat}", area(&c));
+    // A sheet's metal is its thickness times its middle surface's area. The flat is drawn at the
+    // neutral surface, so each bend's middle runs t (1/2 - k) wider than its zone per radian.
     let (v, _) = folded(&c);
-    // Last, since it makes the body a sheet.
-    let out = run(&mut s, "sheet.convert", json!({"body": "Part", "face": [50, 30, 0], "bends": bends}));
-    assert!(out["warning"].is_null(), "{out}");
-    let today = s.model.state().bodies.iter().find(|b| b.name == "Part").map_or(f64::NAN, |b| fine_volume(&b.body));
-    assert!((v - today).abs() < 1e-9 * today, "{v} vs {today}");
+    let want = t * (flat + FRAC_PI_2 * t * (0.5 - k) * 122.0);
+    assert!((v - want).abs() < 1e-8 * want, "{v} vs {want}");
 }
 
 /// An icosahedron, edge 50, as a solid body.
@@ -562,10 +560,8 @@ fn a_tombstone_rips_along_its_round_as_along_its_sides() {
             }
         }
         let (v, a) = (folded(&c).0, area(&c));
-        // The volume is measured on a mesh, whose facets on the rounds fall as each solid's faces
-        // happen to be split: a few parts in a million.
         let (v0, a0) = *one.get_or_insert((v, a));
-        assert!((v - v0).abs() < 1e-5 * v0 && (a - a0).abs() < 1e-9 * a0, "{what}: {v} {a} vs {v0} {a0}");
+        assert!((v - v0).abs() < 1e-8 * v0 && (a - a0).abs() < 1e-9 * a0, "{what}: {v} {a} vs {v0} {a0}");
     }
 }
 
