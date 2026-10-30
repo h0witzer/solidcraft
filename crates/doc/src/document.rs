@@ -1323,9 +1323,9 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         refold: bool,
     },
-    /// Convert a body to sheet metal from its fixed face at `face`: a plate of constant
-    /// thickness or, with `bends`, a solid or shelled body whose faces reached from the fixed
-    /// face across those edges become the sheet.
+    /// Convert to sheet metal's thicken mode: the sheet from the fixed face at `face`, a plate of
+    /// constant thickness or, with `bends`, a solid or shelled body whose faces reached from the
+    /// fixed face across those edges become the sheet.
     SheetConvert {
         body: BodyName,
         #[walk(pick_if = !bends.is_empty())]
@@ -1336,12 +1336,12 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         bends: Vec<Position>,
     },
-    /// Convert a body to sheet metal through its skin (#6748): every face of a solid, or of one
+    /// Convert a body to sheet metal (#6748): every face of a solid, or of one
     /// side of a shell or a plate, less the faces at `skip`. The sharp edges at `bends` become
     /// bends and every other sharp edge between two faces of the sheet is cut open; cylinders
     /// and cones become rolls. No face is fixed. The body becomes the folded sheet and the model
     /// keeps its flat pattern.
-    SheetSkinConvert {
+    SheetSurfaceConvert {
         body: BodyName,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         rule: Option<String>,
@@ -2452,7 +2452,7 @@ impl FeatureKind {
                 | FeatureKind::SheetPath { .. }
                 | FeatureKind::SheetUnfold { .. }
                 | FeatureKind::SheetConvert { .. }
-                | FeatureKind::SheetSkinConvert { .. }
+                | FeatureKind::SheetSurfaceConvert { .. }
         )
     }
 
@@ -2510,7 +2510,7 @@ impl FeatureKind {
             FeatureKind::SheetPath { .. } => "PathFlangeFeature",
             FeatureKind::SheetUnfold { refold: false, .. } => "UnfoldFeature",
             FeatureKind::SheetUnfold { .. } => "RefoldFeature",
-            FeatureKind::SheetConvert { .. } | FeatureKind::SheetSkinConvert { .. } => "ConvertToSheetMetalFeature",
+            FeatureKind::SheetConvert { .. } | FeatureKind::SheetSurfaceConvert { .. } => "ConvertToSheetMetalFeature",
             FeatureKind::Coil { .. } => "CoilFeature",
             FeatureKind::Rib { web: false, .. } => "RibFeature",
             FeatureKind::Rib { .. } => "WebFeature",
@@ -2594,7 +2594,7 @@ impl FeatureKind {
             FeatureKind::SheetPath { .. } => "PathFlange",
             FeatureKind::SheetUnfold { refold: false, .. } => "Unfold",
             FeatureKind::SheetUnfold { .. } => "Refold",
-            FeatureKind::SheetConvert { .. } | FeatureKind::SheetSkinConvert { .. } => "ConvertToSheetMetal",
+            FeatureKind::SheetConvert { .. } | FeatureKind::SheetSurfaceConvert { .. } => "ConvertToSheetMetal",
             FeatureKind::Coil { .. } => "Coil",
             FeatureKind::Rib { web: false, .. } => "Rib",
             FeatureKind::Rib { .. } => "Web",

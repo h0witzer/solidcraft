@@ -1573,7 +1573,7 @@ impl SheetBody {
 
     /// The folded (or, when unfolded, flat) solid, sewn from its faces.
     pub fn solid(&self) -> Result<Body> {
-        crate::sheet_skin::report(self);
+        crate::sheet_surface::report(self);
         if self.flat {
             return self.flat_solid();
         }

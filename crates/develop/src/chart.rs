@@ -9,7 +9,7 @@ use std::sync::Arc;
 use solidcraft_geom::{Loop2, Region2, Seg2, Vec2};
 
 use crate::fitted::{FlatMap, fit};
-use crate::{Skin, Surface};
+use crate::{Sheet, Surface};
 
 /// A segment a map does not keep is followed by chords this close to it (mm).
 const CHORD_TOL: f64 = 1e-4;
@@ -39,8 +39,8 @@ pub(crate) enum Flatten {
 }
 
 impl Flatten {
-    pub(crate) fn of(surface: &Surface, skin: &Skin) -> Result<Flatten, &'static str> {
-        let (t, k) = (skin.thickness, skin.k_factor);
+    pub(crate) fn of(surface: &Surface, sheet: &Sheet) -> Result<Flatten, &'static str> {
+        let (t, k) = (sheet.thickness, sheet.k_factor);
         match surface {
             Surface::Plane => Ok(Flatten::Same),
             &Surface::Cylinder { radius, material_inward } => {

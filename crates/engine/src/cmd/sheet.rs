@@ -53,19 +53,20 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SHEET METAL", "CREATE")
         .icon("convert_sheet")
         .params(
-            "body; face: [x,y,z] on its large flat face (a plate of even thickness; recesses in one face up to half the thickness deep, \
-             such as an engraved label, become pockets of the sheet), or that face's name from model.faces; rule?; \
-             bends?: [[x,y,z] on sharp edges] (a solid or a shelled body: `face` is the fixed face and the flat faces reached from it \
-             across these edges become the sheet; a shell keeps its thickness, a solid takes the rule's inward; \
-             edges between two of those faces that are no bends are cut open with the rule's gap; \
-             a point in the middle of a chamfer between two faces, or on a bend modelled with its radius (a cylinder between \
-             two flat faces tangent to it, either skin), makes it one bend of the rule's radius at their virtual sharp; \
-             the faces' holes become cut-outs and their engravings, up to half the thickness deep, pockets); \
-             skin?: true converts through the skin (#6748) instead: no `face`; every face of a solid, or of one side of a shell or \
-             a plate, becomes the sheet, a cylinder or cone a roll at its own radius; every sharp edge between two of its faces is \
-             cut open but the `bends`; a ring of bends is refused; the body becomes the folded sheet, and sheet.flat_pattern shows its \
-             flat; skip?: [faces left out, as points or names]; direction?: inside (default) | outside (the side of a solid's \
-             faces its material lies on; a shell or a plate keeps its own)",
+            "body; mode?: convert (default) | thicken; rule?; bends?: [[x,y,z] on sharp edges]. \
+             convert (#6748): no face is fixed; every face of a solid, or of one side of a shell or a plate, becomes the sheet, \
+             a cylinder or cone a roll at its own radius; every sharp edge between two of its faces is cut open but the `bends`; \
+             a ring of bends is refused; the body becomes the folded sheet, and sheet.flat_pattern shows its flat; \
+             skip?: [faces left out, as points or names]; direction?: inside (default) | outside (the side of a solid's \
+             faces its material lies on; a shell or a plate keeps its own). \
+             thicken: the sheet from a fixed face: face: [x,y,z] on its large flat face (a plate of even thickness; recesses in \
+             one face up to half the thickness deep, such as an engraved label, become pockets of the sheet), or that face's \
+             name from model.faces; with `bends`, a solid or a shelled body: the flat faces reached from the fixed face across \
+             these edges become the sheet; a shell keeps its thickness, a solid takes the rule's inward; edges between two of \
+             those faces that are no bends are cut open with the rule's gap; a point in the middle of a chamfer between two \
+             faces, or on a bend modelled with its radius (a cylinder between two flat faces tangent to it), makes it one bend \
+             of the rule's radius at their virtual sharp; the faces' holes become cut-outs and their engravings, up to half \
+             the thickness deep, pockets",
         ),
     CommandSpec::new("sheet.manage_rules", "Sheet Metal Rules", rules).at("SHEET METAL", "MODIFY").icon("sheet_rules").params(
         "name (new or existing); thickness?, k_factor?, bend_radius?, relief_width?, relief_depth?, corner_relief?, hem_gap?, gap? (expressions; `Thickness` is the rule's; \
@@ -502,18 +503,24 @@ fn convert(s: &mut Session, p: &Value) -> Result<Value> {
         None | Some(Value::Null) => Vec::new(),
         Some(_) => points(p, "bends", cmd)?,
     };
-    let skin = bool_(p, "skin").unwrap_or(false);
+    let thicken = match str_(p, "mode").map(str::to_ascii_lowercase).as_deref() {
+        None | Some("convert") => false,
+        Some("thicken") => true,
+        Some(_) => return Err(bad(cmd, "`mode` must be convert or thicken")),
+    };
     // Such a sheet's values are its rule's (a plate's thickness is the plate's own).
-    if let Some(key) = RULE_ONLY.iter().find(|k| (skin || !bends.is_empty()) && p.get(**k).is_some()) {
+    if let Some(key) = RULE_ONLY.iter().find(|k| (!thicken || !bends.is_empty()) && p.get(**k).is_some()) {
         return Err(bad(cmd, format!("`{key}` is not a sheet.convert parameter: the sheet metal rule sets it. Pass a rule's name as `rule`")));
     }
-    if skin {
-        return convert_skin(s, p, body, bends);
+    if !thicken {
+        return convert_surfaces(s, p, body, bends);
     }
     if let Some(key) = ["skip", "direction"].iter().find(|k| p.get(**k).is_some()) {
-        return Err(bad(cmd, format!("`{key}` is for converting through the skin: pass `skin: true` with it")));
+        return Err(bad(cmd, format!("`{key}` is for Convert, not Thicken: leave out `mode: thicken` with it")));
     }
-    let face = p.get("face").ok_or_else(|| bad(cmd, "`face` must be a point [x, y, z] on the plate's face, or its name from model.faces"))?;
+    let face = p
+        .get("face")
+        .ok_or_else(|| bad(cmd, "Thicken starts from a face: `face` must be a point [x, y, z] on the plate's face, or its name from model.faces"))?;
     let face = super::face::face_ref(s, face, Some(&body), cmd)?;
     // With bend edges, a solid or shelled body; without, a plate.
     let rule = rule_param(s, p, cmd)?;
@@ -524,12 +531,15 @@ fn convert(s: &mut Session, p: &Value) -> Result<Value> {
     )
 }
 
-/// `sheet.convert` through the skin (#6748): no face is fixed; every face converts but the
-/// skipped ones, and the sharp edges are cut open but the bends.
-fn convert_skin(s: &mut Session, p: &Value, body: String, bends: Vec<Vec3>) -> Result<Value> {
+/// `sheet.convert` (#6748): no face is fixed; every face converts but the skipped ones, and the
+/// sharp edges are cut open but the bends.
+fn convert_surfaces(s: &mut Session, p: &Value, body: String, bends: Vec<Vec3>) -> Result<Value> {
     let cmd = "sheet.convert";
     if p.get("face").is_some() {
-        return Err(bad(cmd, "through the skin no face is fixed: leave out `face`, and pass the faces to leave out as `skip`"));
+        return Err(bad(
+            cmd,
+            "Convert fixes no face: leave out `face` (pass the faces to leave out as `skip`), or pass `mode: thicken` to thicken from it",
+        ));
     }
     let mut skip = Vec::new();
     for f in p.get("skip").and_then(Value::as_array).into_iter().flatten() {
@@ -543,7 +553,7 @@ fn convert_skin(s: &mut Session, p: &Value, body: String, bends: Vec<Vec3>) -> R
     add_feature(
         s,
         p,
-        FeatureKind::SheetSkinConvert {
+        FeatureKind::SheetSurfaceConvert {
             body: BodyName(body),
             rule,
             bends: bends.into_iter().map(Position).collect(),
@@ -631,20 +641,20 @@ fn no_sheet_body(cmd: &str) -> EngineError {
     )
 }
 
-/// The flat of a body converted through its skin (#6748): the named body's, or with none named
+/// The flat of a converted body (#6748): the named body's, or with none named
 /// and no sheet metal body, the last one converted.
-fn skin_of(s: &Session, p: &Value) -> Option<solidcraft_doc::SkinFlat> {
+fn surfaces_of(s: &Session, p: &Value) -> Option<solidcraft_doc::SurfaceFlat> {
     let st = s.model.state();
     match str_(p, "body") {
-        Some(b) => st.skins.iter().find(|x| x.body == b).cloned(),
-        None if st.sheets.is_empty() => st.skins.last().cloned(),
+        Some(b) => st.surface_flats.iter().find(|x| x.body == b).cloned(),
+        None if st.sheets.is_empty() => st.surface_flats.last().cloned(),
         None => None,
     }
 }
 
-/// A skin's flat as `sheet.flat_pattern` reports a sheet's, with how many of its panels are rolls
+/// A converted body's flat as `sheet.flat_pattern` reports a sheet's, with how many of its panels are rolls
 /// and the largest stretch any panel's flat leaves.
-fn skin_flat_json(sk: &solidcraft_doc::SkinFlat) -> Value {
+fn surface_flat_json(sk: &solidcraft_doc::SurfaceFlat) -> Value {
     let loops: Vec<Ring<Vec2>> = sk.regions.iter().map(|r| r.outer.polyline(1e-3)).collect();
     let size = loops.iter().fold(Aabb2::EMPTY, |b, l| b.union(&l.bounds())).size();
     let pt = |v: &Vec2| json!([v.x, v.y]);
@@ -671,7 +681,7 @@ fn skin_flat_json(sk: &solidcraft_doc::SkinFlat) -> Value {
         .collect();
     json!({"body": sk.body, "rule": sk.rule, "thickness": sk.thickness, "k_factor": sk.k_factor, "flat_size_mm": [size.x, size.y, sk.thickness],
         "outline": outline, "cutouts": holes, "cutout_shapes": hole_shapes, "pockets": [], "bends": bends, "unfolded": false,
-        "perforations": [], "bend_zones": bend_zones, "skin": true, "rolls": sk.rolls, "stretch": sk.stretch})
+        "perforations": [], "bend_zones": bend_zones, "surfaces": true, "rolls": sk.rolls, "stretch": sk.stretch})
 }
 
 fn sheet_of(s: &Session, p: &Value, cmd: &str) -> Result<SheetBody> {
@@ -780,8 +790,8 @@ fn flat_json(sh: &SheetBody) -> Result<Value> {
 }
 
 fn flat_pattern(s: &mut Session, p: &Value) -> Result<Value> {
-    if let Some(skin) = skin_of(s, p) {
-        return Ok(skin_flat_json(&skin));
+    if let Some(converted) = surfaces_of(s, p) {
+        return Ok(surface_flat_json(&converted));
     }
     let sh = sheet_of(s, p, "sheet.flat_pattern")?;
     sh.flat_matches_body()?;

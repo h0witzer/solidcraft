@@ -69,10 +69,10 @@ pub mod render_settings;
 pub mod render_surface;
 pub mod sheet;
 mod sheet_flat_lineage;
-mod sheet_skin;
-mod sheet_skin_convert;
-mod sheet_skin_fold;
-pub use sheet_skin_convert::{SkinBendLine, SkinConversion, SkinFlat, SkinRule, convert_skin};
+mod sheet_surface;
+mod sheet_surface_convert;
+mod sheet_surface_fold;
+pub use sheet_surface_convert::{ConvertRule, SurfaceBendLine, SurfaceConversion, SurfaceFlat, convert_surfaces};
 pub mod text_params;
 pub mod thread_forms;
 

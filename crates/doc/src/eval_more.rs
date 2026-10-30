@@ -777,15 +777,15 @@ pub(super) fn sheet_eval(
             }
             rebuild_sheet(st, i)
         }
-        // Through the skin (#6748): the body becomes the folded sheet, and the model keeps its
+        // Convert (#6748): the body becomes the folded sheet, and the model keeps its
         // flat pattern.
-        FeatureKind::SheetSkinConvert { body, rule, bends, skip, direction } => {
+        FeatureKind::SheetSurfaceConvert { body, rule, bends, skip, direction } => {
             let mb = st.body(body).cloned().ok_or_else(|| DocError::Unknown(format!("body `{body}`")))?;
             let r = doc.sheet_rule(rule.as_deref());
             let rv = doc.rule_values(vals, &r)?;
             let picks = edge_picks(f, &mb, bends, warning);
             let skip: Vec<Vec3> = skip.iter().map(|p| p.0).collect();
-            let rule = crate::SkinRule {
+            let rule = crate::ConvertRule {
                 thickness: rv.thickness,
                 k_factor: rv.k_factor,
                 bend_radius: rv.bend_radius,
@@ -795,7 +795,7 @@ pub(super) fn sheet_eval(
                 relief_width: rv.relief_width,
                 relief_depth: rv.relief_depth,
             };
-            let conversion = crate::convert_skin(&mb, &rule, &picks, &skip, direction == "outside")?;
+            let conversion = crate::convert_surfaces(&mb, &rule, &picks, &skip, direction == "outside")?;
             for note in &conversion.notes {
                 append_warning(warning, note.clone());
             }
@@ -804,8 +804,8 @@ pub(super) fn sheet_eval(
             if let Some(b) = st.bodies.iter_mut().find(|b| b.name == *body) {
                 replace_sheet_body(b, solid);
             }
-            st.skins.retain(|s| s.body != flat.body);
-            st.skins.push(flat);
+            st.surface_flats.retain(|s| s.body != flat.body);
+            st.surface_flats.push(flat);
             Ok(())
         }
         // With bend edges: a solid or shelled body whose faces become the sheet.

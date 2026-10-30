@@ -1,10 +1,10 @@
-//! A sheet body as a skin (#6748): its panels in charts of their own, joined by bends anchored at
+//! A sheet body as surfaces (#6748): its panels in charts of their own, joined by bends anchored at
 //! their virtual sharps, and laid out flat by `solidcraft-develop`. While the sheet model keeps
-//! the flat pattern as its master, this is a check that the skin gives the same flat: setting
-//! `SOLIDCRAFT_SKIN_REPORT` to a file makes every sheet body that is built append one line to it,
+//! the flat pattern as its master, this is a check that its surfaces give the same flat: setting
+//! `SOLIDCRAFT_SURFACE_REPORT` to a file makes every sheet body that is built append one line to it,
 //! naming the thread (a test's name under `cargo test`) and how far the two flats differ.
 
-use solidcraft_develop::{Anchor, Bend, Datum, Development, Joint, JointKind, Panel, Relief, Rigid2, Skin, Tail, ZoneEnds, develop};
+use solidcraft_develop::{Anchor, Bend, Datum, Development, Joint, JointKind, Panel, Relief, Rigid2, Sheet, Tail, ZoneEnds, develop};
 use solidcraft_geom::{Loop2, Region2, Seg2, Vec2};
 use solidcraft_kernel::BoolOp;
 
@@ -20,10 +20,10 @@ const HALF_TURN_TOL: f64 = 1e-9;
 /// outline: their mean distance apart (mm).
 const SAME_FLAT: f64 = 1e-6;
 
-/// The skin of a sheet body, its base panel's chart being the flat frame. Panel `0` is the base
+/// A sheet body's surfaces, its base panel's chart being the flat frame. Panel `0` is the base
 /// and panel `1 + i` flange `i`'s panel; each panel's material runs on from its tangent line to
-/// the bend's anchor, as the skin keeps it.
-pub(crate) fn skin_of(sh: &SheetBody) -> Result<Skin> {
+/// the bend's anchor, as the surface model keeps it.
+pub(crate) fn surfaces_of(sh: &SheetBody) -> Result<Sheet> {
     let n = sh.flanges.len();
     // Each panel's chart, from the flat frame: the base's is the flat frame itself, and a
     // flange's is put at the start of its bend's anchor so that nothing of its flat place is
@@ -74,7 +74,7 @@ pub(crate) fn skin_of(sh: &SheetBody) -> Result<Skin> {
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(Skin { thickness: sh.t, k_factor: sh.k, panels, joints, corners: Vec::new() })
+    Ok(Sheet { thickness: sh.t, k_factor: sh.k, panels, joints, corners: Vec::new() })
 }
 
 /// One flange's bend, in the sheet's flat frame: the anchors run `along` the bend with the
@@ -172,10 +172,10 @@ fn sheet_flat(sh: &SheetBody, work: &mut FlatWork) -> Result<Vec<Region2>> {
     material_union(pieces, work)
 }
 
-/// The skin's flat: each placed panel less its trims, and the zones; with the development it
+/// The surface model's flat: each placed panel less its trims, and the zones; with the development it
 /// was joined from.
-fn skin_flat(skin: &Skin, work: &mut FlatWork) -> Result<(Vec<Region2>, Development)> {
-    let dev = develop(skin, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
+fn surface_flat(model: &Sheet, work: &mut FlatWork) -> Result<(Vec<Region2>, Development)> {
+    let dev = develop(model, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
     Ok((join(&dev, work)?, dev))
 }
 
@@ -227,7 +227,7 @@ pub(crate) fn join(dev: &Development, work: &mut FlatWork) -> Result<Vec<Region2
 
 /// A development's pieces (see [`pieces`]) joined into its flat.
 pub(crate) fn join_pieces(pieces: &[(Piece, Region2)], work: &mut FlatWork) -> Result<Vec<Region2>> {
-    stage("joining the skin's pieces", material_union(pieces.iter().map(|(_, r)| r.clone()).collect(), work))
+    stage("joining the sheet's pieces", material_union(pieces.iter().map(|(_, r)| r.clone()).collect(), work))
 }
 
 /// A region with its points on the sheet's nanometre grid, as the sheet model rounds its
@@ -258,26 +258,26 @@ fn stage<T>(what: &str, r: Result<T>) -> Result<T> {
     r.map_err(|e| DocError::Invalid(format!("{what}: {e}")))
 }
 
-/// A sheet's flat laid out again from its skin.
+/// A sheet's flat laid out again from its surfaces.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RoundTrip {
-    /// How far the skin's flat is from the sheet's: the area between them over the length of
+    /// How far the surfaces' flat is from the sheet's: the area between them over the length of
     /// the sheet's outline (mm).
     pub apart: f64,
     /// How many joints close loops.
     pub loops: usize,
-    /// How the skin's flat edges resolve to the skin.
+    /// How the surfaces' flat edges resolve to the surfaces.
     pub edges: Resolution,
 }
 
 pub(crate) fn round_trip(sh: &SheetBody) -> Result<RoundTrip> {
-    compare(sh, &stage("building the skin", skin_of(sh))?)
+    compare(sh, &stage("building its surfaces", surfaces_of(sh))?)
 }
 
-fn compare(sh: &SheetBody, skin: &Skin) -> Result<RoundTrip> {
+fn compare(sh: &SheetBody, model: &Sheet) -> Result<RoundTrip> {
     let mut work = FlatWork::new();
     let mine = stage("joining the sheet's pieces", sheet_flat(sh, &mut work))?;
-    let (theirs, dev) = skin_flat(skin, &mut work)?;
+    let (theirs, dev) = surface_flat(model, &mut work)?;
     let area = |rs: &[Region2]| rs.iter().map(Region2::area).sum::<f64>();
     let apart = area(&stage("comparing", material_boolean(&mine, &theirs, BoolOp::Cut, &mut work))?)
         + area(&stage("comparing", material_boolean(&theirs, &mine, BoolOp::Cut, &mut work))?);
@@ -286,12 +286,12 @@ fn compare(sh: &SheetBody, skin: &Skin) -> Result<RoundTrip> {
     Ok(RoundTrip { apart: apart / outline.max(1e-9), loops: dev.loops.len(), edges })
 }
 
-/// Appends this sheet's round trip to the file `SOLIDCRAFT_SKIN_REPORT` names, when it is set.
+/// Appends this sheet's round trip to the file `SOLIDCRAFT_SURFACE_REPORT` names, when it is set.
 pub(crate) fn report(sh: &SheetBody) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         use std::io::Write;
-        let Some(path) = std::env::var_os("SOLIDCRAFT_SKIN_REPORT") else { return };
+        let Some(path) = std::env::var_os("SOLIDCRAFT_SURFACE_REPORT") else { return };
         let what = sh
             .flanges
             .iter()
@@ -363,19 +363,19 @@ mod tests {
 
     const EDGES: [Vec3; 4] = [Vec3::new(50.0, 0.0, T), Vec3::new(100.0, 30.0, T), Vec3::new(50.0, 60.0, T), Vec3::new(0.0, 30.0, T)];
 
-    /// The skin's flat is the sheet's, closes no loop, and every edge of it is something in the
-    /// skin.
+    /// The surfaces' flat is the sheet's, closes no loop, and every edge of it is something in
+    /// the surfaces.
     fn same(sh: &SheetBody) {
         let rt = match round_trip(sh) {
             Ok(rt) => rt,
             Err(e) => panic!("{e}"),
         };
-        assert!(rt.apart <= SAME_FLAT && rt.loops == 0, "the skin's flat is {:e} mm from the sheet's ({} loops)", rt.apart, rt.loops);
+        assert!(rt.apart <= SAME_FLAT && rt.loops == 0, "the surfaces' flat is {:e} mm from the sheet's ({} loops)", rt.apart, rt.loops);
         assert!(rt.edges.geometry_only == 0 && rt.edges.exact > 0, "{:?}", rt.edges);
     }
 
     #[test]
-    fn a_bracket_and_a_tray_develop_from_their_skins() {
+    fn a_bracket_and_a_tray_develop_from_their_surfaces() {
         let mut bracket = plate(ReliefShape::Notch);
         assert!(bracket.add_flange(Vec3::new(50.0, 0.0, T), 20.0, FRAC_PI_2, R, "inside", false).is_ok());
         same(&bracket);
@@ -387,7 +387,7 @@ mod tests {
     /// Bends that turn away from the material, past 90 degrees, and from other positions on the
     /// edge, and a hem, whose anchors are its tangent lines.
     #[test]
-    fn bends_either_way_and_a_hem_develop_from_their_skins() {
+    fn bends_either_way_and_a_hem_develop_from_their_surfaces() {
         let mut sh = plate(ReliefShape::Notch);
         assert!(sh.add_flange(Vec3::new(50.0, 0.0, T), 20.0, 2.0, R, "tangent", false).is_ok());
         assert!(sh.add_flange(Vec3::new(100.0, 30.0, T), 15.0, 1.0, R, "outside", true).is_ok());
@@ -397,7 +397,7 @@ mod tests {
 
     /// Torn corners slant the zones' ends, and a return stands on a flange.
     #[test]
-    fn torn_corners_and_a_return_develop_from_their_skins() {
+    fn torn_corners_and_a_return_develop_from_their_surfaces() {
         let mut sh = plate(ReliefShape::Tear);
         assert!(sh.add_flanges(&EDGES, 20.0, FRAC_PI_2, R, "inside", false).is_ok());
         assert!(sh.flanges.iter().any(|f| f.tear.0 || f.tear.1));
@@ -409,7 +409,7 @@ mod tests {
     /// A flap on the end of a wall: the wall's panel loses a band to its own bend and one to
     /// the flap's, which meet at its corner.
     #[test]
-    fn a_flap_on_the_end_of_a_wall_develops_from_its_skin() {
+    fn a_flap_on_the_end_of_a_wall_develops_from_its_surfaces() {
         let mut sh = plate(ReliefShape::Notch);
         assert!(sh.add_flange(Vec3::new(0.0, 30.0, T), 40.0, FRAC_PI_2, R, "inside", false).is_ok());
         assert!(sh.add_flange(Vec3::new(1.0, 0.0, 20.0), 40.0, std::f64::consts::FRAC_PI_4, R, "inside", false).is_ok());
@@ -417,15 +417,15 @@ mod tests {
         same(&sh);
     }
 
-    /// The check sees a wrong skin: one whose K-factor is off by 0.1 puts the flange 0.1 x T x
+    /// The check sees wrong surfaces: one whose K-factor is off by 0.1 puts the flange 0.1 x T x
     /// pi / 2 from where the sheet has it.
     #[test]
-    fn a_skin_with_another_k_factor_does_not_give_the_sheets_flat() {
+    fn surfaces_with_another_k_factor_do_not_give_the_sheets_flat() {
         let mut sh = plate(ReliefShape::Notch);
         assert!(sh.add_flange(Vec3::new(50.0, 0.0, T), 20.0, FRAC_PI_2, R, "inside", false).is_ok());
-        let Ok(mut skin) = super::skin_of(&sh) else { panic!("a skin") };
-        skin.k_factor += 0.1;
-        let apart = super::compare(&sh, &skin).map_or(0.0, |rt| rt.apart);
+        let Ok(mut model) = super::surfaces_of(&sh) else { panic!("its surfaces") };
+        model.k_factor += 0.1;
+        let apart = super::compare(&sh, &model).map_or(0.0, |rt| rt.apart);
         // The flange and its far edge shift 0.1 pi mm: 100 mm long, over a 2 x (100 + 80.something)
         // outline, a fraction of that on average.
         assert!(apart > 0.01, "{apart}");

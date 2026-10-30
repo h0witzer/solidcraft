@@ -3,8 +3,8 @@ use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 use solidcraft_geom::{Aabb2, Loop2, Region2, Seg2, Vec2, Vec3};
 
 use crate::{
-    Anchor, Bend, Corner, Datum, DevelopError, Development, EdgeFrom, Joint, JointKind, Lap, Panel, Relief, Rigid2, Rigid3, Rip, Skin, Surface, Tail,
-    ZoneEnds, develop, fold,
+    Anchor, Bend, Corner, Datum, DevelopError, Development, EdgeFrom, Joint, JointKind, Lap, Panel, Relief, Rigid2, Rigid3, Rip, Sheet, Surface,
+    Tail, ZoneEnds, develop, fold,
 };
 
 const T: f64 = 2.0;
@@ -56,9 +56,9 @@ fn bend(angle: f64, datum: Datum, span: (f64, f64)) -> Bend {
 /// An L bracket: a 100 x 60 base whose virtual sharp runs along y = 0, and a 20 mm flange drawn
 /// in a chart of its own, turned and shifted so that nothing about its flat place is given
 /// away. The flange's material lies on the right of its anchor.
-fn bracket(b: Bend) -> Skin {
+fn bracket(b: Bend) -> Sheet {
     let chart = Rigid2::onto(Vec2::ZERO, Vec2::X, Vec2::new(7.0, -3.0), Vec2::from_angle(1.1)).unwrap_or(Rigid2::IDENTITY);
-    Skin {
+    Sheet {
         thickness: T,
         k_factor: K,
         panels: vec![
@@ -102,11 +102,11 @@ fn a_rigid_motion_maps_every_kind_of_segment_exactly() {
 /// flat is the outside lengths less the bend deduction 2 x 4 - pi / 2 x 3.
 #[test]
 fn an_l_bracket_lays_out_with_its_bend_deduction() {
-    let skin = bracket(bend(FRAC_PI_2, Datum::Sharp, (0.0, 100.0)));
-    let dev = develop(&skin, 0).unwrap_or_default();
+    let sheet = bracket(bend(FRAC_PI_2, Datum::Sharp, (0.0, 100.0)));
+    let dev = develop(&sheet, 0).unwrap_or_default();
     let ba = FRAC_PI_2 * (R + K * T);
     let Some(Some(flange)) = dev.placements.get(1) else { panic!("the flange is placed: {dev:?}") };
-    let Some(region) = skin.panels.get(1).map(|p| flange.region(&p.region)) else { panic!() };
+    let Some(region) = sheet.panels.get(1).map(|p| flange.region(&p.region)) else { panic!() };
     // The flange's sharp lands 8 - BA below the base's (the flat frame's y runs into the base).
     let b = bounds(&region);
     assert!((b.max.y - (8.0 - ba)).abs() < 1e-9 && (b.min.y - (8.0 - ba - 20.0)).abs() < 1e-9, "{b:?}");
@@ -135,9 +135,9 @@ fn an_l_bracket_lays_out_with_its_bend_deduction() {
 /// layouts differ by one rigid motion.
 #[test]
 fn any_panel_can_be_the_root() {
-    let skin = bracket(bend(1.2, Datum::Sharp, (10.0, 90.0)));
-    let from_base = develop(&skin, 0).unwrap_or_default();
-    let from_flange = develop(&skin, 1).unwrap_or_default();
+    let sheet = bracket(bend(1.2, Datum::Sharp, (10.0, 90.0)));
+    let from_base = develop(&sheet, 0).unwrap_or_default();
+    let from_flange = develop(&sheet, 1).unwrap_or_default();
     let (Some(Some(flange)), Some(Some(base))) = (from_base.placements.get(1), from_flange.placements.first()) else { panic!() };
     assert!(same_motion(base, &flange.inverse()));
 }
@@ -148,11 +148,11 @@ fn any_panel_can_be_the_root() {
 fn a_hem_is_anchored_at_its_tangent_lines() {
     let mut hem = bend(PI, Datum::Tangent, (0.0, 100.0));
     hem.radius = 0.01;
-    let skin = bracket(hem.clone());
-    let dev = develop(&skin, 0).unwrap_or_default();
+    let sheet = bracket(hem.clone());
+    let dev = develop(&sheet, 0).unwrap_or_default();
     let ba = PI * (0.01 + K * T);
     let Some(Some(flange)) = dev.placements.get(1) else { panic!() };
-    let Some(region) = skin.panels.get(1).map(|p| flange.region(&p.region)) else { panic!() };
+    let Some(region) = sheet.panels.get(1).map(|p| flange.region(&p.region)) else { panic!() };
     assert!((bounds(&region).max.y + ba).abs() < 1e-9, "{:?}", bounds(&region));
     hem.datum = Datum::Sharp;
     assert!(matches!(develop(&bracket(hem), 0), Err(DevelopError::Joint(0, _))));
@@ -197,14 +197,14 @@ fn a_ring_of_bends_is_reported_not_forced() {
         b: Anchor { panel: b, origin: Vec2::new(100.0, 0.0), dir: Vec2::new(-1.0, 0.0) },
         kind: JointKind::Bend(bend(FRAC_PI_2, Datum::Sharp, (0.0, 100.0))),
     };
-    let skin = Skin {
+    let sheet = Sheet {
         thickness: T,
         k_factor: K,
         panels: (0..4).map(wall).collect(),
         joints: vec![joint(0, 1), joint(1, 2), joint(2, 3), joint(3, 0)],
         corners: Vec::new(),
     };
-    let dev = develop(&skin, 0).unwrap_or_default();
+    let dev = develop(&sheet, 0).unwrap_or_default();
     assert!(dev.placements.iter().all(Option::is_some));
     let [miss] = dev.loops.as_slice() else { panic!("one loop: {:?}", dev.loops) };
     // Laid out from wall 0 both ways round, walls 1 and 2 go one way and wall 3 the other, so
@@ -212,7 +212,7 @@ fn a_ring_of_bends_is_reported_not_forced() {
     // and four bends from where the other way put it.
     let step = 40.0 + FRAC_PI_2 * (R + K * T) - 8.0;
     assert!(miss.joint == 2 && (miss.distance - 4.0 * step).abs() < 1e-9 && miss.angle < 1e-12, "{miss:?}");
-    let ring_free = Skin { joints: skin.joints.iter().take(3).cloned().collect(), ..skin.clone() };
+    let ring_free = Sheet { joints: sheet.joints.iter().take(3).cloned().collect(), ..sheet.clone() };
     assert!(develop(&ring_free, 0).unwrap_or_default().loops.is_empty());
 }
 
@@ -220,15 +220,15 @@ fn a_ring_of_bends_is_reported_not_forced() {
 /// first, and each loses its cut along the rip.
 #[test]
 fn a_rip_lays_its_panels_out_apart_and_bad_joints_are_refused() {
-    let mut skin = bracket(bend(FRAC_PI_2, Datum::Sharp, (0.0, 100.0)));
-    if let Some(j) = skin.joints.get_mut(0) {
+    let mut sheet = bracket(bend(FRAC_PI_2, Datum::Sharp, (0.0, 100.0)));
+    if let Some(j) = sheet.joints.get_mut(0) {
         j.kind = rip_along(j, 100.0, FRAC_PI_2, Lap::Cut(0.5, 0.25));
     }
-    let dev = develop(&skin, 0).unwrap_or_default();
+    let dev = develop(&sheet, 0).unwrap_or_default();
     assert_eq!(dev.pieces, vec![vec![0], vec![1]]);
     assert!(dev.zones.is_empty() && dev.loops.is_empty());
     // The flange lies ten thicknesses to the right of the base, level with its lowest edge.
-    let (Some(Some(place)), Some(flange)) = (dev.placements.get(1), skin.panels.get(1)) else { panic!("the flange is laid out: {dev:?}") };
+    let (Some(Some(place)), Some(flange)) = (dev.placements.get(1), sheet.panels.get(1)) else { panic!("the flange is laid out: {dev:?}") };
     let fb = bounds(&place.region(&flange.region));
     assert!((fb.min.x - 120.0).abs() < 1e-9 && fb.min.y.abs() < 1e-9, "{fb:?}");
     // The base loses 0.5 along the rip, into its material above y = 0: its edge there is the
@@ -239,11 +239,11 @@ fn a_rip_lays_its_panels_out_apart_and_bad_joints_are_refused() {
     assert!((a.y - 0.5).abs() < 1e-9 && (b.y - 0.5).abs() < 1e-9 && (a.x - b.x).abs() > 100.0 - 1e-9, "{a:?} {b:?}");
     let Some(Some(base)) = dev.panels.first() else { panic!("the base is laid out") };
     assert!((bounds(&base.region).min.y - 0.5).abs() < 1e-9, "{:?}", bounds(&base.region));
-    assert_eq!(develop(&skin, 5), Err(DevelopError::NoPanel(5)));
-    if let Some(j) = skin.joints.get_mut(0) {
+    assert_eq!(develop(&sheet, 5), Err(DevelopError::NoPanel(5)));
+    if let Some(j) = sheet.joints.get_mut(0) {
         j.b.dir = Vec2::new(2.0, 0.0);
     }
-    assert!(matches!(develop(&skin, 0), Err(DevelopError::Joint(0, _))));
+    assert!(matches!(develop(&sheet, 0), Err(DevelopError::Joint(0, _))));
 }
 
 /// A roll `length` long along its axis, turning through `angle` (radians) round it.
@@ -262,14 +262,14 @@ fn seam(a: usize, ya: f64, b: usize, yb: f64) -> Joint {
 }
 
 /// A floor, a quarter roll and a wall joined by seams: the roll flattens to its neutral arc's
-/// length, a quarter turn at K x T out from the inside of the roll. With the skin on the inside
-/// of the roll the neutral surface lies further out than the skin; with it on the outside,
+/// length, a quarter turn at K x T out from the inside of the roll. With the sheet on the inside
+/// of the roll the neutral surface lies further out than the sheet; with it on the outside,
 /// further in.
 #[test]
 fn a_roll_flattens_through_its_neutral_surface() {
     let r = 30.0;
     for (inward, neutral_radius) in [(false, r + K * T), (true, r - (1.0 - K) * T)] {
-        let skin = Skin {
+        let sheet = Sheet {
             thickness: T,
             k_factor: K,
             panels: vec![
@@ -280,7 +280,7 @@ fn a_roll_flattens_through_its_neutral_surface() {
             joints: vec![seam(0, 40.0, 1, 0.0), seam(1, FRAC_PI_2, 2, 0.0)],
             corners: Vec::new(),
         };
-        let dev = develop(&skin, 0).unwrap_or_default();
+        let dev = develop(&sheet, 0).unwrap_or_default();
         assert!(dev.loops.is_empty() && dev.zones.is_empty() && dev.trims.is_empty() && dev.pieces.len() == 1);
         let Some(Some(wall)) = dev.panels.get(2) else { panic!("the wall is laid out: {dev:?}") };
         let flat = bounds(&wall.region).max.y;
@@ -298,7 +298,7 @@ fn a_cone_flattens_to_a_sector_at_its_neutral_radii() {
     let half_angle: f64 = 0.5;
     let turn = std::f64::consts::TAU;
     let sweep = turn * half_angle.sin();
-    let skin = Skin {
+    let sheet = Sheet {
         thickness: T,
         k_factor: K,
         panels: vec![Panel {
@@ -309,7 +309,7 @@ fn a_cone_flattens_to_a_sector_at_its_neutral_radii() {
         joints: Vec::new(),
         corners: Vec::new(),
     };
-    let dev = develop(&skin, 0).unwrap_or_default();
+    let dev = develop(&sheet, 0).unwrap_or_default();
     let Some(Some(flat)) = dev.panels.first() else { panic!("laid out: {dev:?}") };
     let d = K * T / half_angle.tan();
     let arcs: Vec<(f64, f64)> =
@@ -325,42 +325,42 @@ fn a_cone_flattens_to_a_sector_at_its_neutral_radii() {
 #[test]
 fn a_tube_of_rolls_opens_with_a_rip() {
     let r = 25.0;
-    let mut skin = Skin {
+    let mut sheet = Sheet {
         thickness: T,
         k_factor: K,
         panels: vec![roll(r, true, 100.0, PI), roll(r, true, 100.0, PI)],
         joints: vec![seam(0, PI, 1, 0.0), seam(1, PI, 0, 0.0)],
         corners: Vec::new(),
     };
-    assert_eq!(develop(&skin, 0).unwrap_or_default().loops.len(), 1);
-    if let Some(j) = skin.joints.get_mut(1) {
+    assert_eq!(develop(&sheet, 0).unwrap_or_default().loops.len(), 1);
+    if let Some(j) = sheet.joints.get_mut(1) {
         j.kind = rip_along(j, 100.0, 0.0, Lap::Cut(0.0, 0.0));
     }
-    let dev = develop(&skin, 0).unwrap_or_default();
+    let dev = develop(&sheet, 0).unwrap_or_default();
     assert!(dev.loops.is_empty() && dev.pieces.len() == 1, "{dev:?}");
     let Some(Some(second)) = dev.panels.get(1) else { panic!() };
     let around = std::f64::consts::TAU * (r - (1.0 - K) * T);
     assert!((bounds(&second.region).max.y - around).abs() < 1e-9, "{:?}", bounds(&second.region));
 }
 
-/// A round hole on a roll, 10 mm across the skin, is an ellipse in the roll's parameters (the
+/// A round hole on a roll, 10 mm across the sheet, is an ellipse in the roll's parameters (the
 /// angle round it is length over the radius). Flattened, it lies on the neutral circle: still an
 /// exact ellipse, as conics that each say which of the hole's segments they came from.
 #[test]
 fn a_hole_in_a_roll_flattens_to_an_exact_ellipse() {
     let (r, c, hole) = (40.0, Vec2::new(50.0, 30.0), 10.0);
-    let on_skin = |p: Vec2| Vec2::new(p.x, p.y / r);
+    let on_surface = |p: Vec2| Vec2::new(p.x, p.y / r);
     let quarters: Vec<Seg2> = crate::chart::arc_as_conics(c, hole, 0.0, std::f64::consts::TAU)
         .into_iter()
         .map(|s| match s {
-            Seg2::Conic { a, apex, b, w } => Seg2::Conic { a: on_skin(a), apex: on_skin(apex), b: on_skin(b), w },
+            Seg2::Conic { a, apex, b, w } => Seg2::Conic { a: on_surface(a), apex: on_surface(apex), b: on_surface(b), w },
             other => other,
         })
         .collect();
     let mut panel = roll(r, false, 100.0, 60.0 / r);
     panel.region.holes.push(Loop2 { segs: quarters }.reversed());
-    let skin = Skin { thickness: T, k_factor: K, panels: vec![panel], joints: Vec::new(), corners: Vec::new() };
-    let dev = develop(&skin, 0).unwrap_or_default();
+    let sheet = Sheet { thickness: T, k_factor: K, panels: vec![panel], joints: Vec::new(), corners: Vec::new() };
+    let dev = develop(&sheet, 0).unwrap_or_default();
     let Some(Some(flat)) = dev.panels.first() else { panic!("laid out: {dev:?}") };
     let (Some(ellipse), Some(from)) = (flat.region.holes.first(), flat.origins.get(1)) else { panic!("{flat:?}") };
     let k = (r + K * T) / r;
@@ -377,11 +377,11 @@ fn a_hole_in_a_roll_flattens_to_an_exact_ellipse() {
 
 #[test]
 fn a_bend_on_the_edge_of_a_roll_is_refused() {
-    let mut skin = bracket(bend(FRAC_PI_2, Datum::Sharp, (0.0, 100.0)));
-    if let Some(p) = skin.panels.get_mut(1) {
+    let mut sheet = bracket(bend(FRAC_PI_2, Datum::Sharp, (0.0, 100.0)));
+    if let Some(p) = sheet.panels.get_mut(1) {
         p.surface = Surface::Cylinder { radius: 50.0, material_inward: false };
     }
-    assert!(matches!(develop(&skin, 0), Err(DevelopError::Joint(0, _))));
+    assert!(matches!(develop(&sheet, 0), Err(DevelopError::Joint(0, _))));
 }
 
 fn spline(degree: [usize; 2], knots: [Vec<f64>; 2], points: &[Vec3], weights: &[f64]) -> Surface {
@@ -392,8 +392,8 @@ fn spline(degree: [usize; 2], knots: [Vec<f64>; 2], points: &[Vec3], weights: &[
 }
 
 /// A free-form panel over its whole parameter square.
-fn free(surface: Surface) -> Skin {
-    Skin {
+fn free(surface: Surface) -> Sheet {
+    Sheet {
         thickness: T,
         k_factor: K,
         panels: vec![Panel { name: "free".into(), surface, region: rect(0.0, 0.0, 1.0, 1.0) }],
@@ -403,8 +403,8 @@ fn free(surface: Surface) -> Skin {
 }
 
 /// The flat length of the parameter line from `a` to `b`, along the flattened segments.
-fn flat_length(skin: &Skin, a: Vec2, b: Vec2) -> f64 {
-    let mut probe = skin.clone();
+fn flat_length(sheet: &Sheet, a: Vec2, b: Vec2) -> f64 {
+    let mut probe = sheet.clone();
     if let Some(p) = probe.panels.first_mut() {
         p.region = Region2 { outer: Loop2 { segs: vec![Seg2::Line { a, b }, Seg2::Line { a: b, b: a }] }, holes: Vec::new() };
     }
@@ -416,7 +416,7 @@ fn flat_length(skin: &Skin, a: Vec2, b: Vec2) -> f64 {
 }
 
 /// A quarter of a cylinder of radius 40, 100 long, written as a rational spline (its angle is no
-/// parameter of it), its skin on the inside: fitted in its own spline space, it flattens to the
+/// parameter of it), its sheet on the inside: fitted in its own spline space, it flattens to the
 /// neutral arc's length, a quarter turn at 40 + K x T, with next to no stretch.
 #[test]
 fn a_spline_cylinder_flattens_like_a_roll() {
@@ -430,12 +430,12 @@ fn a_spline_cylinder_flattens_like_a_roll() {
             weights.push(wt);
         }
     }
-    let skin = free(spline([1, 2], [vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0]], &points, &weights));
-    let dev = develop(&skin, 0).unwrap_or_default();
+    let sheet = free(spline([1, 2], [vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0]], &points, &weights));
+    let dev = develop(&sheet, 0).unwrap_or_default();
     let Some(Some(flat)) = dev.panels.first() else { panic!("laid out: {dev:?}") };
     assert!(flat.stretch < 1e-6, "{}", flat.stretch);
-    let around = flat_length(&skin, Vec2::new(0.0, 0.0), Vec2::new(0.0, 1.0));
-    let along = flat_length(&skin, Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0));
+    let around = flat_length(&sheet, Vec2::new(0.0, 0.0), Vec2::new(0.0, 1.0));
+    let along = flat_length(&sheet, Vec2::new(0.0, 0.0), Vec2::new(1.0, 0.0));
     assert!((around - FRAC_PI_2 * (r + K * T)).abs() < 1e-7, "{around} vs {}", FRAC_PI_2 * (r + K * T));
     assert!((along - 100.0).abs() < 1e-6, "{along}");
 }
@@ -452,8 +452,8 @@ fn a_bent_strip_flattens_to_its_neutral_curves_length() {
             points.push(Vec3::new(p.x, y, p.y));
         }
     }
-    let skin = free(spline([1, 3], [vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]], &points, &[1.0; 8]));
-    let dev = develop(&skin, 0).unwrap_or_default();
+    let sheet = free(spline([1, 3], [vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]], &points, &[1.0; 8]));
+    let dev = develop(&sheet, 0).unwrap_or_default();
     let Some(Some(flat)) = dev.panels.first() else { panic!("laid out: {dev:?}") };
     assert!(flat.stretch < 1e-6, "{}", flat.stretch);
     // The curve in (x, z), its normal Su x Sv with Su along +y, and the neutral surface at K x T
@@ -470,7 +470,7 @@ fn a_bent_strip_flattens_to_its_neutral_curves_length() {
     };
     let steps = 200_000;
     let expected: f64 = (0..steps).map(|k| at(k as f64 / steps as f64).dist(at((k + 1) as f64 / steps as f64))).sum();
-    let got = flat_length(&skin, Vec2::new(0.0, 0.0), Vec2::new(0.0, 1.0));
+    let got = flat_length(&sheet, Vec2::new(0.0, 0.0), Vec2::new(0.0, 1.0));
     assert!((got - expected).abs() < 1e-7, "{got} vs {expected}");
 }
 
@@ -483,8 +483,8 @@ fn a_saddle_flattens_and_reports_its_stretch() {
             points.push(Vec3::new(u * 60.0, v * 60.0, if (u + v) == 1.0 { 15.0 } else { 0.0 }));
         }
     }
-    let skin = free(spline([1, 1], [vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 0.0, 1.0, 1.0]], &points, &[1.0; 4]));
-    let dev = develop(&skin, 0).unwrap_or_default();
+    let sheet = free(spline([1, 1], [vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 0.0, 1.0, 1.0]], &points, &[1.0; 4]));
+    let dev = develop(&sheet, 0).unwrap_or_default();
     let Some(Some(flat)) = dev.panels.first() else { panic!("laid out: {dev:?}") };
     assert!(flat.stretch > 1e-3 && flat.stretch < 0.5, "{}", flat.stretch);
 }
@@ -502,7 +502,7 @@ fn a_straight_trim_flattens_to_exact_bezier_pieces() {
         }
     }
     let surface = spline([1, 3], [vec![0.0, 0.0, 1.0, 1.0], vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0]], &points, &[1.0; 8]);
-    let map = match crate::chart::Flatten::of(&surface, &Skin { thickness: T, k_factor: K, ..Skin::default() }) {
+    let map = match crate::chart::Flatten::of(&surface, &Sheet { thickness: T, k_factor: K, ..Sheet::default() }) {
         Ok(m) => m,
         Err(e) => panic!("{e}"),
     };
@@ -528,29 +528,29 @@ fn near3(a: Vec3, b: Vec3) -> bool {
 /// Folded, the bracket's flange stands square on its base: turned toward the material it rises
 /// on the material's side with its material toward the base, turned away it drops with its
 /// material away from it. Its zone wraps from the base's tangent line to the flange's round an
-/// axis the skin's radius from both, and each zone edge the flat shares with a panel lands where
+/// axis the sheet's radius from both, and each zone edge the flat shares with a panel lands where
 /// that panel's own does, at every depth.
 #[test]
 fn an_l_bracket_folds_square_round_its_bend() {
     for toward in [true, false] {
         let mut b = bend(FRAC_PI_2, Datum::Sharp, (0.0, 100.0));
         b.toward_material = toward;
-        let skin = bracket(b);
-        let dev = develop(&skin, 0).unwrap_or_default();
-        let folded = fold(&skin, &dev, &[Rigid3::IDENTITY]).unwrap_or_else(|e| panic!("{e}"));
+        let sheet = bracket(b);
+        let dev = develop(&sheet, 0).unwrap_or_default();
+        let folded = fold(&sheet, &dev, &[Rigid3::IDENTITY]).unwrap_or_else(|e| panic!("{e}"));
         let side = if toward { 1.0 } else { -1.0 };
         // 30 along the sharp and 20 into the flange, from the `b` anchor.
-        let Some(at) = skin.joints.first().map(|j| j.b) else { panic!() };
+        let Some(at) = sheet.joints.first().map(|j| j.b) else { panic!() };
         let q = at.origin + at.dir * 30.0 + Vec2::new(at.dir.y, -at.dir.x) * 20.0;
         for depth in [0.0, T] {
             let got = folded.surface_point(1, q, depth).unwrap_or_else(|| panic!("the flange is folded"));
             assert!(near3(got, Vec3::new(30.0, side * depth, side * 20.0)), "{toward}: {got:?} at {depth}");
         }
         let Some(Some(bent)) = folded.bends.first() else { panic!("the bend is folded") };
-        let skin_r = if toward { R + T } else { R };
+        let surface_r = if toward { R + T } else { R };
         let (axis_at, axis) = bent.axis();
         assert!(
-            (axis_at.y - skin_r).abs() < 1e-9 && (axis_at.z - side * skin_r).abs() < 1e-9 && near3(axis, Vec3::X * -side),
+            (axis_at.y - surface_r).abs() < 1e-9 && (axis_at.z - side * surface_r).abs() < 1e-9 && near3(axis, Vec3::X * -side),
             "{axis_at:?} {axis:?}"
         );
         let [zone] = dev.zones.as_slice() else { panic!("one zone") };
@@ -564,7 +564,7 @@ fn an_l_bracket_folds_square_round_its_bend() {
             let (along, _) = bent.wrapped(zone.near[0]);
             let p = bent.at(along, FRAC_PI_4, depth);
             let rho = (p - axis_at) - axis * (p - axis_at).dot(axis);
-            assert!((rho.len() - (skin_r - side * depth)).abs() < 1e-9, "{toward}: {rho:?} at {depth}");
+            assert!((rho.len() - (surface_r - side * depth)).abs() < 1e-9, "{toward}: {rho:?} at {depth}");
         }
     }
 }
@@ -576,7 +576,7 @@ fn an_l_bracket_folds_square_round_its_bend() {
 fn a_roll_folds_onto_its_cylinder_between_its_neighbours() {
     let r = 30.0;
     for (inward, rise) in [(true, 1.0), (false, -1.0)] {
-        let skin = Skin {
+        let sheet = Sheet {
             thickness: T,
             k_factor: K,
             panels: vec![
@@ -587,8 +587,8 @@ fn a_roll_folds_onto_its_cylinder_between_its_neighbours() {
             joints: vec![seam(0, 40.0, 1, 0.0), seam(1, FRAC_PI_2, 2, 0.0)],
             corners: Vec::new(),
         };
-        let dev = develop(&skin, 0).unwrap_or_default();
-        let folded = fold(&skin, &dev, &[Rigid3::IDENTITY]).unwrap_or_else(|e| panic!("{e}"));
+        let dev = develop(&sheet, 0).unwrap_or_default();
+        let folded = fold(&sheet, &dev, &[Rigid3::IDENTITY]).unwrap_or_else(|e| panic!("{e}"));
         assert!(folded.loops.is_empty() && folded.bends.iter().all(Option::is_none));
         let (Some(Some(roll)), Some(Some(wall))) = (dev.panels.get(1), dev.panels.get(2)) else { panic!("laid out: {dev:?}") };
         let (seam_a, seam_b, top) = (40.0, bounds(&roll.region).max.y, bounds(&wall.region).max.y);
@@ -611,22 +611,22 @@ fn a_cones_flat_maps_back_to_its_parameters() {
     let half_angle: f64 = 0.5;
     for inward in [true, false] {
         let surface = Surface::Cone { half_angle, material_inward: inward };
-        let skin = Skin {
+        let sheet = Sheet {
             thickness: T,
             k_factor: K,
             panels: vec![Panel { name: "hopper".into(), surface: surface.clone(), region: rect(40.0, 0.5, 90.0, 5.5) }],
             joints: Vec::new(),
             corners: Vec::new(),
         };
-        let dev = develop(&skin, 0).unwrap_or_default();
-        let folded = fold(&skin, &dev, &[Rigid3::IDENTITY]).unwrap_or_else(|e| panic!("{e}"));
-        let (Ok(map), Some(Some(place))) = (crate::chart::Flatten::of(&surface, &skin), dev.placements.first()) else { panic!() };
+        let dev = develop(&sheet, 0).unwrap_or_default();
+        let folded = fold(&sheet, &dev, &[Rigid3::IDENTITY]).unwrap_or_else(|e| panic!("{e}"));
+        let (Ok(map), Some(Some(place))) = (crate::chart::Flatten::of(&surface, &sheet), dev.placements.first()) else { panic!() };
         for q in [Vec2::new(40.0, 0.5), Vec2::new(90.0, 5.5), Vec2::new(65.0, 3.0)] {
             let p = place.point(map.point(q));
             let back = folded.param(0, p).unwrap_or_default();
             assert!(near(back, q), "{inward}: {back:?} vs {q:?}");
-            let (Some(skin_p), Some(deep)) = (folded.panel_point(0, p, 0.0), folded.panel_point(0, p, T)) else { panic!() };
-            assert!((skin_p.len() - q.x).abs() < 1e-9 && (deep.dist(skin_p) - T).abs() < 1e-9, "{inward}: {skin_p:?} {deep:?}");
+            let (Some(surface_p), Some(deep)) = (folded.panel_point(0, p, 0.0), folded.panel_point(0, p, T)) else { panic!() };
+            assert!((surface_p.len() - q.x).abs() < 1e-9 && (deep.dist(surface_p) - T).abs() < 1e-9, "{inward}: {surface_p:?} {deep:?}");
         }
     }
 }
@@ -642,18 +642,18 @@ fn a_ring_of_bends_closes_in_space() {
         b: Anchor { panel: b, origin: Vec2::new(100.0, 0.0), dir: Vec2::new(-1.0, 0.0) },
         kind: JointKind::Bend(bend(FRAC_PI_2, Datum::Sharp, (0.0, 100.0))),
     };
-    let skin = Skin {
+    let sheet = Sheet {
         thickness: T,
         k_factor: K,
         panels: (0..4).map(wall).collect(),
         joints: vec![joint(0, 1), joint(1, 2), joint(2, 3), joint(3, 0)],
         corners: Vec::new(),
     };
-    let dev = develop(&skin, 0).unwrap_or_default();
-    let folded = fold(&skin, &dev, &[Rigid3::IDENTITY]).unwrap_or_else(|e| panic!("{e}"));
+    let dev = develop(&sheet, 0).unwrap_or_default();
+    let folded = fold(&sheet, &dev, &[Rigid3::IDENTITY]).unwrap_or_else(|e| panic!("{e}"));
     let [miss] = folded.loops.as_slice() else { panic!("one ring: {:?}", folded.loops) };
     assert!(miss.distance < 1e-9 && miss.angle < 1e-9, "{miss:?}");
-    assert_eq!(fold(&skin, &dev, &[]), Err(DevelopError::Roots(1)));
+    assert_eq!(fold(&sheet, &dev, &[]), Err(DevelopError::Roots(1)));
 }
 
 /// The base's trims for the bracket's bend other than its band along the zone: its reliefs.
@@ -664,7 +664,7 @@ fn reliefs(dev: &crate::Development) -> Vec<&Region2> {
 /// A floor 100 x 60 bent up along y = 0 and along x = 100, the bends meeting at the corner (100,
 /// 0): their zones end where the floor's tangent lines cross, (96, 4) in the flat, and with
 /// `flip` the second bend's joint runs the other way, from its wall to the floor.
-fn corner(round: bool, flip: bool) -> Skin {
+fn corner(round: bool, flip: bool) -> Sheet {
     let ends = |near: (f64, f64)| ZoneEnds { near, far: near };
     let mut a = bend(FRAC_PI_2, Datum::Sharp, (0.0, 96.0));
     a.relief = (Relief::None, Relief::Notch);
@@ -685,7 +685,7 @@ fn corner(round: bool, flip: bool) -> Skin {
             kind: JointKind::Bend(b),
         }
     };
-    Skin {
+    Sheet {
         thickness: T,
         k_factor: K,
         panels: vec![
@@ -751,17 +751,17 @@ fn a_bend_relief_is_cut_where_the_base_runs_on_past_the_end() {
 fn a_torn_end_follows_its_plane_tight_round_the_bend() {
     let gap = 0.5;
     let wall_end = 100.0 - T - gap / std::f64::consts::SQRT_2;
-    let mut skin = corner(true, false);
-    skin.corners.clear();
+    let mut sheet = corner(true, false);
+    sheet.corners.clear();
     let s = std::f64::consts::FRAC_1_SQRT_2;
-    if let Some(JointKind::Bend(b)) = skin.joints.first_mut().map(|j| &mut j.kind) {
+    if let Some(JointKind::Bend(b)) = sheet.joints.first_mut().map(|j| &mut j.kind) {
         // The plane in the bend's frame at the floor's anchor: x along the joint, y up into the
         // material, z toward the wall (-y on the floor).
         b.relief = (Relief::None, Relief::Tear { normal: Vec3::new(-s, 0.0, s), offset: -100.0 * s });
         b.ends = ZoneEnds { near: (0.0, 96.0), far: (0.0, wall_end) };
     }
-    let dev = develop(&skin, 0).unwrap_or_default();
-    let folded = fold(&skin, &dev, &[Rigid3::IDENTITY]).unwrap_or_else(|e| panic!("{e}"));
+    let dev = develop(&sheet, 0).unwrap_or_default();
+    let folded = fold(&sheet, &dev, &[Rigid3::IDENTITY]).unwrap_or_else(|e| panic!("{e}"));
     let (Some(zone), Some(Some(bent))) = (dev.zones.iter().find(|z| z.joint == 0), folded.bends.first()) else {
         panic!("the bend is laid out and folded")
     };
@@ -829,7 +829,7 @@ fn half_round_cut(exact: bool) -> Vec<(Seg2, EdgeFrom)> {
     let along: Vec<Vec2> = (0..n).map(|k| arc.point_at(k as f64 / (n - 1) as f64)).collect();
     let round: Vec<Vec2> = (0..n).map(|k| Vec2::new(0.0, PI * k as f64 / (n - 1) as f64)).collect();
     let curves = (if exact { vec![arc] } else { Vec::new() }, Vec::new());
-    let skin = Skin {
+    let sheet = Sheet {
         thickness: T,
         k_factor: K,
         panels: vec![Panel { name: "plate".into(), region: plate, ..Panel::default() }, roll(r, true, 36.0, PI)],
@@ -840,7 +840,7 @@ fn half_round_cut(exact: bool) -> Vec<(Seg2, EdgeFrom)> {
         }],
         corners: Vec::new(),
     };
-    let dev = develop(&skin, 0).unwrap_or_default();
+    let dev = develop(&sheet, 0).unwrap_or_default();
     assert!(dev.trims.is_empty(), "{:?}", dev.trims);
     let Some(Some(plate)) = dev.panels.first() else { panic!("the plate is laid out: {dev:?}") };
     let from = plate.origins.first().cloned().unwrap_or_default();
@@ -889,17 +889,17 @@ fn a_rip_along_a_known_arc_cuts_an_arc() {
 #[test]
 fn a_rip_on_a_roll_is_cut_back_on_the_roll() {
     let r = 30.0;
-    let mut skin = Skin {
+    let mut sheet = Sheet {
         thickness: T,
         k_factor: K,
         panels: vec![roll(r, true, 100.0, FRAC_PI_2), Panel { name: "wall".into(), region: rect(0.0, 0.0, 100.0, 30.0), ..Panel::default() }],
         joints: vec![seam(0, FRAC_PI_2, 1, 0.0)],
         corners: Vec::new(),
     };
-    if let Some(j) = skin.joints.get_mut(0) {
+    if let Some(j) = sheet.joints.get_mut(0) {
         j.kind = rip_along(j, 100.0, 0.0, Lap::Cut(2.0, 0.0));
     }
-    let dev = develop(&skin, 0).unwrap_or_default();
+    let dev = develop(&sheet, 0).unwrap_or_default();
     let neutral = r - (1.0 - K) * T;
     let want = (FRAC_PI_2 - 2.0 / r) * neutral;
     let cut = rip_edges(&dev, 0, 0);

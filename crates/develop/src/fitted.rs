@@ -3,7 +3,7 @@
 //! The flat map F(u, v) is a planar spline over the panel's surface's own knots, refined where it
 //! must be. The surface's parameter lines therefore carry to the flat exactly, and so does
 //! anything drawn in its parameters. F is fitted to the neutral surface's metric, its first
-//! fundamental form I - 2hII + h^2 III, with h the depth of the neutral surface below the skin,
+//! fundamental form I - 2hII + h^2 III, with h the depth of the neutral surface below the sheet,
 //! rather than to positions: a developable surface has an F whose metric matches it everywhere,
 //! and on any other surface what is left is the stretch the flat costs, which is reported and
 //! never forced. A grid on the neutral surface unfolded triangle by triangle is the starting
@@ -66,7 +66,7 @@ pub(crate) fn derivatives(s: &NurbsSurface, spaces: &[Space; 2], u: f64, v: f64)
     Some([p, pu, pv, puu, puv, pvv])
 }
 
-/// The neutral surface's unit normal toward the material, depth below the skin, and first
+/// The neutral surface's unit normal toward the material, depth below the sheet, and first
 /// fundamental form (E, F, G) at a point whose derivatives are `d`. The material lies on the
 /// side `Su x Sv` points to; the neutral surface lies K x T from the inside of the bend there,
 /// which is the material side where the surface curves toward it.

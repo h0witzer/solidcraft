@@ -1,4 +1,4 @@
-//! Convert to Sheet Metal through the skin (#6748): a body's faces as a skin of panels, rolls
+//! Convert to Sheet Metal (#6748): a body's faces as a sheet of panels, rolls
 //! among them, laid out flat by `solidcraft-develop`. No face is fixed: every face of the sheet
 //! is a panel like any other, and the flat is drawn in the largest one's plane.
 //!
@@ -30,7 +30,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use solidcraft_develop::{
-    Anchor, Bend, Corner, Datum, Development, Fold, Joint, JointKind, Lap, Panel, Relief, Rigid3, Rip, Skin, Surface, Tail, ZoneEnds, curve_through,
+    Anchor, Bend, Corner, Datum, Development, Fold, Joint, JointKind, Lap, Panel, Relief, Rigid3, Rip, Sheet, Surface, Tail, ZoneEnds, curve_through,
     develop, fold,
 };
 use solidcraft_geom::brep::Loop as Bounds;
@@ -41,7 +41,7 @@ use solidcraft_kernel::{Body, FaceSurface, face_surface};
 use crate::sheet::FlatWork;
 
 use crate::sheet::ReliefShape;
-use crate::sheet_skin::Piece;
+use crate::sheet_surface::Piece;
 use crate::{DocError, ModelBody, Result};
 
 /// Normals closer than this (radians) meet smoothly: the sheet runs on across their edge.
@@ -49,7 +49,7 @@ const SMOOTH: f64 = 1e-6;
 
 /// The rule's values Convert works with.
 #[derive(Clone, Copy, Debug)]
-pub struct SkinRule {
+pub struct ConvertRule {
     pub thickness: f64,
     pub k_factor: f64,
     pub bend_radius: f64,
@@ -71,12 +71,12 @@ const ALONGSIDE: f64 = 1.0 - 1e-9;
 /// Relief sizes below this (mm) are not cut, as on a flanged sheet.
 const MIN_RELIEF: f64 = 0.01;
 
-/// A body converted through its skin: the skin and its development, the body's face each panel
+/// A body converted to sheet metal: its sheet of panels and joints and their development, the body's face each panel
 /// is and where that face puts the panel's frame in space, a point on the edge of each joint,
 /// the sheet's thickness (a shell's own), and why any relief the rule asks for was not cut.
 #[derive(Clone, Debug)]
-pub struct SkinConversion {
-    pub skin: Skin,
+pub struct SurfaceConversion {
+    pub sheet: Sheet,
     pub development: Development,
     pub faces: Vec<usize>,
     pub places: Vec<Rigid3>,
@@ -147,7 +147,7 @@ impl Shape {
     fn surface(&self) -> Surface {
         match *self {
             Shape::Plane { .. } => Surface::Plane,
-            // The skin's radius is the face's; with the material outward the face is the inside.
+            // The panel's radius is the face's; with the material outward the face is the inside.
             Shape::Cylinder { radius, inward, .. } => Surface::Cylinder { radius, material_inward: inward },
             Shape::Cone { half, inward, .. } => Surface::Cone { half_angle: half, material_inward: inward },
         }
@@ -552,10 +552,10 @@ enum Role {
     Rip,
 }
 
-/// Converts `mb` through its skin, less the faces at the `skip` points, bending at the edges at
+/// Converts `mb` to sheet metal from its faces, less the faces at the `skip` points, bending at the edges at
 /// the `bends` points and cutting every other sharp edge between two faces of the sheet open.
 /// A solid's material lies inside its faces, or outside them when `outward`.
-pub fn convert_skin(mb: &ModelBody, rule: &SkinRule, bends: &[Vec3], skip: &[Vec3], outward: bool) -> Result<SkinConversion> {
+pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip: &[Vec3], outward: bool) -> Result<SurfaceConversion> {
     let b = &mb.body;
     if b.is_mesh() {
         return err("a mesh body has no faces to convert: make it a solid first");
@@ -994,8 +994,8 @@ pub fn convert_skin(mb: &ModelBody, rule: &SkinRule, bends: &[Vec3], skip: &[Vec
             bend.relief = (r0, r1);
         }
     }
-    let skin = Skin { thickness: t, k_factor: rule.k_factor, panels, joints, corners };
-    let development = develop(&skin, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
+    let model = Sheet { thickness: t, k_factor: rule.k_factor, panels, joints, corners };
+    let development = develop(&model, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
     if !development.loops.is_empty() {
         let names: Vec<String> = development.loops.iter().filter_map(|m| edges.get(m.joint)).map(|p| at(*p)).collect();
         return err(format!(
@@ -1003,7 +1003,7 @@ pub fn convert_skin(mb: &ModelBody, rule: &SkinRule, bends: &[Vec3], skip: &[Vec
             names.join(" and the one at ")
         ));
     }
-    Ok(SkinConversion { skin, development, faces: order, places, edges, thickness: t, notes, pieces: std::sync::OnceLock::new() })
+    Ok(SurfaceConversion { sheet: model, development, faces: order, places, edges, thickness: t, notes, pieces: std::sync::OnceLock::new() })
 }
 
 /// A point of face `f`: halfway along the first edge of its outer loop.
@@ -1018,10 +1018,10 @@ fn face_point(q: &Query, f: usize) -> Option<Vec3> {
     q.edge_at(e, 0.5 * (t0 + t1)).map(|d| d.0)
 }
 
-impl SkinConversion {
+impl SurfaceConversion {
     /// The flat pattern: each placed panel less its trims, and the bend zones, joined.
     pub fn flat(&self) -> Result<Vec<Region2>> {
-        crate::sheet_skin::join_pieces(self.pieces()?, &mut FlatWork::new())
+        crate::sheet_surface::join_pieces(self.pieces()?, &mut FlatWork::new())
     }
 
     /// The flat's pieces: each placed panel less its trims, and the zones, all less the corners'
@@ -1030,17 +1030,17 @@ impl SkinConversion {
         if let Some(p) = self.pieces.get() {
             return Ok(p);
         }
-        let cut = crate::sheet_skin::pieces(&self.development, &mut FlatWork::new())?;
+        let cut = crate::sheet_surface::pieces(&self.development, &mut FlatWork::new())?;
         Ok(self.pieces.get_or_init(|| cut))
     }
 
-    /// The skin folded, each piece of the flat where its first panel's face is. Every other
+    /// The sheet folded, each piece of the flat where its first panel's face is. Every other
     /// panel folds onto its own face through the bends and seams that reach it: anywhere else,
     /// a joint was read wrong, and that is an error rather than a sheet in the wrong place.
     pub fn fold(&self) -> Result<Fold> {
         let roots = self.development.pieces.iter().map(|p| p.first().and_then(|i| self.places.get(*i)).copied());
         let roots: Vec<Rigid3> = roots.collect::<Option<_>>().ok_or_else(|| DocError::Invalid("a piece of the sheet has no face".into()))?;
-        let folded = fold(&self.skin, &self.development, &roots).map_err(|e| DocError::Invalid(e.to_string()))?;
+        let folded = fold(&self.sheet, &self.development, &roots).map_err(|e| DocError::Invalid(e.to_string()))?;
         let reach = self.development.panels.iter().flatten().map(|p| p.region.outer.polyline(1e-3).bounds().size().len()).fold(1.0, f64::max);
         for (i, (got, own)) in folded.places.iter().zip(&self.places).enumerate() {
             let Some(got) = got else { continue };
@@ -1055,31 +1055,31 @@ impl SkinConversion {
 
     /// The folded sheet: its solid, sewn from the flat's pieces carried into space.
     pub fn solid(&self) -> Result<Body> {
-        crate::sheet_skin_fold::solid(&self.development, &self.fold()?, self.thickness, self.pieces()?, &mut FlatWork::new())
+        crate::sheet_surface_fold::solid(&self.development, &self.fold()?, self.thickness, self.pieces()?, &mut FlatWork::new())
     }
 }
 
-/// A body converted through its skin, as the model keeps it: its flat pattern, which
+/// A body converted to sheet metal, as the model keeps it: its flat pattern, which
 /// `sheet.flat_pattern` shows. The body itself becomes the folded sheet.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct SkinFlat {
+pub struct SurfaceFlat {
     pub body: String,
     pub rule: String,
     pub thickness: f64,
     pub k_factor: f64,
     /// The flat material, in the plane of the sheet's largest face.
     pub regions: Vec<Region2>,
-    pub bends: Vec<SkinBendLine>,
+    pub bends: Vec<SurfaceBendLine>,
     /// The largest strain any panel's flat leaves: none but on a free-form panel.
     pub stretch: f64,
     /// How many of the panels are rolls.
     pub rolls: usize,
 }
 
-/// A bend in a skin's flat: its zone, its center line, how far it turns (radians), its inside
+/// A bend in a converted body's flat: its zone, its center line, how far it turns (radians), its inside
 /// radius, whether it turns toward the material, and the zone's width.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct SkinBendLine {
+pub struct SurfaceBendLine {
     pub zone: Region2,
     pub start: Vec2,
     pub end: Vec2,
@@ -1089,35 +1089,35 @@ pub struct SkinBendLine {
     pub allowance: f64,
 }
 
-impl SkinConversion {
+impl SurfaceConversion {
     /// The flat pattern as the model keeps it, for the body `body` under the rule `rule`.
-    pub fn record(&self, body: &str, rule: &str) -> Result<SkinFlat> {
+    pub fn record(&self, body: &str, rule: &str) -> Result<SurfaceFlat> {
         let bends = self
             .development
             .zones
             .iter()
             .filter_map(|z| {
-                let JointKind::Bend(b) = &self.skin.joints.get(z.joint)?.kind else { return None };
-                Some(SkinBendLine {
+                let JointKind::Bend(b) = &self.sheet.joints.get(z.joint)?.kind else { return None };
+                Some(SurfaceBendLine {
                     zone: z.region.clone(),
                     start: (z.near[0] + z.far[0]) * 0.5,
                     end: (z.near[1] + z.far[1]) * 0.5,
                     angle: b.angle,
                     radius: b.radius,
                     up: b.toward_material,
-                    allowance: b.allowance(self.skin.thickness, self.skin.k_factor),
+                    allowance: b.allowance(self.sheet.thickness, self.sheet.k_factor),
                 })
             })
             .collect();
-        Ok(SkinFlat {
+        Ok(SurfaceFlat {
             body: body.into(),
             rule: rule.into(),
             thickness: self.thickness,
-            k_factor: self.skin.k_factor,
+            k_factor: self.sheet.k_factor,
             regions: self.flat()?,
             bends,
             stretch: self.development.panels.iter().flatten().map(|p| p.stretch).fold(0.0, f64::max),
-            rolls: self.skin.panels.iter().filter(|p| p.surface != Surface::Plane).count(),
+            rolls: self.sheet.panels.iter().filter(|p| p.surface != Surface::Plane).count(),
         })
     }
 }

@@ -135,7 +135,7 @@ fn rotated_component_bend_picks_follow_connected_panels() {
         run(&mut s, "component.activate", json!({"component": 0}));
         let world = |p: [f64; 3]| if rotated { [p[0], -p[2], p[1]] } else { p };
         let bends: Vec<_> = bends.into_iter().map(world).collect();
-        run(&mut s, "sheet.convert", json!({"body": "Section", "face": world([30.0, 0.0, 50.0]), "bends": bends}));
+        run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Section", "face": world([30.0, 0.0, 50.0]), "bends": bends}));
         assert_eq!(bend_rows(&mut s).len(), 2);
         sizes.push(flat_size(&mut s));
     }
@@ -150,7 +150,10 @@ fn rotated_component_disconnected_bend_reports_world_point() {
     section(&mut s, &[(0.0, 0.0), (60.0, 0.0), (60.0, 40.0), (90.0, 40.0)], 2.0, 100.0);
     run(&mut s, "occurrence.move", json!({"occurrence": component["occurrence"], "axis": [1, 0, 0], "angle": "90 deg"}));
     run(&mut s, "component.activate", json!({"component": 0}));
-    let e = s.execute("sheet.convert", &json!({"body": "Section", "face": [30, -50, 0], "bends": [[60, -50, 40]]})).unwrap_err().to_string();
+    let e = s
+        .execute("sheet.convert", &json!({"mode": "thicken", "body": "Section", "face": [30, -50, 0], "bends": [[60, -50, 40]]}))
+        .unwrap_err()
+        .to_string();
     assert!(e.contains("the bend at (60.000, -50.000, 40.000) does not connect"), "{e}");
 }
 
@@ -161,7 +164,7 @@ fn a_shelled_tray_keeps_its_walls_and_unfolds_by_the_k_factor() {
     // The shell's own thickness counts, not the rule's.
     rule(&mut s, "Test", 3.0, k, r, gap);
     tray(&mut s, t);
-    let out = run(&mut s, "sheet.convert", json!({"body": "Tray", "face": [50, 30, 0], "bends": BOTTOM_EDGES}));
+    let out = run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Tray", "face": [50, 30, 0], "bends": BOTTOM_EDGES}));
     assert!(out["warning"].is_null(), "{out}");
     assert!((flat(&mut s)["thickness"].as_f64().unwrap_or(0.0) - t).abs() < 1e-9);
     // Four 90° bends up, each as long as the base is between its setbacks (R + T at either end).
@@ -206,13 +209,13 @@ fn bends_picked_inside_and_a_fixed_face_inside_give_the_same_sheet() {
     let mut s = Session::default();
     rule(&mut s, "Test", t, k, r, gap);
     tray(&mut s, t);
-    run(&mut s, "sheet.convert", json!({"body": "Tray", "face": [50, 30, 0], "bends": BOTTOM_EDGES}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Tray", "face": [50, 30, 0], "bends": BOTTOM_EDGES}));
     let (v, f) = (volume(&mut s), flat_size(&mut s));
     // The inner edges (2 mm in and up) are the same bends.
     let mut a = Session::default();
     rule(&mut a, "Test", t, k, r, gap);
     tray(&mut a, t);
-    run(&mut a, "sheet.convert", json!({"body": "Tray", "face": [50, 30, 0], "bends": inner}));
+    run(&mut a, "sheet.convert", json!({"mode": "thicken", "body": "Tray", "face": [50, 30, 0], "bends": inner}));
     assert!((volume(&mut a) - v).abs() < 1e-6 * v && same_size(flat_size(&mut a), f, 1e-9));
     // From the floor inside, the sheet's other skin is the fixed one: the bends turn down from it
     // and the flat is the inside lengths less the inside setbacks, L' + 2H' - 4R + 2BA, which is
@@ -220,7 +223,7 @@ fn bends_picked_inside_and_a_fixed_face_inside_give_the_same_sheet() {
     let mut b = Session::default();
     rule(&mut b, "Test", t, k, r, gap);
     tray(&mut b, t);
-    run(&mut b, "sheet.convert", json!({"body": "Tray", "face": [50, 30, 2], "bends": BOTTOM_EDGES}));
+    run(&mut b, "sheet.convert", json!({"mode": "thicken", "body": "Tray", "face": [50, 30, 2], "bends": BOTTOM_EDGES}));
     assert!(bend_rows(&mut b).iter().all(|row| row.0 == 90 && row.1 == "down"), "{:?}", bend_rows(&mut b));
     let ba = FRAC_PI_2 * (r + k * t);
     let inside = (96.0 + 2.0 * 28.0 - 4.0 * r + 2.0 * ba, 56.0 + 2.0 * 28.0 - 4.0 * r + 2.0 * ba);
@@ -239,7 +242,7 @@ fn a_solid_block_takes_its_rules_thickness_inward() {
         rule(&mut s, "Thick", 3.0, k, r, gap);
         rule(&mut s, "Test", 2.0, k, r, gap);
         run(&mut s, "solid.box", json!({"length": 100, "width": 60, "height": 30, "body_name": "Block"}));
-        let mut p = json!({"body": "Block", "face": [50, 30, 0], "bends": BOTTOM_EDGES});
+        let mut p = json!({"body": "Block", "mode": "thicken", "face": [50, 30, 0], "bends": BOTTOM_EDGES});
         if let Some(n) = name {
             p["rule"] = json!(n);
         }
@@ -264,7 +267,7 @@ fn a_trapezoid_section_unfolds_through_72_and_108_degree_bends() {
     let mut s = Session::default();
     rule(&mut s, "Test", t, k, r, 0.5);
     let bends = trapezoid_section(&mut s, t);
-    run(&mut s, "sheet.convert", json!({"body": "Section", "face": [0, 0, 150], "bends": bends}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Section", "face": [0, 0, 150], "bends": bends}));
     let rows = bend_rows(&mut s);
     assert!(rows.len() == 4 && rows.iter().all(|row| row.1 == "up" && (row.2 - 300.0).abs() < 1e-9), "{rows:?}");
     assert_eq!((rows.iter().filter(|row| row.0 == 72).count(), rows.iter().filter(|row| row.0 == 108).count()), (2, 2), "{rows:?}");
@@ -295,7 +298,7 @@ fn a_z_section_bends_up_at_one_edge_and_down_at_the_other() {
     // Flange 60, web 40, flange 30 on one skin: its first corner is the outside of its bend,
     // its second the inside.
     let bends = section(&mut s, &[(0.0, 0.0), (60.0, 0.0), (60.0, 40.0), (90.0, 40.0)], t, 100.0);
-    run(&mut s, "sheet.convert", json!({"body": "Section", "face": [30, 0, 50], "bends": bends}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Section", "face": [30, 0, 50], "bends": bends}));
     let mut directions: Vec<String> = bend_rows(&mut s).into_iter().map(|row| row.1).collect();
     directions.sort();
     assert_eq!(directions, ["down", "up"]);
@@ -327,7 +330,11 @@ fn a_tapered_tray_converts_with_72_degree_walls_and_slanted_corners() {
     let (lo, hi) = bbox(&mut s);
     assert!(hi[0] - lo[0] > 200.0 + 1.0, "the taper widens the top: {lo:?} {hi:?}");
     run(&mut s, "solid.shell", json!({"faces": [[100, 60, 40]], "thickness": t}));
-    run(&mut s, "sheet.convert", json!({"body": "Tray", "face": [100, 60, 0], "bends": [[100, 0, 0], [200, 60, 0], [100, 120, 0], [0, 60, 0]]}));
+    run(
+        &mut s,
+        "sheet.convert",
+        json!({"mode": "thicken", "body": "Tray", "face": [100, 60, 0], "bends": [[100, 0, 0], [200, 60, 0], [100, 120, 0], [0, 60, 0]]}),
+    );
     let rows = bend_rows(&mut s);
     assert!(rows.len() == 4 && rows.iter().all(|row| row.0 == 72 && row.1 == "up"), "{rows:?}");
     let slant = 40.0 / 72f64.to_radians().sin();
@@ -353,7 +360,7 @@ fn the_sheet_follows_the_solid_through_parameter_changes_undo_and_reopening() {
     run(&mut s, "parameters.add", json!({"name": "T", "expression": "2 mm"}));
     run(&mut s, "solid.box", json!({"length": "L", "width": 60, "height": 30, "body_name": "Tray"}));
     run(&mut s, "solid.shell", json!({"faces": [[50, 30, 30]], "thickness": "T"}));
-    run(&mut s, "sheet.convert", json!({"body": "Tray", "face": [50, 30, 0], "bends": BOTTOM_EDGES}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Tray", "face": [50, 30, 0], "bends": BOTTOM_EDGES}));
     let bd = |t: f64| deduction(FRAC_PI_2, r, t, k);
     assert!(same_size(flat_size(&mut s), (160.0 - 2.0 * bd(t), 120.0 - 2.0 * bd(t)), 1e-6));
     // Longer: the right-hand bend edge moved from x = 100 to x = 140 and is found by its name.
@@ -389,7 +396,7 @@ fn designs_from_before_bend_edges_open_unchanged() {
     let mut s = Session::default();
     rule(&mut s, "Test", 2.0, 0.44, 2.0, 0.5);
     run(&mut s, "solid.box", json!({"length": 100, "width": 60, "height": 2, "body_name": "Plate"}));
-    run(&mut s, "sheet.convert", json!({"body": "Plate", "face": [50, 30, 2]}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Plate", "face": [50, 30, 2]}));
     let mut older: Value = serde_json::from_str(&s.doc.to_json()).unwrap();
     assert!(!older.to_string().contains("\"bends\""), "{older}");
     older["format"] = json!("solidcraft/16");
@@ -411,7 +418,7 @@ fn bend_edges_changed_in_an_edit_are_the_ones_bent() {
     let mut s = Session::default();
     rule(&mut s, "Test", t, k, r, 0.5);
     tray(&mut s, t);
-    let made = run(&mut s, "sheet.convert", json!({"body": "Tray", "face": [50, 30, 0], "bends": BOTTOM_EDGES}));
+    let made = run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Tray", "face": [50, 30, 0], "bends": BOTTOM_EDGES}));
     // Only the two long walls: a channel as long as the tray, 60 + 2 x 30 less two deductions
     // across. (By the names of the first two edges it would be the front and the right wall.)
     run(&mut s, "timeline.edit", json!({"feature": made["feature"], "set": {"bends": [BOTTOM_EDGES[0], BOTTOM_EDGES[2]]}}));
@@ -443,7 +450,7 @@ fn a_chamfer_picked_in_its_middle_is_one_bend_at_the_virtual_sharp() {
     rule(&mut s, "Test", t, k, r, 0.5);
     chamfered_channel(&mut s);
     // The middle of each outer chamfer.
-    run(&mut s, "sheet.convert", json!({"body": "Channel", "face": [20, 0, 50], "bends": [[2, 2, 50], [38, 2, 50]]}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Channel", "face": [20, 0, 50], "bends": [[2, 2, 50], [38, 2, 50]]}));
     let rows = bend_rows(&mut s);
     assert!(rows.len() == 2 && rows.iter().all(|row| row.0 == 90 && row.1 == "up" && (row.2 - 100.0).abs() < 1e-6), "{rows:?}");
     // The outside lengths to the virtual sharps less a 90° deduction each:
@@ -469,7 +476,7 @@ fn a_chamfer_picked_in_its_middle_is_one_bend_at_the_virtual_sharp() {
     let mut b = Session::default();
     rule(&mut b, "Test", t, k, r, 0.5);
     chamfered_channel(&mut b);
-    run(&mut b, "sheet.convert", json!({"body": "Channel", "face": [20, 2, 50], "bends": [[3, 3, 50], [37, 3, 50]]}));
+    run(&mut b, "sheet.convert", json!({"mode": "thicken", "body": "Channel", "face": [20, 2, 50], "bends": [[3, 3, 50], [37, 3, 50]]}));
     assert!(bend_rows(&mut b).iter().all(|row| row.0 == 90 && row.1 == "down"), "{:?}", bend_rows(&mut b));
     assert!(same_size(flat_size(&mut b), (across, 100.0), 1e-6), "{:?}", flat_size(&mut b));
     assert!((volume(&mut b) - expect).abs() < 2e-3 * expect, "{} vs {expect}", volume(&mut b));
@@ -479,14 +486,18 @@ fn a_chamfer_picked_in_its_middle_is_one_bend_at_the_virtual_sharp() {
     let mut e = Session::default();
     rule(&mut e, "Test", t, k, r, 0.5);
     chamfered_channel(&mut e);
-    run(&mut e, "sheet.convert", json!({"body": "Channel", "face": [20, 0, 50], "bends": [[0, 4, 50], [4, 0, 50], [36, 0, 50], [40, 4, 50]]}));
+    run(
+        &mut e,
+        "sheet.convert",
+        json!({"mode": "thicken", "body": "Channel", "face": [20, 0, 50], "bends": [[0, 4, 50], [4, 0, 50], [36, 0, 50], [40, 4, 50]]}),
+    );
     let rows = bend_rows(&mut e);
     assert!(rows.len() == 4 && rows.iter().all(|row| row.0 == 45), "{rows:?}");
     // A chamfer and one of its edges at once is refused.
     let mut f = Session::default();
     rule(&mut f, "Test", t, k, r, 0.5);
     chamfered_channel(&mut f);
-    let both = f.execute("sheet.convert", &json!({"body": "Channel", "face": [20, 0, 50], "bends": [[2, 2, 50], [4, 0, 50]]}));
+    let both = f.execute("sheet.convert", &json!({"mode": "thicken", "body": "Channel", "face": [20, 0, 50], "bends": [[2, 2, 50], [4, 0, 50]]}));
     let msg = both.err().map(|x| x.to_string()).unwrap_or_default();
     assert!(msg.contains("not both"), "{msg}");
 }
@@ -556,7 +567,7 @@ fn a_bend_modelled_with_its_radius_is_one_bend_of_the_rules_radius() {
     };
     let mut s = Session::default();
     let (outer, inner) = l(&mut s);
-    run(&mut s, "sheet.convert", json!({"body": "Section", "face": [30, 0, 50], "bends": [outer]}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Section", "face": [30, 0, 50], "bends": [outer]}));
     let rows = bend_rows(&mut s);
     assert!(rows.len() == 1 && rows[0].0 == 90 && rows[0].1 == "up" && (rows[0].2 - 100.0).abs() < 1e-6, "{rows:?}");
     let allowance = flat(&mut s)["bends"][0]["allowance"].as_f64().unwrap_or(0.0);
@@ -587,7 +598,7 @@ fn a_bend_modelled_with_its_radius_is_one_bend_of_the_rules_radius() {
     for (face, bend, direction) in [([30.0, 0.0, 50.0], inner, "up"), ([30.0, 2.0, 50.0], outer, "down"), ([30.0, 2.0, 50.0], inner, "down")] {
         let mut b = Session::default();
         l(&mut b);
-        run(&mut b, "sheet.convert", json!({"body": "Section", "face": face, "bends": [bend]}));
+        run(&mut b, "sheet.convert", json!({"mode": "thicken", "body": "Section", "face": face, "bends": [bend]}));
         assert!(bend_rows(&mut b).iter().all(|row| row.0 == 90 && row.1 == direction), "{face:?} {bend:?}: {:?}", bend_rows(&mut b));
         assert!(same_size(flat_size(&mut b), (across, 100.0), 1e-6), "{face:?} {bend:?}: {:?}", flat_size(&mut b));
         assert!((volume(&mut b) - expect).abs() < 2e-3 * expect, "{face:?} {bend:?}: {} vs {expect}", volume(&mut b));
@@ -610,7 +621,7 @@ fn a_channel_with_its_bends_modelled_folds_back_into_itself_under_its_own_radius
     let expect = t * 100.0 * (2.0 * (30.0 - (r + t)) + (40.0 - 2.0 * (r + t)) + PI * (r + t / 2.0));
     assert!((solid - expect).abs() < 2e-3 * expect, "{solid} vs {expect}");
     // One bend picked on its outer cylinder, the other on its inner one.
-    run(&mut s, "sheet.convert", json!({"body": "Section", "face": [20, 0, 50], "bends": [corners[0].0, corners[1].1]}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Section", "face": [20, 0, 50], "bends": [corners[0].0, corners[1].1]}));
     let rows = bend_rows(&mut s);
     assert!(rows.len() == 2 && rows.iter().all(|row| row.0 == 90 && row.1 == "up" && (row.2 - 100.0).abs() < 1e-6), "{rows:?}");
     // 30 + 40 + 30 less two deductions, 2 (R + T) - π/2 (R + K T) each.
@@ -640,7 +651,7 @@ fn a_converted_shell_takes_its_rules_values_at_its_own_thickness() {
     let mut s = Session::default();
     let (outer, _) = bent_section(&mut s, &[(0.0, 40.0), (0.0, 0.0), (60.0, 0.0)], 2.0, 2.0, 100.0)[0];
     let solid = volume(&mut s);
-    run(&mut s, "sheet.convert", json!({"body": "Section", "face": [30, 0, 50], "bends": [outer]}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Section", "face": [30, 0, 50], "bends": [outer]}));
     assert!((volume(&mut s) - solid).abs() < 1e-6 * solid, "{} vs {solid}", volume(&mut s));
     let f = flat(&mut s);
     assert_eq!((f["thickness"].as_f64(), f["bends"][0]["radius"].as_f64()), (Some(2.0), Some(2.0)), "{f}");
@@ -659,7 +670,7 @@ fn a_filleted_edge_of_a_solid_block_is_a_bend() {
     run(&mut s, "solid.box", json!({"length": 100, "width": 60, "height": 30, "body_name": "Block"}));
     run(&mut s, "solid.fillet", json!({"edges": [[100, 30, 0]], "radius": 5}));
     let h = 5.0 * (1.0 - 0.5f64.sqrt());
-    run(&mut s, "sheet.convert", json!({"body": "Block", "face": [50, 30, 0], "bends": [[100.0 - h, 30.0, h]]}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Block", "face": [50, 30, 0], "bends": [[100.0 - h, 30.0, h]]}));
     let rows = bend_rows(&mut s);
     assert!(rows.len() == 1 && rows[0].0 == 90 && rows[0].1 == "up" && (rows[0].2 - 60.0).abs() < 1e-6, "{rows:?}");
     let across = 130.0 - deduction(FRAC_PI_2, r, t, k);
@@ -671,7 +682,7 @@ fn edge_flanges_and_cuts_work_on_a_converted_sheet() {
     let mut s = Session::default();
     rule(&mut s, "Test", 2.0, 0.44, 2.0, 0.5);
     tray(&mut s, 2.0);
-    run(&mut s, "sheet.convert", json!({"body": "Tray", "face": [50, 30, 0], "bends": BOTTOM_EDGES}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Tray", "face": [50, 30, 0], "bends": BOTTOM_EDGES}));
     let v0 = volume(&mut s);
     // A return flange on the front wall's top edge.
     run(&mut s, "sheet.flange", json!({"edges": [[50, 0, 30]], "height": 10, "angle": 90}));
@@ -698,30 +709,30 @@ fn conversions_that_cannot_work_say_why() {
     tray(&mut s, 2.0);
     let err = |s: &mut Session, p: Value| s.execute("sheet.convert", &p).err().map(|e| e.to_string()).unwrap_or_default();
     // A bend that doesn't reach the fixed face through other bends.
-    let e = err(&mut s, json!({"body": "Tray", "face": [50, 30, 0], "bends": [[0, 0, 15]]}));
+    let e = err(&mut s, json!({"body": "Tray", "mode": "thicken", "face": [50, 30, 0], "bends": [[0, 0, 15]]}));
     assert!(e.contains("does not connect"), "{e}");
     // No edge there, and no face there.
-    let e = err(&mut s, json!({"body": "Tray", "face": [50, 30, 0], "bends": [[50, 30, 0]]}));
+    let e = err(&mut s, json!({"body": "Tray", "mode": "thicken", "face": [50, 30, 0], "bends": [[50, 30, 0]]}));
     assert!(e.contains("no edge"), "{e}");
-    let e = err(&mut s, json!({"body": "Tray", "face": [50, 30, -20], "bends": BOTTOM_EDGES}));
+    let e = err(&mut s, json!({"body": "Tray", "mode": "thicken", "face": [50, 30, -20], "bends": BOTTOM_EDGES}));
     assert!(e.contains("no face"), "{e}");
     // A loop of bends.
     let mut bends: Vec<[f64; 3]> = BOTTOM_EDGES.to_vec();
     bends.push([0.0, 0.0, 15.0]);
-    let e = err(&mut s, json!({"body": "Tray", "face": [50, 30, 0], "bends": bends}));
+    let e = err(&mut s, json!({"body": "Tray", "mode": "thicken", "face": [50, 30, 0], "bends": bends}));
     assert!(e.contains("loop"), "{e}");
     // Walls shorter than their bends' setbacks (a 40 mm bend radius on 30 mm walls).
-    let e = err(&mut s, json!({"body": "Tray", "face": [50, 30, 0], "bends": BOTTOM_EDGES, "rule": "Wide"}));
+    let e = err(&mut s, json!({"body": "Tray", "mode": "thicken", "face": [50, 30, 0], "bends": BOTTOM_EDGES, "rule": "Wide"}));
     assert!(e.contains("setback"), "{e}");
     // The sheet's values are the rule's; an empty list of bends is not a plate.
-    let e = err(&mut s, json!({"body": "Tray", "face": [50, 30, 0], "bends": BOTTOM_EDGES, "thickness": 3}));
+    let e = err(&mut s, json!({"body": "Tray", "mode": "thicken", "face": [50, 30, 0], "bends": BOTTOM_EDGES, "thickness": 3}));
     assert!(e.contains("the sheet metal rule sets it"), "{e}");
-    let e = err(&mut s, json!({"body": "Tray", "face": [50, 30, 0], "bends": []}));
+    let e = err(&mut s, json!({"body": "Tray", "mode": "thicken", "face": [50, 30, 0], "bends": []}));
     assert!(e.contains("1…1000"), "{e}");
     // Curved faces.
     let mut c = Session::default();
     run(&mut c, "solid.cylinder", json!({"radius": 10, "height": 30, "body_name": "Rod"}));
-    let e = err(&mut c, json!({"body": "Rod", "face": [0, 0, 30], "bends": [[10, 0, 30]]}));
+    let e = err(&mut c, json!({"body": "Rod", "mode": "thicken", "face": [0, 0, 30], "bends": [[10, 0, 30]]}));
     assert!(e.contains("curved"), "{e}");
     // Nothing changed.
     assert!(s.model.state().sheets.is_empty() && c.model.state().sheets.is_empty());
@@ -903,7 +914,7 @@ fn convert_step_plate(tag: &str, loops: &[Vec<Wall>], t: f64, pick: [f64; 2]) ->
     let mut s = Session::default();
     run(&mut s, "file.insert_step", json!({"path": path.to_string_lossy()}));
     let _ = std::fs::remove_file(&path);
-    run(&mut s, "sheet.convert", json!({"body": "Plate", "face": [pick[0], pick[1], t]}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Plate", "face": [pick[0], pick[1], t]}));
     s
 }
 
@@ -1020,7 +1031,7 @@ fn a_plate_with_holes_drilled_here_converts_with_round_holes() {
             run(&mut s, "solid.hole", json!({"position": [x, y, t], "diameter": 2.0 * r}));
         }
     }
-    run(&mut s, "sheet.convert", json!({"body": "Plate", "face": [10.5, 10.5, t]}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Plate", "face": [10.5, 10.5, t]}));
     let want = (w * w - 9.0 * PI * r * r) * t;
     assert!((volume(&mut s) - want).abs() < 1e-4 * want, "{} vs {want}", volume(&mut s));
     let circles = flat_circles(&mut s);
@@ -1036,7 +1047,7 @@ fn convert_box(l: f64, w: f64, t: f64, holes: &[([f64; 2], f64)]) -> Session {
     for (c, d) in holes {
         run(&mut s, "solid.hole", json!({"position": [c[0], c[1], t], "diameter": d}));
     }
-    run(&mut s, "sheet.convert", json!({"body": "Plate", "face": [l * 0.4, w * 0.25, t]}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Plate", "face": [l * 0.4, w * 0.25, t]}));
     s
 }
 
@@ -1049,7 +1060,7 @@ fn a_converted_plate_stays_where_the_plate_was() {
         let mut s = Session::default();
         run(&mut s, "solid.box", json!({"length": 100, "width": 60, "height": 2, "body_name": "Plate"}));
         let before = bbox(&mut s);
-        run(&mut s, "sheet.convert", json!({"body": "Plate", "face": pick}));
+        run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Plate", "face": pick}));
         assert!(!s.model.state().sheets.is_empty(), "{pick:?}");
         let after = bbox(&mut s);
         let moved = before.0.iter().chain(&before.1).zip(after.0.iter().chain(&after.1)).any(|(a, b)| (a - b).abs() > 1e-9);
@@ -1153,7 +1164,7 @@ fn a_plate_with_an_engraving_converts_with_the_engraving_as_a_pocket() {
     for (pick, layer) in [([45.0, 30.0, 1.0], "POCKET_BOTTOM_Z0.000000_TO_0.100000_MM"), ([45.0, 30.0, 0.0], "POCKET_TOP_Z0.900000_TO_1.000000_MM")] {
         let mut s = Session::default();
         engraved_plate(&mut s, 0.1, label_rectangle, &[]);
-        run(&mut s, "sheet.convert", json!({"body": "Plate", "face": pick}));
+        run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Plate", "face": pick}));
         assert!(s.model.results.iter().all(|r| r.error.is_none() && r.warning.is_none()), "{pick:?}: {:?}", s.model.results);
         // By hand: 60·40·1 less the engraving's 20·10·0.1; the faces' 2·60·40 + 2·(60 + 40)·1 and
         // the engraving's walls, 2·(20 + 10)·0.1.
@@ -1198,7 +1209,7 @@ fn a_large_plate_keeps_an_engraving_shallower_than_its_tessellation_tolerance() 
     run(&mut s, "solid.extrude", json!({"sketch": "Label", "distance": 0.1, "direction": "negative", "operation": "cut"}));
     for pick in [[450.0, 300.0, 0.0], [450.0, 300.0, 1.0]] {
         let mut s = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
-        run(&mut s, "sheet.convert", json!({"body": "Plate", "face": pick}));
+        run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Plate", "face": pick}));
         // 600·400·1 less the engraving's 20·10·0.1.
         assert!((volume(&mut s) - 239_980.0).abs() < 1e-3, "{pick:?}: {}", volume(&mut s));
         assert_eq!(flat(&mut s)["pockets"].as_array().map(Vec::len), Some(1), "{pick:?}");
@@ -1221,7 +1232,7 @@ fn an_engraved_ring_converts_as_a_pocket_round_its_island() {
     );
     // The extrude took the ring between the circles, not the island.
     assert!((volume(&mut s) - (2400.0 - 0.1 * PI * (25.0 - 9.0))).abs() < 1e-3, "{}", volume(&mut s));
-    run(&mut s, "sheet.convert", json!({"body": "Plate", "face": [45, 30, 1]}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Plate", "face": [45, 30, 1]}));
     // The ring's circles are followed within 0.01 mm (1/100 of the thickness): its area within
     // 2/3 of that times the circumferences.
     let want = 2400.0 - 0.1 * PI * (25.0 - 9.0);
@@ -1240,7 +1251,7 @@ fn an_engraved_ring_converts_as_a_pocket_round_its_island() {
 #[test]
 fn recesses_a_plate_cannot_keep_are_refused_with_the_reason() {
     let err = |s: &mut Session, face: [f64; 3]| {
-        s.execute("sheet.convert", &json!({"body": "Plate", "face": face})).err().map(|e| e.to_string()).unwrap_or_default()
+        s.execute("sheet.convert", &json!({"mode": "thicken", "body": "Plate", "face": face})).err().map(|e| e.to_string()).unwrap_or_default()
     };
     let mut s = Session::default();
     engraved_plate(&mut s, 0.6, label_rectangle, &[]);
@@ -1279,7 +1290,7 @@ fn recesses_a_plate_cannot_keep_are_refused_with_the_reason() {
     // A fold across a kept engraving; one clear of it bends.
     let mut s = Session::default();
     engraved_plate(&mut s, 0.1, label_rectangle, &[]);
-    run(&mut s, "sheet.convert", json!({"body": "Plate", "face": [45, 30, 1]}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Plate", "face": [45, 30, 1]}));
     let (_, hi) = bbox(&mut s);
     let fold = |x: f64| json!({"points": [[x, 0, hi[2]], [x, 40, hi[2]]], "angle": 90});
     let e = s.execute("sheet.fold", &fold(20.0)).err().map(|e| e.to_string()).unwrap_or_default();
@@ -1295,7 +1306,7 @@ fn recesses_a_plate_cannot_keep_are_refused_with_the_reason() {
 #[test]
 fn a_bent_part_without_bend_edges_is_still_no_plate() {
     let err = |s: &mut Session, body: &str, face: [f64; 3]| {
-        s.execute("sheet.convert", &json!({"body": body, "face": face})).err().map(|e| e.to_string()).unwrap_or_default()
+        s.execute("sheet.convert", &json!({"mode": "thicken", "body": body, "face": face})).err().map(|e| e.to_string()).unwrap_or_default()
     };
     let no_plate = "not supported yet: converting bodies that are not a plate of even thickness without bend edges";
     let mut s = Session::default();
@@ -1363,7 +1374,7 @@ fn holes_and_a_slot_in_a_channels_faces_land_where_the_bends_put_them() {
     run(&mut s, "sketch.slot.overall", json!({"p0": [18, 10], "p1": [18, 30], "width": 6}));
     run(&mut s, "sketch.finish", json!({}));
     run(&mut s, "solid.extrude", json!({"sketch": "Slot", "distance": 3, "operation": "cut"}));
-    run(&mut s, "sheet.convert", json!({"body": "Section", "face": [50, 0, 5], "bends": bends}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Section", "face": [50, 0, 5], "bends": bends}));
     let rows = bend_rows(&mut s);
     assert!(rows.len() == 2 && rows.iter().all(|row| row.0 == 90 && row.1 == "up" && (row.2 - 40.0).abs() < 1e-9), "{rows:?}");
     // T 2, R 2, K 0.4: BA = π/2 (R + K T) = 1.4 π, BD = 2 (R + T) - BA = 8 - 1.4 π = 3.6018; the
@@ -1410,7 +1421,7 @@ fn rounded_corners_and_a_notch_on_a_leg_stay_arcs_in_the_flat() {
     run(&mut s, "sketch.circle.center", json!({"center": [30, 20], "radius": 4}));
     run(&mut s, "sketch.finish", json!({}));
     run(&mut s, "solid.extrude", json!({"sketch": "Notch", "distance": 3, "operation": "cut"}));
-    run(&mut s, "sheet.convert", json!({"body": "Section", "face": [50, 0, 5], "bends": bends}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Section", "face": [50, 0, 5], "bends": bends}));
     let across = 160.0 - 2.0 * deduction(FRAC_PI_2, r, t, k);
     assert!(same_size(flat_size(&mut s), (across, 40.0), 1e-6), "{:?} vs {across}", flat_size(&mut s));
     // Each corner takes (1 - π/4) 5², the notch half a disc of radius 4.
@@ -1441,7 +1452,7 @@ fn a_hole_reaching_into_a_bend_and_a_pocket_are_refused_by_their_places() {
         for (id, p) in cut {
             run(&mut s, id, p.clone());
         }
-        let e = s.execute("sheet.convert", &json!({"body": "Section", "face": [50, 0, 5], "bends": bends})).err();
+        let e = s.execute("sheet.convert", &json!({"mode": "thicken", "body": "Section", "face": [50, 0, 5], "bends": bends})).err();
         assert!(s.model.state().sheets.is_empty());
         e.map(|e| e.to_string()).unwrap_or_default()
     };
@@ -1493,7 +1504,7 @@ fn a_channel_with_its_bends_modelled_keeps_its_hole_and_engravings_on_either_ski
     let solid = volume(&mut s);
     let model = t * 60.0 * (2.0 * (30.0 - (r + t)) + (80.0 - 2.0 * (r + t)) + PI * (r + t / 2.0)) - cut;
     assert!((solid - model).abs() < 2e-3 * model, "{solid} vs {model}");
-    run(&mut s, "sheet.convert", json!({"body": "Section", "face": [65, 0, 10], "bends": [corners[0].0, corners[1].0]}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Section", "face": [65, 0, 10], "bends": [corners[0].0, corners[1].0]}));
     let rows = bend_rows(&mut s);
     assert!(rows.len() == 2 && rows.iter().all(|row| row.0 == 90 && row.1 == "up" && (row.2 - 60.0).abs() < 1e-6), "{rows:?}");
     // 30 + 80 + 30 less two deductions; the sheet is the solid again.
@@ -1552,7 +1563,7 @@ fn holes_beside_chamfer_bends_land_from_the_virtual_sharps() {
     chamfered_channel(&mut s);
     run(&mut s, "solid.hole", json!({"position": [20, 0, 30], "diameter": 6}));
     run(&mut s, "solid.hole", json!({"position": [40, 18, 70], "diameter": 6, "depth": 3}));
-    run(&mut s, "sheet.convert", json!({"body": "Channel", "face": [20, 0, 80], "bends": [[2, 2, 50], [38, 2, 50]]}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Channel", "face": [20, 0, 80], "bends": [[2, 2, 50], [38, 2, 50]]}));
     let bd = deduction(FRAC_PI_2, r, t, k);
     let across = 100.0 - 2.0 * bd;
     assert!(same_size(flat_size(&mut s), (across, 100.0), 1e-6), "{:?} vs {across}", flat_size(&mut s));
@@ -1628,7 +1639,7 @@ fn a_converted_trays_corners_are_closed_and_relieved_as_a_flanged_trays_are() {
         let mut s = Session::default();
         relief_rule(&mut s, shape);
         tray(&mut s, t);
-        let out = run(&mut s, "sheet.convert", json!({"body": "Tray", "face": [50, 30, 0], "bends": BOTTOM_EDGES}));
+        let out = run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Tray", "face": [50, 30, 0], "bends": BOTTOM_EDGES}));
         assert!(out["warning"].is_null(), "{shape}: {out}");
         let mut lengths: Vec<f64> = bend_rows(&mut s).iter().map(|row| row.2).collect();
         lengths.sort_by(f64::total_cmp);
@@ -1719,7 +1730,7 @@ fn a_bend_ends_where_its_wall_ends_with_the_rules_bend_relief_beside_it() {
         let mut s = Session::default();
         rule(&mut s, "Test", t, k, r, 0.5);
         bracket(&mut s, 20.0, 60.0, 2.0);
-        let out = run(&mut s, "sheet.convert", json!({"body": "Bracket", "face": face, "bends": [bend]}));
+        let out = run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Bracket", "face": face, "bends": [bend]}));
         assert!(out["warning"].is_null(), "{way}: {out}");
         let rows = bend_rows(&mut s);
         assert!(rows.len() == 1 && rows[0].0 == 90 && rows[0].1 == way && (rows[0].2 - 40.0).abs() < 1e-6, "{way}: {rows:?}");
@@ -1738,7 +1749,7 @@ fn a_bend_ends_where_its_wall_ends_with_the_rules_bend_relief_beside_it() {
     let mut s = Session::default();
     rule(&mut s, "Test", t, k, r, 0.5);
     bracket(&mut s, 0.0, 40.0, 2.0);
-    run(&mut s, "sheet.convert", json!({"body": "Bracket", "face": [40, 25, 0], "bends": [[20, 0, 0]]}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Bracket", "face": [40, 25, 0], "bends": [[20, 0, 0]]}));
     let rows = bend_rows(&mut s);
     assert!(rows.len() == 1 && (rows[0].2 - 40.0).abs() < 1e-6, "{rows:?}");
     assert!(outline_has(&mut s, &[[0.0, 0.0], [40.0, 0.0], [40.0, edge + 5.0], [42.0, edge + 5.0], [42.0, edge]]), "{:?}", outline_corners(&mut s));
@@ -1749,7 +1760,7 @@ fn a_bend_ends_where_its_wall_ends_with_the_rules_bend_relief_beside_it() {
     let mut s = Session::default();
     rule(&mut s, "Test", t, k, r, 0.5);
     bracket(&mut s, 20.0, 60.0, 5.0);
-    run(&mut s, "sheet.convert", json!({"body": "Bracket", "face": [40, 25, 0], "bends": [[40, 0, 0]]}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Bracket", "face": [40, 25, 0], "bends": [[40, 0, 0]]}));
     let rows = bend_rows(&mut s);
     assert!(rows.len() == 1 && (rows[0].2 - 80.0).abs() < 1e-6, "{rows:?}");
     let low = t * (80.0 * 46.0 + 80.0 * 1.0 + 40.0 * 25.0) + FRAC_PI_2 * t * (r + t / 2.0) * 80.0;
@@ -1771,7 +1782,7 @@ fn a_wall_on_part_of_an_edge_meets_a_wall_at_a_relieved_corner_and_is_relieved_a
     run(&mut s, "solid.box", json!({"length": 100, "width": 60, "height": 2, "body_name": "Part"}));
     run(&mut s, "solid.box", json!({"length": 100, "width": 2, "height": 30, "operation": "join", "targets": ["Part"]}));
     run(&mut s, "solid.box", json!({"length": 2, "width": 30, "height": 30, "corner": [98, 0, 0], "operation": "join", "targets": ["Part"]}));
-    let out = run(&mut s, "sheet.convert", json!({"body": "Part", "face": [50, 30, 0], "bends": [[50, 0, 0], [100, 15, 0]]}));
+    let out = run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Part", "face": [50, 30, 0], "bends": [[50, 0, 0], [100, 15, 0]]}));
     assert!(out["warning"].is_null(), "{out}");
     let mut lengths: Vec<f64> = bend_rows(&mut s).iter().map(|row| row.2).collect();
     lengths.sort_by(f64::total_cmp);
@@ -1795,5 +1806,5 @@ fn a_wall_on_part_of_an_edge_meets_a_wall_at_a_relieved_corner_and_is_relieved_a
     assert!((volume(&mut s) - v).abs() < 1e-6 * v);
 }
 
-#[path = "sheet_skin_convert_tests.rs"]
-mod skin;
+#[path = "sheet_surface_convert_tests.rs"]
+mod surfaces;

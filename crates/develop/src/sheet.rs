@@ -1,14 +1,15 @@
-//! The skin of a sheet: its panels, each drawn in its own chart, and the joints where they meet.
+//! A sheet metal part's surfaces: its panels, each drawn in its own chart, and the joints where
+//! they meet.
 
 use std::sync::Arc;
 
 use solidcraft_geom::bspline::NurbsSurface;
 use solidcraft_geom::{Region2, Seg2, Vec2, Vec3};
 
-/// One skin of a sheet: the panels and the joints between them. The material lies on the side
-/// of the skin that a chart's `u × v` points to, `thickness` deep.
+/// A sheet metal part's surfaces: the panels and the joints between them. The material lies on
+/// the side of the sheet that a chart's `u × v` points to, `thickness` deep.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct Skin {
+pub struct Sheet {
     pub thickness: f64,
     /// Where the neutral surface lies through the thickness, as a fraction of it from the
     /// inside of each bend.
@@ -31,7 +32,7 @@ pub struct Corner {
     pub size: f64,
 }
 
-/// A face of the skin. Its region is drawn in its surface's own parameters, so whatever is drawn
+/// A face of the sheet. Its region is drawn in its surface's own parameters, so whatever is drawn
 /// on the panel keeps its place on the surface, and the surface's flow (its parameter lines)
 /// carries to the flat exactly. An empty region is a panel with no material of its own, which
 /// still carries the joints on it.
@@ -51,7 +52,7 @@ pub enum Surface {
     /// A planar panel: its parameters are its plane's coordinates.
     #[default]
     Plane,
-    /// A panel rolled on a cylinder of `radius` (the skin's). Its parameters are length along
+    /// A panel rolled on a cylinder of `radius` (the sheet's). Its parameters are length along
     /// the axis and angle round it (radians).
     Cylinder { radius: f64, material_inward: bool },
     /// A panel rolled on a cone whose rulings make `half_angle` (radians) with its axis. Its
@@ -160,7 +161,7 @@ pub struct Bend {
     pub angle: f64,
     /// The inside radius.
     pub radius: f64,
-    /// The bend turns toward the material side of the skin, so the skin runs round the
+    /// The bend turns toward the material side of the sheet, so the sheet runs round the
     /// outside of the bend; otherwise round the inside.
     pub toward_material: bool,
     /// What the anchors mark on the panels.
@@ -204,7 +205,7 @@ pub enum Relief {
 /// The line the anchors mark.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Datum {
-    /// The virtual sharp, where the two panels' skins would meet if the bend had no radius.
+    /// The virtual sharp, where the two panels' surfaces would meet if the bend had no radius.
     /// Changing the radius moves neither panel. A half turn has no sharp.
     Sharp,
     /// The tangent line, where each panel's flat material ends and the bend starts. A hem,
@@ -241,8 +242,8 @@ impl Bend {
         match self.datum {
             Datum::Tangent => 0.0,
             Datum::Sharp => {
-                let skin_radius = if self.toward_material { self.radius + thickness } else { self.radius };
-                skin_radius * (self.angle / 2.0).tan()
+                let surface_radius = if self.toward_material { self.radius + thickness } else { self.radius };
+                surface_radius * (self.angle / 2.0).tan()
             }
         }
     }

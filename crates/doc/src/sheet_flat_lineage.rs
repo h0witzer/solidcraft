@@ -1,4 +1,4 @@
-//! What each edge of a skin's joined flat is in the skin (#6748, #7990).
+//! What each edge of a sheet's joined flat is in its surface model (#6748, #7990).
 //!
 //! Until the kernel's planar booleans report history (#6748): delete this module. The flat is
 //! joined from its pieces by `planar_regions_boolean`, which returns regions without saying which
@@ -17,7 +17,7 @@ use solidcraft_kernel::PLANAR_FIT_TOL;
 /// Within this (mm), an edge lies on a line or circle.
 const ON_TOL: f64 = 1e-6;
 
-/// What a flat edge is in the skin.
+/// What a flat edge is in the surface model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Source {
     /// Segment `seg` of loop `lp` (0 the outer one) of the panel's own region.
@@ -33,7 +33,7 @@ pub(crate) enum Source {
     Cut { joint: usize, panel: usize },
 }
 
-/// How the joined flat's edges resolve to the skin, in #7990's classes: an edge on exactly one
+/// How the joined flat's edges resolve to the surface model, in #7990's classes: an edge on exactly one
 /// source (`exact`), on several (`merged`, such as a zone's end running straight on into a
 /// panel's side), or on none (`geometry_only`, which only a fault leaves); and sources that the
 /// join split into several edges (`pieces`).
@@ -45,7 +45,7 @@ pub(crate) struct Resolution {
     pub geometry_only: usize,
 }
 
-/// The edges of the pieces a flat is joined from, each with what it is in the skin.
+/// The edges of the pieces a flat is joined from, each with what it is in the surface model.
 pub(crate) fn sources(dev: &Development) -> Vec<(Source, Seg2)> {
     let mut out = Vec::new();
     for (panel, flat) in dev.panels.iter().enumerate() {

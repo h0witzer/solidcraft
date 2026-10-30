@@ -1,8 +1,8 @@
-//! The folded sheet of a skin (#6748): its solid, sewn from the pieces of its flat pattern, each
-//! carried into space through the sheet's thickness by the skin's fold. The flat and the solid
+//! The folded sheet of a surface model (#6748): its solid, sewn from the pieces of its flat
+//! pattern, each carried into space through the sheet's thickness by the model's fold. The flat and the solid
 //! are made of the same pieces, so they can't disagree.
 //!
-//! Each piece gives a face on either side of the sheet (its skin, and the face its thickness
+//! Each piece gives a face on either side of the sheet (its surface, and the face its thickness
 //! away) and a wall along each of its edges that no other piece shares. A flat edge folds to a
 //! line or a circular arc where it lies along or across a bend or a roll, and to a chain of cubic
 //! pieces elsewhere, such as a slanted edge across a bend, which folds to a helix.
@@ -14,7 +14,7 @@ use solidcraft_geom::{LINEAR_TOL, Loop2, Region2, Seg2, Vec2, Vec3};
 use solidcraft_kernel::{self as kernel, Body, EdgeSpec, FaceSpec, SurfSpec};
 
 use crate::sheet::FlatWork;
-use crate::sheet_skin::Piece;
+use crate::sheet_surface::Piece;
 use crate::{DocError, Result};
 
 /// How many times along a folded edge it is sampled, to tell a line or an arc.
@@ -77,15 +77,15 @@ impl Cell {
     }
 }
 
-/// The skin's development folded, `t` thick.
+/// A development folded, `t` thick.
 struct Folded<'a> {
     dev: &'a Development,
     fold: &'a Fold,
     t: f64,
 }
 
-/// The folded solid of a developed skin `t` thick: each of its flat's `pieces` (see
-/// [`crate::sheet_skin::pieces`]), carried into space by `fold`.
+/// The folded solid of a developed sheet `t` thick: each of its flat's `pieces` (see
+/// [`crate::sheet_surface::pieces`]), carried into space by `fold`.
 pub(crate) fn solid(dev: &Development, fold: &Fold, t: f64, pieces: &[(Piece, Region2)], work: &mut FlatWork) -> Result<Body> {
     let f = Folded { dev, fold, t };
     let cells = cells(pieces.to_vec(), work)?;
@@ -117,7 +117,7 @@ pub(crate) fn solid(dev: &Development, fold: &Fold, t: f64, pieces: &[(Piece, Re
         let curved = c.loops().flatten().any(|e| !matches!(e, Seg2::Line { .. }));
         let center = c.outer.iter().map(Seg2::start).fold(Vec2::ZERO, |a, b| a + b) * (1.0 / c.outer.len().max(1) as f64);
         // The face a thickness into the material (its loops as the flat's, about the normal
-        // toward the material), and the skin (the other way round).
+        // toward the material), and the surface (the other way round).
         for (side, depth, inside) in [(1, t, t * (1.0 - 1e-3)), (0, 0.0, t * 1e-3)] {
             let loops = edges
                 .iter()
@@ -236,12 +236,12 @@ impl Folded<'_> {
         got.filter(|q| q.is_finite()).ok_or_else(|| DocError::Invalid("a piece of the flat pattern has no place on the folded sheet".into()))
     }
 
-    /// A run of a piece's flat edges folded to the skin and to a thickness into the material: a
+    /// A run of a piece's flat edges folded to the surface and to a thickness into the material: a
     /// line or an arc at both where it folds to one, else chains of cubic pieces split alike.
     fn edges(&self, piece: Piece, run: &[Seg2]) -> Result<[EdgeSpec; 2]> {
         let sampled = |depth: f64| (0..=SAMPLES).map(|k| self.at(piece, run_at(run, k as f64 / SAMPLES as f64), depth)).collect::<Result<Vec<_>>>();
-        if let (Some(skin), Some(deep)) = (simple(&sampled(0.0)?), simple(&sampled(self.t)?)) {
-            return Ok([skin, deep]);
+        if let (Some(surface), Some(deep)) = (simple(&sampled(0.0)?), simple(&sampled(self.t)?)) {
+            return Ok([surface, deep]);
         }
         // Halve any piece that strays at either depth; the run's own joints start pieces.
         let n = run.len().max(1);
@@ -343,7 +343,7 @@ fn bezier(c: &[Vec3; 4], u: f64) -> Vec3 {
     c[0] * (w * w * w) + c[1] * (3.0 * w * w * u) + c[2] * (3.0 * w * u * u) + c[3] * (u * u * u)
 }
 
-/// The surface of the wall between an edge's folds on the skin (`bottom`) and a thickness in
+/// The surface of the wall between an edge's folds on the surface (`bottom`) and a thickness in
 /// (`top`), both running the same way.
 fn wall(bottom: &EdgeSpec, top: &EdgeSpec) -> Result<SurfSpec> {
     match (bottom, top) {

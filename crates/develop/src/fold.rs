@@ -1,4 +1,4 @@
-//! Folding a developed skin: where each of its panels and bends lies in space, and where each
+//! Folding a developed sheet: where each of its panels and bends lies in space, and where each
 //! point of its flat pattern goes on the folded sheet, at any depth through its thickness.
 //!
 //! A panel's surface has a frame of its own. A plane is the frame's `z = 0`. A cylinder's or a
@@ -12,9 +12,9 @@ use std::collections::VecDeque;
 use solidcraft_geom::{Vec2, Vec3};
 
 use crate::chart::Flatten;
-use crate::{Anchor, Bend, DevelopError, Development, JointKind, Mismatch, Rigid2, Rigid3, Skin, Surface};
+use crate::{Anchor, Bend, DevelopError, Development, JointKind, Mismatch, Rigid2, Rigid3, Sheet, Surface};
 
-/// A developed skin folded.
+/// A developed sheet folded.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Fold {
     /// Where each panel's frame lies in space.
@@ -48,11 +48,11 @@ pub struct Bent {
 /// toward the `b` panel).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Wrap {
-    /// 1 where the bend turns toward the material, so the skin runs round its outside; -1 where
-    /// it turns away, so the skin runs round its inside.
+    /// 1 where the bend turns toward the material, so the sheet runs round its outside; -1 where
+    /// it turns away, so the sheet runs round its inside.
     sign: f64,
-    /// The skin's radius round the axis.
-    skin: f64,
+    /// The sheet's radius round the axis.
+    sheet: f64,
     setback: f64,
     /// The neutral arc's radius, which the flat zone's width wraps onto.
     neutral: f64,
@@ -63,18 +63,18 @@ impl Wrap {
         let toward = bend.toward_material;
         Wrap {
             sign: if toward { 1.0 } else { -1.0 },
-            skin: if toward { bend.radius + thickness } else { bend.radius },
+            sheet: if toward { bend.radius + thickness } else { bend.radius },
             setback: bend.setback(thickness),
             neutral: bend.radius + k_factor * thickness,
         }
     }
 
     /// The point `along` the joint, turned `phi` round the bend from the `a` panel's tangent
-    /// line, `depth` into the material. The axis lies the skin's radius from the tangent line,
+    /// line, `depth` into the material. The axis lies the sheet's radius from the tangent line,
     /// on the material's side where the bend turns toward it.
     pub(crate) fn at(&self, along: f64, phi: f64, depth: f64) -> Vec3 {
-        let rho = self.skin - self.sign * depth;
-        Vec3::new(along, self.sign * (self.skin - rho * phi.cos()), rho * phi.sin() - self.setback)
+        let rho = self.sheet - self.sign * depth;
+        Vec3::new(along, self.sign * (self.sheet - rho * phi.cos()), rho * phi.sin() - self.setback)
     }
 }
 
@@ -104,7 +104,7 @@ impl Bent {
     /// (right-handed) from the `a` panel to the `b` one.
     pub fn axis(&self) -> (Vec3, Vec3) {
         let w = &self.wrap;
-        (self.frame.point(Vec3::new(0.0, w.sign * w.skin, -w.setback)), self.frame.x * -w.sign)
+        (self.frame.point(Vec3::new(0.0, w.sign * w.sheet, -w.setback)), self.frame.x * -w.sign)
     }
 
     /// How far the bend turns, in radians.
@@ -144,21 +144,21 @@ impl Fold {
     }
 }
 
-/// Folds a developed skin. `roots` says where the first panel of each of the development's
+/// Folds a developed sheet. `roots` says where the first panel of each of the development's
 /// pieces lies in space; every other panel goes where the bends and seams that join it to that
 /// one put it. A rip holds nothing: a piece goes where its root puts it.
-pub fn fold(skin: &Skin, dev: &Development, roots: &[Rigid3]) -> Result<Fold, DevelopError> {
+pub fn fold(sheet: &Sheet, dev: &Development, roots: &[Rigid3]) -> Result<Fold, DevelopError> {
     if roots.len() != dev.pieces.len() {
         return Err(DevelopError::Roots(dev.pieces.len()));
     }
-    let (t, k) = (skin.thickness, skin.k_factor);
-    let mut maps = Vec::with_capacity(skin.panels.len());
-    let mut middle = Vec::with_capacity(skin.panels.len());
-    for (i, panel) in skin.panels.iter().enumerate() {
+    let (t, k) = (sheet.thickness, sheet.k_factor);
+    let mut maps = Vec::with_capacity(sheet.panels.len());
+    let mut middle = Vec::with_capacity(sheet.panels.len());
+    for (i, panel) in sheet.panels.iter().enumerate() {
         if matches!(panel.surface, Surface::Spline(_)) {
             return Err(DevelopError::Panel(i, "not supported yet: folding a free-form panel"));
         }
-        maps.push(Flatten::of(&panel.surface, skin).map_err(|e| DevelopError::Panel(i, e))?);
+        maps.push(Flatten::of(&panel.surface, sheet).map_err(|e| DevelopError::Panel(i, e))?);
         middle.push(if panel.region.outer.segs.is_empty() {
             0.0
         } else {
@@ -168,8 +168,8 @@ pub fn fold(skin: &Skin, dev: &Development, roots: &[Rigid3]) -> Result<Fold, De
     }
     // Each joint's anchors as frames in their panels' frames, and where the joint puts the `b`
     // anchor's frame in the `a` one's.
-    let mut held: Vec<Option<(Rigid3, Rigid3, Rigid3)>> = Vec::with_capacity(skin.joints.len());
-    for (j, joint) in skin.joints.iter().enumerate() {
+    let mut held: Vec<Option<(Rigid3, Rigid3, Rigid3)>> = Vec::with_capacity(sheet.joints.len());
+    for (j, joint) in sheet.joints.iter().enumerate() {
         let across = match &joint.kind {
             JointKind::Rip(_) => None,
             JointKind::Seam => Some(Rigid3::IDENTITY),
@@ -178,7 +178,7 @@ pub fn fold(skin: &Skin, dev: &Development, roots: &[Rigid3]) -> Result<Fold, De
         held.push(match across {
             None => None,
             Some(across) => {
-                let frame = |a: &Anchor| skin.panels.get(a.panel).and_then(|p| anchor_frame(&p.surface, a));
+                let frame = |a: &Anchor| sheet.panels.get(a.panel).and_then(|p| anchor_frame(&p.surface, a));
                 let (Some(fa), Some(fb)) = (frame(&joint.a), frame(&joint.b)) else {
                     return Err(DevelopError::Joint(j, "an anchor has no frame on its panel"));
                 };
@@ -191,16 +191,16 @@ pub fn fold(skin: &Skin, dev: &Development, roots: &[Rigid3]) -> Result<Fold, De
         if from_a { fb.inverse().then(across).then(fa).then(at) } else { fa.inverse().then(&across.inverse()).then(fb).then(at) }
     };
 
-    let mut touching: Vec<Vec<usize>> = vec![Vec::new(); skin.panels.len()];
-    for (j, joint) in skin.joints.iter().enumerate() {
+    let mut touching: Vec<Vec<usize>> = vec![Vec::new(); sheet.panels.len()];
+    for (j, joint) in sheet.joints.iter().enumerate() {
         if held.get(j).is_some_and(Option::is_some) {
             for p in [joint.a.panel, joint.b.panel] {
                 touching.get_mut(p).ok_or(DevelopError::NoPanel(p))?.push(j);
             }
         }
     }
-    let mut places: Vec<Option<Rigid3>> = vec![None; skin.panels.len()];
-    let mut followed = vec![false; skin.joints.len()];
+    let mut places: Vec<Option<Rigid3>> = vec![None; sheet.panels.len()];
+    let mut followed = vec![false; sheet.joints.len()];
     for (piece, root) in dev.pieces.iter().zip(roots) {
         let Some(&start) = piece.first() else { continue };
         *places.get_mut(start).ok_or(DevelopError::NoPanel(start))? = Some(*root);
@@ -208,7 +208,7 @@ pub fn fold(skin: &Skin, dev: &Development, roots: &[Rigid3]) -> Result<Fold, De
         while let Some(panel) = queue.pop_front() {
             let Some(at) = places.get(panel).copied().flatten() else { continue };
             for &j in touching.get(panel).map(Vec::as_slice).unwrap_or_default() {
-                let (Some(joint), Some(Some(h)), Some(false)) = (skin.joints.get(j), held.get(j), followed.get(j).copied()) else { continue };
+                let (Some(joint), Some(Some(h)), Some(false)) = (sheet.joints.get(j), held.get(j), followed.get(j).copied()) else { continue };
                 let other = if joint.a.panel == panel { joint.b.panel } else { joint.a.panel };
                 if places.get(other).copied().flatten().is_some() {
                     continue;
@@ -225,8 +225,8 @@ pub fn fold(skin: &Skin, dev: &Development, roots: &[Rigid3]) -> Result<Fold, De
     }
 
     let mut loops = Vec::new();
-    let mut bends = Vec::with_capacity(skin.joints.len());
-    for (j, joint) in skin.joints.iter().enumerate() {
+    let mut bends = Vec::with_capacity(sheet.joints.len());
+    for (j, joint) in sheet.joints.iter().enumerate() {
         let (a, b) = (places.get(joint.a.panel).copied().flatten(), places.get(joint.b.panel).copied().flatten());
         if let (Some(a), Some(b), Some(Some(h)), Some(false)) = (a, b, held.get(j), followed.get(j).copied()) {
             let fits = carry(h, true, &a);
@@ -247,7 +247,7 @@ pub fn fold(skin: &Skin, dev: &Development, roots: &[Rigid3]) -> Result<Fold, De
         places,
         bends,
         loops,
-        surfaces: skin.panels.iter().map(|p| p.surface.clone()).collect(),
+        surfaces: sheet.panels.iter().map(|p| p.surface.clone()).collect(),
         maps,
         unplace: dev.placements.iter().map(|p| p.map(|p| p.inverse())).collect(),
         middle,
