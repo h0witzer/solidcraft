@@ -171,7 +171,7 @@ pub fn fold(skin: &Skin, dev: &Development, roots: &[Rigid3]) -> Result<Fold, De
     let mut held: Vec<Option<(Rigid3, Rigid3, Rigid3)>> = Vec::with_capacity(skin.joints.len());
     for (j, joint) in skin.joints.iter().enumerate() {
         let across = match &joint.kind {
-            JointKind::Rip { .. } => None,
+            JointKind::Rip(_) => None,
             JointKind::Seam => Some(Rigid3::IDENTITY),
             JointKind::Bend(bend) => Some(bent_across(bend, t, k)),
         };
@@ -296,8 +296,31 @@ fn embed(surface: &Surface, q: Vec2, depth: f64) -> Option<(Vec3, Vec3)> {
             let normal = (out * ca - Vec3::Z * sa) * -s;
             Some(((out * sa + Vec3::Z * ca) * q.x + normal * depth, normal))
         }
-        Surface::Spline(_) => None,
+        Surface::Spline(ref spline) => {
+            // Its own points, and its normal from the way they run: `u x v` toward the material.
+            let h = PARAM_STEP * (1.0 + q.x.abs().max(q.y.abs()));
+            let at = |d: Vec2| spline.eval(q.x + d.x, q.y + d.y).ok();
+            let su = at(Vec2::new(h, 0.0))? - at(Vec2::new(-h, 0.0))?;
+            let sv = at(Vec2::new(0.0, h))? - at(Vec2::new(0.0, -h))?;
+            let normal = su.cross(sv).normalized()?;
+            Some((at(Vec2::ZERO)? + normal * depth, normal))
+        }
     }
+}
+
+/// A step in a surface's parameters, as a fraction of their size, over which its directions and
+/// its metric are measured where they are not worked out exactly.
+const PARAM_STEP: f64 = 1e-6;
+
+/// The first fundamental form of a surface at `q`, `[E, F, G]`: how the lengths of and the angle
+/// between parameter directions there come out on the surface. Measured from the surface's own
+/// points, so the same for every kind of surface.
+pub(crate) fn metric(surface: &Surface, q: Vec2) -> Option<[f64; 3]> {
+    let h = PARAM_STEP * (1.0 + q.x.abs().max(q.y.abs()));
+    let at = |d: Vec2| embed(surface, q + d, 0.0).map(|(p, _)| p);
+    let su = (at(Vec2::new(h, 0.0))? - at(Vec2::new(-h, 0.0))?) * (1.0 / (2.0 * h));
+    let sv = (at(Vec2::new(0.0, h))? - at(Vec2::new(0.0, -h))?) * (1.0 / (2.0 * h));
+    Some([su.dot(su), su.dot(sv), sv.dot(sv)])
 }
 
 /// The unit direction in space, in the surface's frame, of the parameter direction `dir` at `q`.
@@ -314,7 +337,10 @@ fn tangent(surface: &Surface, q: Vec2, dir: Vec2) -> Option<Vec3> {
             let out = Vec3::new(q.y.cos(), s * q.y.sin(), 0.0);
             (out * sa + Vec3::Z * ca) * dir.x + Vec3::new(-q.y.sin(), s * q.y.cos(), 0.0) * (q.x * sa * dir.y)
         }
-        Surface::Spline(_) => return None,
+        Surface::Spline(_) => {
+            let h = PARAM_STEP * (1.0 + q.x.abs().max(q.y.abs()));
+            embed(surface, q + dir * h, 0.0)?.0 - embed(surface, q - dir * h, 0.0)?.0
+        }
     };
     along.normalized()
 }

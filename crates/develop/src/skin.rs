@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use solidcraft_geom::bspline::NurbsSurface;
-use solidcraft_geom::{Region2, Vec2, Vec3};
+use solidcraft_geom::{Region2, Seg2, Vec2, Vec3};
 
 /// One skin of a sheet: the panels and the joints between them. The material lies on the side
 /// of the skin that a chart's `u × v` points to, `thickness` deep.
@@ -88,9 +88,69 @@ pub enum JointKind {
     /// The sheet runs on from one panel into the next with no bend between: where a roll
     /// meets a flat panel or another roll tangent to it.
     Seam,
-    /// The panels are cut apart. Each loses `cut` (mm, `(a, b)`) from its edge along the
-    /// joint, and the flat pattern lays them out apart unless other joints hold them together.
-    Rip { cut: (f64, f64) },
+    /// The panels are cut apart along their shared edge (see [`Rip`]), and the flat pattern lays
+    /// them out apart unless other joints hold them together.
+    Rip(Rip),
+}
+
+/// How a rip parts two panels along the edge they share, whatever the edge's course and the
+/// panels' surfaces. At every point of the edge each panel is cut back from it, square to it on
+/// its own surface, by as much as its lap asks there: so a rip between two planes, round a
+/// roll's rim or along a crease between two free-form panels is the one operation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rip {
+    /// The edge on each panel `(a, b)`, in its parameters: the same points of it, in order from
+    /// the joint's start (its anchors' origin) to its end. Two make a straight edge.
+    pub edges: (Vec<Vec2>, Vec<Vec2>),
+    /// The edge on each panel `(a, b)` exactly, where its source knows it: lines, circular arcs
+    /// and free-form spans in the panel's parameters, end to end from the joint's start to its
+    /// end. Empty where only the points are known.
+    pub curves: (Vec<Seg2>, Vec<Seg2>),
+    /// How far the sheet turns across the edge at each of those points (radians, from the `a`
+    /// panel to the `b` one, positive toward the material, as a bend turns): 0 where it would run
+    /// straight on, so that a cut through a flat panel is a rip too.
+    pub turns: Vec<f64>,
+    pub lap: Lap,
+}
+
+/// How a rip parts its panels: what each is cut back from the edge, given how far the sheet
+/// turns there and how thick it is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Lap {
+    /// Each panel's metal kept `gap / 2` off the surface halfway between the two, through its
+    /// whole thickness: a mitered corner, or a slit `gap` wide through a flat panel.
+    Miter { gap: f64 },
+    /// Each panel cut back the given distance from the edge, `(a, b)`, whatever the turn.
+    Cut(f64, f64),
+}
+
+impl Lap {
+    /// What each panel `(a, b)` is cut back from the edge, square to it on its own surface,
+    /// where the sheet turns `turn` across it and is `thickness` thick.
+    pub fn cuts(&self, turn: f64, thickness: f64) -> (f64, f64) {
+        match *self {
+            Lap::Cut(a, b) => (a.max(0.0), b.max(0.0)),
+            Lap::Miter { gap } => {
+                // In the `a` panel's frame at the edge: y toward its material, z on toward the
+                // `b` panel. Into `a` is -z; into `b`, turned by `turn` toward the material, and
+                // `b`'s material normal turns with it.
+                let (sin, cos) = turn.sin_cos();
+                let (into_a, into_b, up_b) = (Vec3::new(0.0, 0.0, -1.0), Vec3::new(0.0, sin, cos), Vec3::new(0.0, cos, -sin));
+                // The plane halfway between them holds the edge; its normal toward `a`.
+                let half = into_a + into_b;
+                let m = match Vec3::new(0.0, -half.z, half.y).normalized() {
+                    Some(m) if m.dot(into_a) >= 0.0 => m,
+                    Some(m) => -m,
+                    None => into_a,
+                };
+                let cut = |into: Vec3, up: Vec3, m: Vec3| {
+                    let along = into.dot(m);
+                    if along > 1e-9 { ((gap / 2.0 - (thickness * up.dot(m)).min(0.0)) / along).max(0.0) } else { 0.0 }
+                };
+                (cut(into_a, Vec3::Y, m), cut(into_b, up_b, -m))
+            }
+        }
+    }
 }
 
 /// A bend between two panels.

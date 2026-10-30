@@ -10,7 +10,7 @@
 
 use std::f64::consts::TAU;
 
-use solidcraft_develop::Development;
+use solidcraft_develop::{Development, EdgeFrom};
 use solidcraft_geom::{Region2, Seg2};
 use solidcraft_kernel::PLANAR_FIT_TOL;
 
@@ -28,8 +28,8 @@ pub(crate) enum Source {
     ZoneFar(usize),
     /// A bend zone's end (0 at the anchors' origin, 1 at the other).
     ZoneEnd(usize, usize),
-    /// Where a joint's trim leaves a panel's material: its tangent line at a bend, its cut edge
-    /// at a rip.
+    /// Where a joint leaves a panel's material: its tangent line at a bend, its new edge at a
+    /// rip.
     Cut { joint: usize, panel: usize },
 }
 
@@ -51,7 +51,10 @@ pub(crate) fn sources(dev: &Development) -> Vec<(Source, Seg2)> {
     for (panel, flat) in dev.panels.iter().enumerate() {
         let Some(flat) = flat else { continue };
         for (lp, (l, from)) in std::iter::once(&flat.region.outer).chain(&flat.region.holes).zip(&flat.origins).enumerate() {
-            out.extend(l.segs.iter().zip(from).map(|(s, &seg)| (Source::Panel { panel, lp, seg }, *s)));
+            out.extend(l.segs.iter().zip(from).map(|(s, from)| match *from {
+                EdgeFrom::Own(seg) => (Source::Panel { panel, lp, seg }, *s),
+                EdgeFrom::Rip(joint) => (Source::Cut { joint, panel }, *s),
+            }));
         }
     }
     for z in &dev.zones {

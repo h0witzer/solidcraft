@@ -3,7 +3,8 @@ use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 use solidcraft_geom::{Aabb2, Loop2, Region2, Seg2, Vec2, Vec3};
 
 use crate::{
-    Anchor, Bend, Corner, Datum, DevelopError, Joint, JointKind, Panel, Relief, Rigid2, Rigid3, Skin, Surface, Tail, ZoneEnds, develop, fold,
+    Anchor, Bend, Corner, Datum, DevelopError, Development, EdgeFrom, Joint, JointKind, Lap, Panel, Relief, Rigid2, Rigid3, Rip, Skin, Surface, Tail,
+    ZoneEnds, develop, fold,
 };
 
 const T: f64 = 2.0;
@@ -25,6 +26,19 @@ fn near(a: Vec2, b: Vec2) -> bool {
 
 fn same_motion(a: &Rigid2, b: &Rigid2) -> bool {
     near(a.point(Vec2::ZERO), b.point(Vec2::ZERO)) && near(a.point(Vec2::X), b.point(Vec2::X))
+}
+
+/// The edges of panel `panel`'s flat outline that are joint `joint`'s rip.
+fn rip_edges(dev: &Development, panel: usize, joint: usize) -> Vec<Seg2> {
+    let Some(Some(flat)) = dev.panels.get(panel) else { return Vec::new() };
+    let loops = std::iter::once(&flat.region.outer).chain(&flat.region.holes);
+    loops.zip(&flat.origins).flat_map(|(l, from)| l.segs.iter().zip(from)).filter(|(_, o)| **o == EdgeFrom::Rip(joint)).map(|(s, _)| *s).collect()
+}
+
+/// A straight rip along a joint's anchors, `length` long, the sheet turning `turn` across it.
+fn rip_along(joint: &Joint, length: f64, turn: f64, lap: Lap) -> JointKind {
+    let line = |a: &Anchor| vec![a.origin, a.origin + a.dir * length];
+    JointKind::Rip(Rip { edges: (line(&joint.a), line(&joint.b)), curves: (Vec::new(), Vec::new()), turns: vec![turn, turn], lap })
 }
 
 fn bend(angle: f64, datum: Datum, span: (f64, f64)) -> Bend {
@@ -208,20 +222,23 @@ fn a_ring_of_bends_is_reported_not_forced() {
 fn a_rip_lays_its_panels_out_apart_and_bad_joints_are_refused() {
     let mut skin = bracket(bend(FRAC_PI_2, Datum::Sharp, (0.0, 100.0)));
     if let Some(j) = skin.joints.get_mut(0) {
-        j.kind = JointKind::Rip { cut: (0.5, 0.25) };
+        j.kind = rip_along(j, 100.0, FRAC_PI_2, Lap::Cut(0.5, 0.25));
     }
     let dev = develop(&skin, 0).unwrap_or_default();
     assert_eq!(dev.pieces, vec![vec![0], vec![1]]);
     assert!(dev.zones.is_empty() && dev.loops.is_empty());
     // The flange lies ten thicknesses to the right of the base, level with its lowest edge.
-    let Some(Some(flange)) = dev.panels.get(1) else { panic!("the flange is laid out: {dev:?}") };
-    let fb = bounds(&flange.region);
+    let (Some(Some(place)), Some(flange)) = (dev.placements.get(1), skin.panels.get(1)) else { panic!("the flange is laid out: {dev:?}") };
+    let fb = bounds(&place.region(&flange.region));
     assert!((fb.min.x - 120.0).abs() < 1e-9 && fb.min.y.abs() < 1e-9, "{fb:?}");
-    // The base loses 0.5 along the rip, into its material above y = 0.
-    let [base, flange] = dev.trims.as_slice() else { panic!("a trim of each: {:?}", dev.trims) };
-    assert!(base.panel == 0 && flange.panel == 1 && (base.line[0].y - 0.5).abs() < 1e-9);
-    let bb = bounds(&base.region);
-    assert!(bb.min.y.abs() < 1e-9 && (bb.max.y - 0.5).abs() < 1e-9, "{bb:?}");
+    // The base loses 0.5 along the rip, into its material above y = 0: its edge there is the
+    // rip's, and nothing is left to trim.
+    assert!(dev.trims.is_empty(), "{:?}", dev.trims);
+    let cut = rip_edges(&dev, 0, 0);
+    let [Seg2::Line { a, b }] = cut.as_slice() else { panic!("one cut edge: {cut:?}") };
+    assert!((a.y - 0.5).abs() < 1e-9 && (b.y - 0.5).abs() < 1e-9 && (a.x - b.x).abs() > 100.0 - 1e-9, "{a:?} {b:?}");
+    let Some(Some(base)) = dev.panels.first() else { panic!("the base is laid out") };
+    assert!((bounds(&base.region).min.y - 0.5).abs() < 1e-9, "{:?}", bounds(&base.region));
     assert_eq!(develop(&skin, 5), Err(DevelopError::NoPanel(5)));
     if let Some(j) = skin.joints.get_mut(0) {
         j.b.dir = Vec2::new(2.0, 0.0);
@@ -317,7 +334,7 @@ fn a_tube_of_rolls_opens_with_a_rip() {
     };
     assert_eq!(develop(&skin, 0).unwrap_or_default().loops.len(), 1);
     if let Some(j) = skin.joints.get_mut(1) {
-        j.kind = JointKind::Rip { cut: (0.0, 0.0) };
+        j.kind = rip_along(j, 100.0, 0.0, Lap::Cut(0.0, 0.0));
     }
     let dev = develop(&skin, 0).unwrap_or_default();
     assert!(dev.loops.is_empty() && dev.pieces.len() == 1, "{dev:?}");
@@ -348,7 +365,7 @@ fn a_hole_in_a_roll_flattens_to_an_exact_ellipse() {
     let (Some(ellipse), Some(from)) = (flat.region.holes.first(), flat.origins.get(1)) else { panic!("{flat:?}") };
     let k = (r + K * T) / r;
     assert!(ellipse.segs.iter().all(|s| matches!(s, Seg2::Conic { .. })), "{ellipse:?}");
-    assert_eq!(from, &[0, 1, 2, 3], "each quarter stays one conic");
+    assert_eq!(from, &[0, 1, 2, 3].map(EdgeFrom::Own), "each quarter stays one conic");
     for s in &ellipse.segs {
         for t in [0.0, 0.3, 0.7, 1.0] {
             let p = s.point_at(t);
@@ -395,7 +412,7 @@ fn flat_length(skin: &Skin, a: Vec2, b: Vec2) -> f64 {
     let Some(Some(flat)) = dev.panels.first() else { panic!("laid out: {dev:?}") };
     // Every piece the line came back as: one per knot span it crosses.
     let from = flat.origins.first().cloned().unwrap_or_default();
-    flat.region.outer.segs.iter().zip(from).filter(|(_, o)| *o == 0).map(|(s, _)| s.length()).sum()
+    flat.region.outer.segs.iter().zip(from).filter(|(_, o)| *o == EdgeFrom::Own(0)).map(|(s, _)| s.length()).sum()
 }
 
 /// A quarter of a cylinder of radius 40, 100 long, written as a rational spline (its angle is no
@@ -771,4 +788,121 @@ fn a_torn_end_follows_its_plane_tight_round_the_bend() {
         }
     }
     assert!((widest - gap / 2.0).abs() < 1e-9, "{widest}");
+}
+
+/// A mitered rip keeps each panel's metal, through its whole thickness, half the gap off the
+/// plane halfway between them: at a square corner turning toward the material each is cut back
+/// T + gap / sqrt 2, at one turning away gap / sqrt 2, and through a flat panel each side half the
+/// gap. Turned either way the two sides swap.
+#[test]
+fn a_mitered_rip_keeps_both_panels_off_the_plane_between_them() {
+    let gap = 0.5;
+    let lap = Lap::Miter { gap };
+    let close = |(a, b): (f64, f64), want: (f64, f64)| (a - want.0).abs() < 1e-12 && (b - want.1).abs() < 1e-12;
+    let toward = T + gap / std::f64::consts::SQRT_2;
+    assert!(close(lap.cuts(FRAC_PI_2, T), (toward, toward)), "{:?}", lap.cuts(FRAC_PI_2, T));
+    let away = gap / std::f64::consts::SQRT_2;
+    assert!(close(lap.cuts(-FRAC_PI_2, T), (away, away)), "{:?}", lap.cuts(-FRAC_PI_2, T));
+    assert!(close(lap.cuts(0.0, T), (gap / 2.0, gap / 2.0)), "{:?}", lap.cuts(0.0, T));
+    assert!(close(Lap::Cut(1.0, 2.0).cuts(0.3, T), (1.0, 2.0)));
+}
+
+/// A plate whose top is a half round of radius 27.5 about (0, 23), ripped from a roll along
+/// that arc and cut back 3, its edge given at 33 points and, where `exact`, as the arc itself:
+/// the plate's flat outline, each edge with what it is.
+fn half_round_cut(exact: bool) -> Vec<(Seg2, EdgeFrom)> {
+    let (r, c) = (27.5, Vec2::new(0.0, 23.0));
+    let arc = Seg2::Arc { center: c, radius: r, start: 0.0, sweep: PI };
+    let plate = Region2 {
+        outer: Loop2 {
+            segs: vec![
+                Seg2::Line { a: Vec2::new(-r, 23.0), b: Vec2::new(-r, -23.0) },
+                Seg2::Line { a: Vec2::new(-r, -23.0), b: Vec2::new(r, -23.0) },
+                Seg2::Line { a: Vec2::new(r, -23.0), b: Vec2::new(r, 23.0) },
+                arc,
+            ],
+        }
+        .ccw(),
+        holes: Vec::new(),
+    };
+    let n = 33;
+    let along: Vec<Vec2> = (0..n).map(|k| arc.point_at(k as f64 / (n - 1) as f64)).collect();
+    let round: Vec<Vec2> = (0..n).map(|k| Vec2::new(0.0, PI * k as f64 / (n - 1) as f64)).collect();
+    let curves = (if exact { vec![arc] } else { Vec::new() }, Vec::new());
+    let skin = Skin {
+        thickness: T,
+        k_factor: K,
+        panels: vec![Panel { name: "plate".into(), region: plate, ..Panel::default() }, roll(r, true, 36.0, PI)],
+        joints: vec![Joint {
+            a: Anchor { panel: 0, origin: Vec2::new(r, 23.0), dir: Vec2::new(-1.0, 0.0) },
+            b: Anchor { panel: 1, origin: Vec2::ZERO, dir: Vec2::Y },
+            kind: JointKind::Rip(Rip { edges: (along, round), curves, turns: vec![-FRAC_PI_2; n], lap: Lap::Cut(3.0, 0.0) }),
+        }],
+        corners: Vec::new(),
+    };
+    let dev = develop(&skin, 0).unwrap_or_default();
+    assert!(dev.trims.is_empty(), "{:?}", dev.trims);
+    let Some(Some(plate)) = dev.panels.first() else { panic!("the plate is laid out: {dev:?}") };
+    let from = plate.origins.first().cloned().unwrap_or_default();
+    plate.region.outer.segs.iter().copied().zip(from).collect()
+}
+
+/// A rip follows its edge wherever it runs: given only as points along the half round, the
+/// plate's new edge is a spline through the cut points within a micron of the arc 3 inside.
+#[test]
+fn a_rip_follows_a_curved_edge() {
+    let (r, c) = (27.5, Vec2::new(0.0, 23.0));
+    let cut = half_round_cut(false);
+    let curved: Vec<&Seg2> = cut.iter().filter(|(s, o)| matches!(s, Seg2::Cubic { .. }) && *o == EdgeFrom::Rip(0)).map(|(s, _)| s).collect();
+    assert_eq!(curved.len(), 32);
+    for s in curved {
+        for k in 0..=8 {
+            let d = s.point_at(k as f64 / 8.0).dist(c);
+            assert!((d - (r - 3.0)).abs() < 1e-3, "{d}");
+        }
+    }
+}
+
+/// Where the edge is known exactly, an even cut moves it exactly: the half round cut back 3 is
+/// one arc, 3 inside it about the same center. The plate's sides, not ripped, keep their whole
+/// length: the cut steps square in from each to the arc, and both steps are the rip's. Nothing
+/// else is cut, and no edge is in pieces.
+#[test]
+fn a_rip_along_a_known_arc_cuts_an_arc() {
+    let (r, c) = (27.5, Vec2::new(0.0, 23.0));
+    let cut = half_round_cut(true);
+    let rip: Vec<&Seg2> = cut.iter().filter(|(_, o)| *o == EdgeFrom::Rip(0)).map(|(s, _)| s).collect();
+    let arcs: Vec<&&Seg2> = rip.iter().filter(|s| !matches!(s, Seg2::Line { .. })).collect();
+    let [Seg2::Arc { center, radius, sweep, .. }] = arcs.as_slice() else { panic!("one arc: {rip:?}") };
+    assert!(center.dist(c) < 1e-12 && (radius - (r - 3.0)).abs() < 1e-12 && (sweep.abs() - PI).abs() < 1e-12, "{rip:?}");
+    let steps = rip
+        .iter()
+        .filter(|s| matches!(s, Seg2::Line { a, b } if (a.y - 23.0).abs() < 1e-12 && (b.y - 23.0).abs() < 1e-12 && (a.dist(*b) - 3.0).abs() < 1e-12));
+    assert_eq!(steps.count(), 2, "{rip:?}");
+    let own: Vec<&Seg2> = cut.iter().filter(|(_, o)| matches!(o, EdgeFrom::Own(_))).map(|(s, _)| s).collect();
+    assert_eq!(own.len(), 3, "the plate's sides and bottom, whole: {own:?}");
+    assert!(own.iter().all(|s| (s.length() - 46.0).abs() < 1e-12 || (s.length() - 2.0 * r).abs() < 1e-12), "{own:?}");
+}
+
+/// On a roll the cut is measured on the roll: a rip along its straight edge, cut back 2, takes
+/// 2 / r of a turn off it, which lies 2 x (neutral radius) / r into its flat.
+#[test]
+fn a_rip_on_a_roll_is_cut_back_on_the_roll() {
+    let r = 30.0;
+    let mut skin = Skin {
+        thickness: T,
+        k_factor: K,
+        panels: vec![roll(r, true, 100.0, FRAC_PI_2), Panel { name: "wall".into(), region: rect(0.0, 0.0, 100.0, 30.0), ..Panel::default() }],
+        joints: vec![seam(0, FRAC_PI_2, 1, 0.0)],
+        corners: Vec::new(),
+    };
+    if let Some(j) = skin.joints.get_mut(0) {
+        j.kind = rip_along(j, 100.0, 0.0, Lap::Cut(2.0, 0.0));
+    }
+    let dev = develop(&skin, 0).unwrap_or_default();
+    let neutral = r - (1.0 - K) * T;
+    let want = (FRAC_PI_2 - 2.0 / r) * neutral;
+    let cut = rip_edges(&dev, 0, 0);
+    let [Seg2::Line { a, b }] = cut.as_slice() else { panic!("one cut edge: {cut:?}") };
+    assert!((a.y - want).abs() < 1e-6 && (b.y - want).abs() < 1e-6, "{a:?} {b:?} vs {want}");
 }

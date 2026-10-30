@@ -27,7 +27,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use solidcraft_develop::{
-    Anchor, Bend, Corner, Datum, Development, Fold, Joint, JointKind, Panel, Relief, Rigid3, Skin, Surface, Tail, ZoneEnds, develop, fold,
+    Anchor, Bend, Corner, Datum, Development, Fold, Joint, JointKind, Lap, Panel, Relief, Rigid3, Rip, Skin, Surface, Tail, ZoneEnds, develop, fold,
 };
 use solidcraft_geom::{Loop2, Mesh, Plane, Region2, Seg2, Vec2, Vec3};
 use solidcraft_kernel::{Body, FaceSurface, face_surface};
@@ -57,6 +57,10 @@ pub struct SkinRule {
     pub relief_width: f64,
     pub relief_depth: f64,
 }
+
+/// A rip whose edge leaves a bend's end this near the bend's own way (the cosine between them)
+/// carries on along the bend: the mesh gives an edge's way to about a thousandth.
+const ALONGSIDE: f64 = 1.0 - 1e-4;
 
 /// Relief sizes below this (mm) are not cut, as on a flanged sheet.
 const MIN_RELIEF: f64 = 0.01;
@@ -166,6 +170,18 @@ impl Shape {
         }
     }
 
+    /// How far a point lies out from the face's surface along its outward normal (below 0 inside
+    /// the material), near the surface.
+    fn off(&self, p: Vec3) -> f64 {
+        let side = |inward: bool| if inward { 1.0 } else { -1.0 };
+        let radial = |o: Vec3, axis: Vec3| ((p - o) - axis * (p - o).dot(axis)).len();
+        match *self {
+            Shape::Plane { plane, .. } => -plane.height(p),
+            Shape::Cylinder { origin, axis, radius, inward, .. } => (radial(origin, axis) - radius) * side(inward),
+            Shape::Cone { apex, axis, half, inward, .. } => (radial(apex, axis) * half.cos() - (p - apex).dot(axis) * half.sin()) * side(inward),
+        }
+    }
+
     /// The outward unit normal at a point of the face.
     fn out(&self, p: Vec3) -> Vec3 {
         let side = |inward: bool| if inward { 1.0 } else { -1.0 };
@@ -182,6 +198,9 @@ impl Shape {
     }
 }
 
+/// Until the kernel hands over a face's loops (#1597): read them from the B-rep, not chained
+/// from the display mesh's edge polylines.
+///
 /// Face `f`'s boundary loops from the mesh's edges, chained head to tail: each point with the
 /// face across the loop from it to the next.
 fn face_loops(mesh: &Mesh, f: usize, tol: f64) -> Result<Vec<Vec<(Vec3, Option<usize>)>>> {
@@ -284,14 +303,68 @@ fn rip_plane(nx: Vec3, ny: Vec3, e: Vec3) -> Option<Vec3> {
     (wx - wy).normalized().filter(|m| wx.dot(*m) > 1e-9)
 }
 
-/// How far a panel `x` is cut back from an edge between it and panel `y` so that its end stays
-/// half the gap from the plane halfway between them, as `sheet.convert` cuts a rip.
-fn rip_cut(nx: Vec3, ny: Vec3, e: Vec3, t: f64, gap: f64) -> Result<f64> {
-    let Some(mid) = rip_plane(nx, ny, e) else {
-        return err("two faces of the sheet lie on each other along the edge between them");
+/// A rip as the corners see it: its joint, its edge's two ends, and at each the plane halfway
+/// between its faces there (normal toward its `a` face).
+/// The edge's way at each end, along the edge from its start to its end, comes last.
+type RipEnds = (usize, [Vec3; 2], [Option<Vec3>; 2], [Vec3; 2]);
+
+/// The unit way an edge given as points runs at its `k`th point: across its neighbors, and at its
+/// ends to second order, so that a curve's ends lean no more than its middle.
+fn way3(points: &[Vec3], k: usize) -> Option<Vec3> {
+    let at = |i: usize| points.get(i).copied();
+    let n = points.len();
+    let way = match (k, n) {
+        (_, 0 | 1) => return None,
+        (_, 2) => at(1)? - at(0)?,
+        (0, _) => at(1)? * 4.0 - at(0)? * 3.0 - at(2)?,
+        (k, n) if k + 1 == n => at(k)? * 3.0 - at(k - 1)? * 4.0 + at(k - 2)?,
+        (k, _) => at(k + 1)? - at(k - 1)?,
     };
-    let lean = -nx.dot(mid) * t;
-    Ok((gap / 2.0 - lean.min(0.0)) / nx.cross(e).dot(mid))
+    way.normalized()
+}
+
+/// Points of an edge in a face's parameters, the angle round a roll unwrapped along the edge
+/// from the side of the turn its region `near` is on.
+fn chart_path(shape: &Shape, points: &[Vec3], near: &Region2) -> Vec<Vec2> {
+    let mut out: Vec<Vec2> = Vec::with_capacity(points.len());
+    for p in points {
+        let mut q = shape.params(*p);
+        if shape.angular() {
+            let reference = out.last().map_or_else(|| middle_turn(near).unwrap_or(q.y), |prev| prev.y);
+            q.y += ((reference - q.y) / std::f64::consts::TAU).round() * std::f64::consts::TAU;
+        }
+        out.push(q);
+    }
+    out
+}
+
+/// Until the kernel hands over every edge's exact curve (#1597): this reads only edges lying in
+/// a plane, found by their place in the display mesh's edge list, which must match the kernel's.
+///
+/// Edge `e` of the body exactly in a planar face's parameters (lines, circular arcs, free-form
+/// spans), run the way its points `path` there run; empty on a roll, and where the body's edge
+/// doesn't end where the points do.
+fn exact_edge(b: &Body, shape: &Shape, e: usize, path: &[Vec2], tol: f64) -> Vec<Seg2> {
+    let Shape::Plane { plane, .. } = shape else { return Vec::new() };
+    let (Some(first), Some(last)) = (path.first(), path.last()) else { return Vec::new() };
+    let Some(Some(curve)) = b.planar_edges(plane, &[e]).into_iter().next() else { return Vec::new() };
+    let Some((p, q)) = curve.first().zip(curve.last()).map(|(p, q)| (p.start(), q.end())) else { return Vec::new() };
+    if p.dist(*first) <= tol && q.dist(*last) <= tol {
+        curve
+    } else if q.dist(*first) <= tol && p.dist(*last) <= tol {
+        curve.iter().rev().map(Seg2::reversed).collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// The angle halfway across those a roll's panel spans. A point of the panel's edge unwrapped
+/// to the turn nearest it lies on the panel's side, even at an end of a half turn, where the
+/// panel's first corner is half a turn off and either turn is as near to that.
+fn middle_turn(region: &Region2) -> Option<f64> {
+    let turns = region.outer.segs.iter().flat_map(|s| [s.start().y, s.point_at(0.5).y]);
+    let (lo, hi) = turns.fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), y| (lo.min(y), hi.max(y)));
+    (lo <= hi).then_some((lo + hi) / 2.0)
 }
 
 /// How far a bend is cut back square along its edge from the corner `v` so that none of its
@@ -423,38 +496,49 @@ fn bend_corners(bent: &[BendEdge], near: impl Fn(Vec3, Vec3) -> bool) -> Vec<Ben
 /// tangent lines cross; on its other panel, where that panel's material, cut back by the rip,
 /// meets its tangent line; and between, it runs tight against the rip's plane. `None` at an open
 /// corner, where no rip parts the two panels.
+#[allow(clippy::too_many_arguments)]
 fn tear(
     bent: &[BendEdge],
     joints: &[Joint],
-    rips: &[(usize, [Vec3; 2], Vec3)],
+    rips: &[RipEnds],
     places: &[Rigid3],
     k: &BendCorner,
+    t: f64,
     near: impl Fn(Vec3, Vec3) -> bool,
 ) -> std::result::Result<Option<[(f64, f64, Relief); 2]>, String> {
     let [(i, _), (j, _)] = k.ends;
     let (Some(bi), Some(bj)) = (bent.get(i), bent.get(j)) else { return Ok(None) };
     let (Some(wi), Some(wj)) = (bi.other(k.panel), bj.other(k.panel)) else { return Ok(None) };
     let walls = [wi.0.panel, wj.0.panel];
-    let rip = rips.iter().find_map(|(r, ends, m)| {
+    let rip = rips.iter().find_map(|(r, ends, planes, _)| {
         let jr = joints.get(*r)?;
         let pair = [jr.a.panel, jr.b.panel];
         let [wa, wb] = walls;
-        (ends.iter().any(|p| near(*p, k.v)) && (pair == [wa, wb] || pair == [wb, wa])).then_some((jr, *m))
+        let end = ends.iter().position(|p| near(*p, k.v))?;
+        (pair == [wa, wb] || pair == [wb, wa]).then_some((jr, end, planes.get(end).copied().flatten()?))
     });
-    let Some((rip, m)) = rip else { return Ok(None) };
-    let JointKind::Rip { cut } = rip.kind else { return Ok(None) };
+    let Some((joint, end, m)) = rip else { return Ok(None) };
+    let JointKind::Rip(rip) = &joint.kind else { return Ok(None) };
+    let at_end = |v: &[Vec2]| {
+        if end == 0 { v.first().zip(v.get(1)).map(|(p, q)| (*p, *q - *p)) } else { v.last().zip(v.iter().rev().nth(1)).map(|(p, q)| (*p, *p - *q)) }
+    };
+    let turn = if end == 0 { rip.turns.first() } else { rip.turns.last() };
+    let cut = rip.lap.cuts(turn.copied().unwrap_or_default(), t);
     let mut out = [(0.0, 0.0, Relief::None); 2];
     for ((slot, (b, wall)), corner_at) in out.iter_mut().zip([(bi, wi), (bj, wj)]).zip(k.at) {
         // The wall's edge at the corner, cut back into its material (on the left of the rip's
-        // `a` anchor, on the right of its `b` one), and the bend's tangent line on the wall.
-        let (edge, back) = if rip.a.panel == wall.0.panel { (rip.a, cut.0) } else { (rip.b, -cut.1) };
-        let Some(q) = crossing(b.tangent(wall), (edge.origin + edge.dir.perp() * back, edge.dir)) else {
+        // way on its `a` panel, on the right on its `b` one), and the bend's tangent line on the
+        // wall.
+        let (edge, back) = if joint.a.panel == wall.0.panel { (&rip.edges.0, cut.0) } else { (&rip.edges.1, -cut.1) };
+        let Some((point, way)) = at_end(edge) else { return Err("a rip has no edge".into()) };
+        let Some(way) = way.normalized() else { return Err("a rip's edge has no length".into()) };
+        let Some(q) = crossing(b.tangent(wall), (point + way.perp() * back, way)) else {
             return Err("a bend runs along the rip".into());
         };
         let wall_at = (q - wall.0.origin).dot(wall.0.dir);
         // The rip's plane through the corner, toward the bend's own wall, in the bend's frame
         // at its `a` anchor.
-        let own = if rip.a.panel == wall.0.panel { m } else { -m };
+        let own = if joint.a.panel == wall.0.panel { m } else { -m };
         let Some((normal, offset)) = anchor_plane(places, b.a, own, k.v) else { return Err("a bend's panel has no place".into()) };
         let (near_at, far_at) = if b.a.panel == k.panel { (corner_at, wall_at) } else { (wall_at, corner_at) };
         *slot = (near_at, far_at, Relief::Tear { normal, offset });
@@ -501,6 +585,11 @@ enum Role {
 /// the `bends` points and cutting every other sharp edge between two faces of the sheet open.
 /// A solid's material lies inside its faces, or outside them when `outward`.
 pub fn convert_skin(mb: &ModelBody, rule: &SkinRule, bends: &[Vec3], skip: &[Vec3], outward: bool) -> Result<SkinConversion> {
+    // Until the kernel (solidcore, #1597) hands over each face's loops with each edge's exact
+    // curve on any surface: everything below that reads `mesh` (the faces' outlines, the edges
+    // between them, rays for the sheet's thickness, the faces' areas) reads the display
+    // tessellation, and a rip along a curved edge off a plane follows its facets. Read the B-rep
+    // instead and delete the mesh from this function.
     let (b, mesh) = (&mb.body, mb.mesh());
     let size = b.size();
     if !(size.is_finite() && size > 0.0) {
@@ -523,14 +612,15 @@ pub fn convert_skin(mb: &ModelBody, rule: &SkinRule, bends: &[Vec3], skip: &[Vec
         skipped.insert(g);
     }
 
-    // The walk starts on the largest plane. A shell or a plate: a parallel face the same small
-    // distance behind it. It keeps its thickness and its material; a solid takes the rule's.
-    let planes: Vec<(usize, Vec3)> =
-        (0..count).filter_map(|f| if let Ok(Shape::Plane { out, .. }) = Shape::of(b, &mesh, f, false) { Some((f, out)) } else { None }).collect();
-    let Some(&(start, n0)) = planes.iter().max_by(|x, y| area_of(x.0).total_cmp(&area_of(y.0))) else {
-        return err("not supported yet: a body with no flat face");
+    // The walk starts on the largest face, whatever its shape: nothing about the sheet depends
+    // on where. A shell or a plate: a face facing back at it the same small distance behind it.
+    // It keeps its thickness and its material; a solid takes the rule's.
+    let modelled: Vec<Option<Shape>> = (0..count).map(|f| Shape::of(b, &mesh, f, false).ok()).collect();
+    let probe = |f: usize| modelled.get(f).copied().flatten();
+    let Some(start) = (0..count).filter(|f| probe(*f).is_some()).max_by(|x, y| area_of(*x).total_cmp(&area_of(*y))) else {
+        return err("not supported yet: a body with no face that is a plane, a cylinder or a cone");
     };
-    let sheet = behind(&mesh, start, n0).filter(|d| *d > 0.0 && d * d * 16.0 <= area_of(start));
+    let sheet = behind(&mesh, &probe, start).filter(|d| *d > 0.0 && d * d * 16.0 <= area_of(start));
     let t = sheet.map_or(rule.thickness, |d| (d * 1e9).round() / 1e9);
     let shapes: Vec<std::result::Result<Shape, &'static str>> = (0..count).map(|f| Shape::of(b, &mesh, f, outward && sheet.is_none())).collect();
     let shape = |f: usize| shapes.get(f).copied().unwrap_or(Err("a face the mesh does not have"));
@@ -546,10 +636,7 @@ pub fn convert_skin(mb: &ModelBody, rule: &SkinRule, bends: &[Vec3], skip: &[Vec
     // thickness in front of the face behind it. A face whose face behind is the sheet's is the
     // sheet's other side.
     let touches = |g: usize, h: usize| mesh.edge_faces.iter().any(|fs| fs.contains(&(g as u32)) && fs.contains(&(h as u32)));
-    let thick = |g: usize| match (shape(g), sheet) {
-        (Ok(Shape::Plane { out, .. }), Some(d)) => behind(&mesh, g, out).is_some_and(|e| (e - d).abs() <= tol * 10.0),
-        _ => false,
-    };
+    let thick = |g: usize| sheet.is_some_and(|d| behind(&mesh, &probe, g).is_some_and(|e| (e - d).abs() <= tol * 10.0));
     let mut behind_of: BTreeMap<usize, Option<usize>> = BTreeMap::new();
     let mut sheet_faces = BTreeSet::from([start]);
     let mut queue = VecDeque::from([start]);
@@ -616,23 +703,20 @@ pub fn convert_skin(mb: &ModelBody, rule: &SkinRule, bends: &[Vec3], skip: &[Vec
         return err(format!("the bend at {} is not between two faces of the sheet", at(*p)));
     }
 
-    // The panels, each piece from its largest face (a plane first) across its bends and seams;
-    // the first piece's start is the flat's frame.
-    let largest = |left: &BTreeSet<usize>| {
-        left.iter().copied().max_by(|x, y| {
-            let plane = |f: &usize| matches!(shaped.get(f), Some(Shape::Plane { .. }));
-            plane(x).cmp(&plane(y)).then(area_of(*x).total_cmp(&area_of(*y))).then(y.cmp(x))
-        })
-    };
+    // The panels, each piece from its largest face, whatever its shape, across its bends and
+    // seams; the first piece's start is the flat's frame.
+    let largest = |left: &BTreeSet<usize>| left.iter().copied().max_by(|x, y| area_of(*x).total_cmp(&area_of(*y)).then(y.cmp(x)));
     let mut left = sheet_faces.clone();
     let mut parent: BTreeMap<usize, usize> = BTreeMap::new();
+    // The edges the walk crossed, each to a face it had not reached.
+    let mut crossed: BTreeSet<usize> = BTreeSet::new();
     let mut order = Vec::with_capacity(left.len());
     while let Some(root) = largest(&left) {
         left.remove(&root);
         order.push(root);
         let mut queue = VecDeque::from([root]);
         while let Some(f) = queue.pop_front() {
-            for &(_, x, y, role) in &roles {
+            for &(e, x, y, role) in &roles {
                 let g = if x == f {
                     y
                 } else if y == f {
@@ -641,6 +725,7 @@ pub fn convert_skin(mb: &ModelBody, rule: &SkinRule, bends: &[Vec3], skip: &[Vec
                     continue;
                 };
                 if role != Role::Rip && left.remove(&g) {
+                    crossed.insert(e);
                     parent.insert(g, f);
                     order.push(g);
                     queue.push_back(g);
@@ -669,9 +754,13 @@ pub fn convert_skin(mb: &ModelBody, rule: &SkinRule, bends: &[Vec3], skip: &[Vec
     // rip's plane is kept, by its ends and toward its `a` panel, and each bend's edge, for the
     // bends' ends below.
     let (mut joints, mut edges) = (Vec::new(), Vec::new());
-    let mut rips: Vec<(usize, [Vec3; 2], Vec3)> = Vec::new();
+    let mut rips: Vec<RipEnds> = Vec::new();
     let mut bent: Vec<BendEdge> = Vec::new();
     for &(e, x, y, role) in &roles {
+        // A ring of smooth seams (a tube) can't lie flat: it opens where the walk closed it, at a
+        // seam the walk did not cross. (A ring of bends is the user's to open: where its seam
+        // goes is the design's.)
+        let role = if role == Role::Seam && !crossed.contains(&e) { Role::Rip } else { role };
         let Some(line) = mesh.edges.get(e) else { continue };
         let (Some(&p0), Some(&p1)) = (line.first(), line.last()) else { continue };
         let (Some(&ix), Some(&iy), Some(sx), Some(sy)) = (index.get(&x), index.get(&y), shaped.get(&x), shaped.get(&y)) else { continue };
@@ -686,21 +775,37 @@ pub fn convert_skin(mb: &ModelBody, rule: &SkinRule, bends: &[Vec3], skip: &[Vec
             let (mut u0, mut u1) = (s.params(from), s.params(to));
             // On a roll, the angle on the side the panel is.
             if s.angular() {
-                let c = near_to.outer.segs.first().map_or(u0, Seg2::start);
+                let c = middle_turn(near_to).unwrap_or(u0.y);
                 for u in [&mut u0, &mut u1] {
-                    u.y += ((c.y - u.y) / std::f64::consts::TAU).round() * std::f64::consts::TAU;
+                    u.y += ((c - u.y) / std::f64::consts::TAU).round() * std::f64::consts::TAU;
                 }
             }
             Some((u0, u1))
         };
         let Some((mut a0, mut a1)) = ends(sa, p0, p1, &ra) else { continue };
-        let probe = |r: &Region2, u0: Vec2, u1: Vec2, left: bool| -> bool {
-            let Some(d) = (u1 - u0).normalized() else { return false };
-            let extent = r.outer.polyline(1e-3).bounds().size().len().max(1e-9);
-            let side = if left { d.perp() } else { -d.perp() };
-            r.contains((u0 + u1) * 0.5 + side * (extent * 1e-4))
+        // Which way `a`'s material lies, looked for beside the edge's own middle along its own way
+        // there: beside the line between its ends, a curved edge's panel can lie both ways.
+        let left = {
+            let path = chart_path(sa, line, &ra);
+            // The piece of the edge its halfway point lies on, and that point.
+            let total: f64 = line.windows(2).map(|w| w[0].dist(w[1])).sum();
+            let mut rest = total / 2.0;
+            let mut middle = None;
+            for (k, w) in line.windows(2).enumerate() {
+                let l = w[0].dist(w[1]);
+                if rest <= l && l > 0.0 {
+                    middle = path.get(k).zip(path.get(k + 1)).map(|(p, q)| (p.lerp(*q, rest / l), *q - *p));
+                    break;
+                }
+                rest -= l;
+            }
+            let extent = ra.outer.polyline(1e-3).bounds().size().len().max(1e-9);
+            match middle.and_then(|(q, d)| Some((q, d.normalized()?))) {
+                Some((q, d)) => ra.contains(q + d.perp() * (extent * 1e-4)),
+                None => false,
+            }
         };
-        let (from, to) = if probe(&ra, a0, a1, true) { (p0, p1) } else { (p1, p0) };
+        let (from, to) = if left { (p0, p1) } else { (p1, p0) };
         if from != p0 {
             std::mem::swap(&mut a0, &mut a1);
         }
@@ -762,19 +867,33 @@ pub fn convert_skin(mb: &ModelBody, rule: &SkinRule, bends: &[Vec3], skip: &[Vec
         } else if role == Role::Seam {
             JointKind::Seam
         } else {
-            let e = (to - from).normalized().unwrap_or(Vec3::X);
-            let cut = |s: &Shape, o: &Shape, e: Vec3| -> Result<f64> {
-                match (s, o) {
-                    (Shape::Plane { out: nx, .. }, Shape::Plane { out: ny, .. }) => rip_cut(*nx, *ny, e, t, rule.gap),
-                    _ => Ok(rule.gap / 2.0),
-                }
-            };
-            if let (Shape::Plane { out: na, .. }, Shape::Plane { out: nb, .. }) = (sa, sb)
-                && let Some(m) = rip_plane(*na, *nb, -e)
-            {
-                rips.push((joints.len(), [from, to], m));
+            // The edge as the body has it, from `from` to `to`: on each panel, and the sheet's turn
+            // across it at each point, from the two faces' own normals there.
+            let mut points = line.clone();
+            if points.first().is_some_and(|p| p.dist(from) > p.dist(to)) {
+                points.reverse();
             }
-            JointKind::Rip { cut: (cut(sa, sb, -e)?, cut(sb, sa, e)?) }
+            let ways: Vec<Vec3> = (0..points.len()).filter_map(|k| way3(&points, k)).collect();
+            if ways.len() != points.len() {
+                return err(format!("the edge at {} has no length", at(mid)));
+            }
+            let turns = points.iter().zip(&ways).map(|(p, x)| {
+                // In the `a` face's frame: x along the edge, y toward its material, z on toward
+                // the `b` face; the `b` face runs on from the edge into its own material.
+                let (y, into_b) = (-sa.out(*p), sb.out(*p).cross(*x));
+                into_b.dot(y).atan2(into_b.dot(x.cross(y)))
+            });
+            let planes = [(points.first(), ways.first()), (points.last(), ways.last())]
+                .map(|(p, x)| p.zip(x).and_then(|(p, x)| rip_plane(sa.out(*p), sb.out(*p), -*x)));
+            let (Some(&first), Some(&last)) = (ways.first(), ways.last()) else { return err(format!("the edge at {} has no length", at(mid))) };
+            rips.push((joints.len(), [from, to], planes, [first, last]));
+            let (pa, pb) = (chart_path(sa, &points, &ra), chart_path(sb, &points, &rb));
+            JointKind::Rip(Rip {
+                curves: (exact_edge(b, sa, e, &pa, tol), exact_edge(b, sb, e, &pb, tol)),
+                edges: (pa, pb),
+                turns: turns.collect(),
+                lap: Lap::Miter { gap: rule.gap },
+            })
         };
         joints.push(Joint { a: anchor_a, b: anchor_b, kind });
         edges.push(mid);
@@ -796,7 +915,7 @@ pub fn convert_skin(mb: &ModelBody, rule: &SkinRule, bends: &[Vec3], skip: &[Vec
     for k in &found {
         let notched = || k.at.map(|a| (a, a, Relief::Notch));
         let values = match rule.corner_relief {
-            ReliefShape::Tear => match tear(&bent, &joints, &rips, &places, k, near) {
+            ReliefShape::Tear => match tear(&bent, &joints, &rips, &places, k, t, near) {
                 Ok(Some(torn)) => torn,
                 Ok(None) => notched(),
                 Err(why) => {
@@ -832,13 +951,20 @@ pub fn convert_skin(mb: &ModelBody, rule: &SkinRule, bends: &[Vec3], skip: &[Vec
                 continue;
             }
             let (v, into) = if e == 0 { (b.ends[0], d) } else { (b.ends[1], -d) };
-            let planes = rips.iter().filter(|(_, ends, _)| ends.iter().any(|p| near(*p, v))).filter_map(|(r, _, m)| {
+            // A rip that carries on along the bend's edge, tangent to it, runs alongside the bend
+            // rather than across its end, and cuts nothing off it.
+            let planes = rips.iter().filter_map(|(r, ends, planes, ways)| {
+                let end = ends.iter().position(|p| near(*p, v))?;
+                if ways.get(end).is_some_and(|w| w.dot(into).abs() > ALONGSIDE) {
+                    return None;
+                }
+                let m = planes.get(end).copied().flatten()?;
                 let rip = joints.get(*r)?;
                 let mine = |p: usize| p == b.a.panel || p == b.b.panel;
                 if mine(rip.a.panel) {
-                    Some(*m)
+                    Some(m)
                 } else if mine(rip.b.panel) {
-                    Some(-*m)
+                    Some(-m)
                 } else {
                     None
                 }
@@ -872,6 +998,9 @@ pub fn convert_skin(mb: &ModelBody, rule: &SkinRule, bends: &[Vec3], skip: &[Vec
     Ok(SkinConversion { skin, development, faces: order, places, edges, thickness: t, notes, pieces: std::sync::OnceLock::new() })
 }
 
+/// Until the kernel measures a face (#1597): the area of its display triangles, which only
+/// picks the largest face, so a facet's error does not change the sheet.
+///
 /// The area of face `f`'s triangles.
 fn face_area(mesh: &Mesh, f: usize) -> f64 {
     let tris = mesh.triangles.iter().zip(&mesh.tri_face).filter(|(_, g)| **g as usize == f).filter_map(|(t, _)| mesh.tri(t));
@@ -885,6 +1014,8 @@ fn face_point(mesh: &Mesh, f: usize) -> Vec3 {
     tri.max_by(|x, y| area(x).total_cmp(&area(y))).map_or(Vec3::ZERO, |t| (t[0] + t[1] + t[2]) * (1.0 / 3.0))
 }
 
+/// Until the kernel casts rays on its exact faces (#1597): a ray through the display mesh.
+///
 /// The face straight through the material behind face `f`, from a ray through its largest
 /// triangle along its inward normal.
 fn behind_face(mesh: &Mesh, f: usize) -> Option<usize> {
@@ -896,19 +1027,23 @@ fn behind_face(mesh: &Mesh, f: usize) -> Option<usize> {
     mesh.tri_face.get(hit).map(|g| *g as usize).filter(|g| *g != f)
 }
 
-/// How far behind planar face `f` (outward normal `n`) a parallel face facing the other way
-/// lies, from rays through its largest triangles.
-fn behind(mesh: &Mesh, f: usize, n: Vec3) -> Option<f64> {
+/// Until the kernel casts rays on its exact faces (#1597): the ray goes through the display
+/// mesh, and its ends are taken onto the exact surfaces after.
+///
+/// How far behind face `f` the face facing back at it lies: from `f`'s surface to that face's,
+/// along `f`'s normal through its largest triangle, each end taken onto its face's own surface
+/// (`shape` of each face as modelled), so that a roll's facets measure as the roll does.
+fn behind(mesh: &Mesh, shape: &impl Fn(usize) -> Option<Shape>, f: usize) -> Option<f64> {
     let area = |t: &[Vec3; 3]| (t[1] - t[0]).cross(t[2] - t[0]).len();
-    let mut tris: Vec<[Vec3; 3]> =
-        mesh.triangles.iter().zip(&mesh.tri_face).filter(|(_, g)| **g as usize == f).filter_map(|(t, _)| mesh.tri(t)).collect();
-    tris.sort_by(|x, y| area(y).total_cmp(&area(x)));
-    let middle = tris.first().map(|t| (t[0] + t[1] + t[2]) * (1.0 / 3.0))?;
+    let tris = mesh.triangles.iter().zip(&mesh.tri_face).filter(|(_, g)| **g as usize == f).filter_map(|(t, _)| mesh.tri(t));
+    let middle = tris.max_by(|x, y| area(x).total_cmp(&area(y))).map(|t| (t[0] + t[1] + t[2]) * (1.0 / 3.0))?;
+    let front = shape(f)?;
+    let n = front.out(middle);
     let (d, hit) = mesh.raycast(middle, n * -1.0)?;
     let g = *mesh.tri_face.get(hit)? as usize;
-    let back = mesh.triangles.get(hit).and_then(|t| mesh.tri(t))?;
-    let nb = (back[1] - back[0]).cross(back[2] - back[0]).normalized()?;
-    (g != f && nb.dot(n) < -1.0 + 1e-9).then_some(d)
+    let back = shape(g)?;
+    let at = middle - n * d;
+    (g != f && back.out(at).dot(n) < -1.0 + 1e-9).then(|| d - front.off(middle) - back.off(at))
 }
 
 impl SkinConversion {
