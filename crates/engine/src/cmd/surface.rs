@@ -39,7 +39,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("surface.extrude", "Surface Extrude", surface_extrude)
         .at("SURFACE", "CREATE")
         .icon("surface_extrude")
-        .params("sketch?: id|name; curves?: [curve ids] (open or closed chains of curves meeting end to end) and/or profiles? (their boundaries; the default when no curves are given); distance: expr; direction?: positive|negative|symmetric (symmetric: distance is the total, split evenly around the start plane, as solid.extrude); convention?: total_distance|legacy_per_side (as solid.extrude; default total_distance, or legacy_per_side, the distance on each side, under the user's preference for the older reading); distance2?: expr; start_offset?: expr; name?, body_name? (a surface body: walls only, no caps)"),
+        .params("sketch?: id|name; curves?: [curve ids] (open or closed chains of curves meeting end to end) and/or profiles? (their boundaries; the default when no curves are given); distance: expr; direction?: positive|negative|symmetric (symmetric: distance is the total, split evenly around the start plane, as solid.extrude); convention?: total_distance|legacy_per_side (as solid.extrude; default total_distance; legacy_per_side: the distance on each side, as older symmetric surface extrudes keep); distance2?: expr; start_offset?: expr; name?, body_name? (a surface body: walls only, no caps)"),
     CommandSpec::new("surface.revolve", "Surface Revolve", surface_revolve)
         .at("SURFACE", "CREATE")
         .icon("surface_revolve")
@@ -1091,9 +1091,9 @@ mod tests {
         }
     }
 
-    /// Offset Surface: a cylinder's side picked once with its chain (both halves) moved out to
-    /// radius 12; a box top moved up exactly; a zero distance copies; past the axis refused, the
-    /// design left as it was; undo, redo and reopening.
+    /// Offset Surface: a cylinder's side (one face, closed along its seam) picked with its chain
+    /// moved out to radius 12; a box top moved up exactly; a zero distance copies; past the axis
+    /// refused, the design left as it was; undo, redo and reopening.
     #[test]
     fn offset_surface_of_a_cylinder_and_a_box_top() {
         let mut s = Session::default();
@@ -1101,7 +1101,7 @@ mod tests {
         run(&mut s, "surface.offset", json!({"faces": [[10, 0, 10]], "chain": true, "distance": 2, "body": "Can", "body_name": "Sleeve"}));
         let st = s.world_state().unwrap();
         let sleeve = &st.body("Sleeve").unwrap().body;
-        assert!(sleeve.is_surface() && sleeve.face_count() == 2);
+        assert!(sleeve.is_surface());
         let want = 2.0 * std::f64::consts::PI * 12.0 * 20.0;
         assert!((area(&s, "Sleeve") - want).abs() < want * 1e-3, "{} vs {want}", area(&s, "Sleeve")); // (measured on meshes)
         assert!(st.body("Can").is_some(), "the source body stays");
@@ -1293,9 +1293,11 @@ mod tests {
 
     /// Extend a cylinder strip: naturally 5 along its axis (10 · π/2 · 25, one face, still a
     /// cylinder), up to the plane z = 30 (10 · π/2 · 30), and by tangent and curvature run-offs
-    /// (a second face along a straight edge, 20 long: the tangent one a flat 5 × 20, the
-    /// curvature one the parabola s ↦ s·R + ½κs²·n with the cylinder's κ = 1/10, its section
-    /// ∫₀⁵ √(1 + κ²s²) ds long). Undo, redo and reopening; the default saves nothing new.
+    /// along a straight edge, 20 long: each SMLib's G1 or G2 extension of the surface, so the
+    /// strip stays one face. The distance is measured across the surface (the run-off's section
+    /// is 5 long, whatever its curvature) and the strip is its section swept 20 along z, so each
+    /// run-off adds 5 × 20: 10 · π/2 · 20 + 100.
+    /// Undo, redo and reopening; the default saves nothing new.
     #[test]
     fn extend_a_cylinder_strip_every_way() {
         let pi = std::f64::consts::PI;
@@ -1321,13 +1323,9 @@ mod tests {
         run(&mut s, "edit.undo", json!({}));
 
         let side = [0.0, 10.0, 10.0];
-        let k: f64 = 0.1;
-        let parabola = 2.5 * (1.0 + 25.0 * k * k).sqrt() + (5.0 * k).asinh() / (2.0 * k);
-        for (mode, run_off) in [("tangent", 5.0), ("curvature", parabola)] {
+        for mode in ["tangent", "curvature"] {
             run(&mut s, "surface.extend", json!({"body": "Strip", "edges": [side], "distance": 5, "mode": mode}));
-            let st = s.world_state().unwrap();
-            assert_eq!(st.body("Strip").unwrap().body.face_count(), 2, "{mode}");
-            let want = 10.0 * pi / 2.0 * 20.0 + run_off * 20.0;
+            let want = 10.0 * pi / 2.0 * 20.0 + 5.0 * 20.0;
             assert!((area(&s, "Strip") - want).abs() < want * 1e-3, "{mode}: {} vs {want}", area(&s, "Strip")); // (measured on meshes)
             let cold = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
             assert!((area(&cold, "Strip") - area(&s, "Strip")).abs() < 1e-9, "{mode}");
@@ -1922,7 +1920,7 @@ mod tests {
         assert!(s.doc.to_json().contains("\"continuity\""), "the continuity is saved");
         // Hostile and misplaced values.
         for (key, v) in [
-            ("continuity", json!("g3")),
+            ("continuity", json!("g5")),
             ("continuity", json!("smooth")),
             ("continuity", json!(5)),
             ("continuity", json!([{"edge": "here", "g": "g1"}])),
@@ -1955,17 +1953,25 @@ mod tests {
         (numbers[0], numbers[1])
     }
 
-    /// Surface Fair on the fitted B-spline face of an offset sphere: the face is smoothed in
-    /// place, its edges do not move at all, the reply carries the energy before and after, undo,
-    /// redo and a cold reopen keep it, and hostile inputs are refused.
+    /// Surface Fair on the fitted B-spline face of a patch on a rim that is not planar (a box's
+    /// top cut away by a sideways cylinder): the face is smoothed in place, its edges do not move
+    /// at all, the reply carries the energy before and after, undo, redo and a cold reopen keep
+    /// it, and hostile inputs are refused.
     #[test]
     fn fairing_a_b_spline_face_keeps_its_edges_and_reports_its_energy() {
         let mut s = Session::default();
-        run(&mut s, "solid.sphere", json!({"radius": 20, "body_name": "Ball"}));
-        // A sphere is neither a plane nor a cylinder, so its offset is a fitted B-spline face.
-        run(&mut s, "surface.offset", json!({"faces": [[0, 0, 20]], "body": "Ball", "distance": 2, "body_name": "Shell"}));
+        run(&mut s, "solid.box", json!({"length": 28, "width": 28, "height": 20, "corner": [-14, -14, 0], "body_name": "Saddle"}));
+        run(
+            &mut s,
+            "solid.cylinder",
+            json!({"radius": 40, "height": 120, "base": [0, -60, 50], "axis": "Y", "operation": "cut", "targets": ["Saddle"]}),
+        );
+        let z = |x: f64| 50.0 - (1600.0 - x * x).sqrt();
+        let rim = json!([[14, 0, z(14.0)], [0, 14, z(0.0)], [-14, 0, z(-14.0)], [0, -14, z(0.0)]]);
+        // The rim is not planar, so its patch is a fitted B-spline face.
+        run(&mut s, "surface.patch", json!({"edges": rim, "body": "Saddle", "body_name": "Shell"}));
         let st = s.world_state().unwrap();
-        assert!(st.body("Shell").unwrap().body.is_surface(), "an offset sphere face is a sheet");
+        assert!(st.body("Shell").unwrap().body.is_surface(), "a patch on a rim is a sheet");
         let before: Vec<solidcraft_geom::Vec3> = st.body("Shell").unwrap().body.edges(0.1).unwrap().iter().flat_map(|e| e.points.clone()).collect();
         assert!(!before.is_empty());
         let area_before = area(&s, "Shell");

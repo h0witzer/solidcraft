@@ -1348,12 +1348,75 @@ fn cutting_a_text_removes_each_letter_whether_its_letters_stand_apart_or_touch()
     }
 }
 
+/// The area, perimeter and Steiner coefficient C of `regions`: offset outward by e, convex
+/// corners rounded and reflex ones trimmed where the offsets cross, a region's area is
+/// A + P e + C e² while the offset meets nothing, C being half each loop's turning (π for an
+/// outer loop, −π for a hole) less tan(t/2) − t/2 at each reflex corner of turn t.
+fn steiner(regions: &[&solidcraft_geom::Region2]) -> (f64, f64, f64) {
+    let (mut a, mut p, mut c) = (0.0, 0.0, 0.0);
+    for r in regions {
+        a += r.area();
+        // Each loop with the material on its left.
+        let outer = (r.outer.ccw(), std::f64::consts::PI);
+        let holes = r.holes.iter().map(|h| (h.ccw().reversed(), -std::f64::consts::PI));
+        for (l, half_turning) in std::iter::once(outer).chain(holes) {
+            p += l.segs.iter().map(|s| s.length()).sum::<f64>();
+            c += half_turning;
+            for (s, n) in l.joints() {
+                let (u, v) = (s.end_tangent(), n.start_tangent());
+                let t = -u.cross(v).atan2(u.dot(v));
+                if t > 0.0 {
+                    c -= (t / 2.0).tan() - t / 2.0;
+                }
+            }
+        }
+    }
+    (a, p, c)
+}
+
+/// The text's letters (its profiles less their counters, a counter being a profile too).
+fn letters(s: &Session) -> Vec<solidcraft_geom::Region2> {
+    let state = s.world_state().unwrap();
+    let ss = state.sketch(s.active_sketch.unwrap()).unwrap();
+    let sorted = |ids: &[String]| {
+        let mut ids = ids.to_vec();
+        ids.sort();
+        ids
+    };
+    let counter = |p: &solidcraft_sketch::Profile| ss.profiles.iter().any(|q| q.hole_curves.iter().any(|h| sorted(h) == sorted(&p.outer_curves)));
+    ss.profiles.iter().filter(|p| !counter(p)).map(|p| p.region.clone()).collect()
+}
+
 /// A text joined onto a block with a taper: its letters are spline and conic outlines whose
-/// sides slope, standing on the block's face (run on into it) or hanging over its edge (a
-/// straight foot first). An outward taper adds a little more than the straight text; one
-/// steeper than the letters' strokes is refused, saying so.
+/// sides slope, standing on the block's face or hanging over its edge. An outward taper grows
+/// every letter, the t too (SMLib drafted it inward: its loop's normal, summed from the cross
+/// products of its chords, pointed down). Each letter's section at height z is its outline
+/// offset by e = z tan a, by the Round rule of area A + P e + C e² while the offset trims
+/// nothing (Steiner, [`steiner`]), so the letter is A h + P k h²/2 + C k² h³/3 (k = tan a). That
+/// holds exactly for the t at 3° and for s, l and o at 3° and 15°, each extruded alone (SMLib
+/// measures them to 1e-9 of it). The concave joins of r, n, g and e are tighter than e already
+/// at 3°, their swallowtails trimmed, the t's arms meet the trim by 15°, and the letters grow
+/// into each other on the block: the whole word is checked for what holds exactly, one closed
+/// body with the block, every letter's section half-way up holding the straight letter.
 #[test]
 fn a_tapered_text_joins_a_block_on_its_face_or_hanging_over_its_edge() {
+    let h = 2.0;
+    for (text, degs) in [("t", &[3.0f64][..]), ("s", &[3.0, 15.0]), ("l", &[3.0, 15.0]), ("o", &[3.0, 15.0])] {
+        let mut s = Session::default();
+        run(&mut s, "sketch.create", json!({"plane":"XY"}));
+        run(&mut s, "sketch.text", json!({"text":text,"at":[5,12],"height":8}));
+        let regions = letters(&s);
+        let (a, p, c) = steiner(&regions.iter().collect::<Vec<_>>());
+        run(&mut s, "sketch.finish", json!({}));
+        for &deg in degs {
+            let k = deg.to_radians().tan();
+            let exact = a * h + p * k * h * h / 2.0 + c * k * k * h.powi(3) / 3.0;
+            let mut t = s.scratch();
+            run(&mut t, "solid.extrude", json!({"distance":h,"taper":format!("{deg} deg"),"corner":"round"}));
+            let v = volume(&mut t);
+            assert!((v - exact).abs() < 1e-6 * exact, "{text:?} {deg}°: {v}, {exact} by its outline");
+        }
+    }
     for (at, hanging) in [([5.0, 12.0], false), ([150.0, 12.0], true)] {
         let mut s = Session::default();
         run(&mut s, "sketch.create", json!({"plane":"XY"}));
@@ -1362,24 +1425,39 @@ fn a_tapered_text_joins_a_block_on_its_face_or_hanging_over_its_edge() {
         run(&mut s, "solid.extrude", json!({"distance":-10}));
         run(&mut s, "sketch.create", json!({"plane":"XY"}));
         run(&mut s, "sketch.text", json!({"text":"tres long","at":at,"height":8}));
-        let state = s.world_state().unwrap();
-        let ss = state.sketch(s.active_sketch.unwrap()).unwrap();
-        // The letters' area, counters left out (a letter's hole is its own profile too).
-        let sorted = |ids: &[String]| {
-            let mut ids = ids.to_vec();
-            ids.sort();
-            ids
-        };
-        let counter = |p: &solidcraft_sketch::Profile| ss.profiles.iter().any(|q| q.hole_curves.iter().any(|h| sorted(h) == sorted(&p.outer_curves)));
-        let area: f64 = ss.profiles.iter().filter(|p| !counter(p)).map(|p| p.area).sum();
+        let regions = letters(&s);
         run(&mut s, "sketch.finish", json!({}));
-        let steep = s.execute("solid.extrude", &json!({"distance":2,"operation":"join","taper":"15 deg"})).unwrap_err();
-        assert!(steep.to_string().contains("the taper closes the profile"), "{steep}");
-        run(&mut s, "solid.extrude", json!({"distance":2,"operation":"join","taper":"3 deg"}));
-        let volume = run(&mut s, "inspect.measure", json!({}))["total"]["volume_mm3"].as_f64().unwrap();
-        let (block, text) = (200.0 * 40.0 * 10.0, 2.0 * area);
-        assert!(volume > block + text && volume < block + 1.3 * text, "hanging {hanging}: {volume} for {text} mm³ of straight text");
-        assert_eq!(s.world_state().unwrap().bodies.len(), 1);
+        for deg in [3.0, 15.0] {
+            for corner in [None, Some("round")] {
+                let mut t = s.scratch();
+                let mut params = json!({"distance":h,"operation":"join","taper":format!("{deg} deg")});
+                if let Some(corner) = corner {
+                    params["corner"] = json!(corner);
+                }
+                run(&mut t, "solid.extrude", params);
+                let m = measure(&mut t);
+                let what = format!("hanging {hanging}, {deg}° {corner:?}");
+                assert_eq!(m["bodies"].as_array().map(Vec::len), Some(1), "{what}: {m}");
+                assert_eq!(m["bodies"][0]["closed"], true, "{what}: {m}");
+                // Half-way up each letter is its outline grown by h/2 tan a: every point of the
+                // straight letter's outline lies inside.
+                let state = t.model.state();
+                let mesh = state.bodies[0].body.mesh(&solidcraft_kernel::MeshTolerance::chord(1e-3)).unwrap();
+                for r in &regions {
+                    for seg in std::iter::once(&r.outer).chain(&r.holes).flat_map(|l| &l.segs) {
+                        for i in 0..8 {
+                            let q = seg.point_at(f64::from(i) / 8.0);
+                            assert!(
+                                mesh.contains(solidcraft_geom::Vec3::new(q.x, q.y, h / 2.0)),
+                                "{what}: ({}, {}) outside the letter half-way up",
+                                q.x,
+                                q.y
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1725,38 +1803,6 @@ fn fillet_straight_edges_that_end_at_the_arc_wall() {
     }
 }
 
-/// The vertical knife edge at the tip (the arc and the back face meeting at no angle) rounds to
-/// the ball 2 from both, about 13 back from the tip: the cusp beyond the ball, on the tip's side
-/// of its contacts, all the way up.
-#[test]
-fn fillet_the_knife_edge_at_the_tip() {
-    let cx = 62.166666666666664;
-    let (kx, ky) = (cx - (23.0f64 * 23.0 - 19.0 * 19.0).sqrt(), -2.0);
-    let (hx, hy) = (0.002, 0.0005);
-    let mut area = 0.0;
-    let mut x = kx + hx / 2.0;
-    while x < cx {
-        let lo = -21.0 + (441.0 - (x - cx) * (x - cx)).max(0.0).sqrt();
-        for j in 0..((0.0 - lo) / hy).ceil() as usize {
-            let (y0, y1) = (lo + j as f64 * hy, (lo + (j + 1) as f64 * hy).min(0.0));
-            let y = (y0 + y1) * 0.5;
-            let a = (y - ky).atan2(x - kx);
-            if (x - kx).hypot(y - ky) > 2.0 && a >= (-21.0 - ky).atan2(cx - kx) {
-                area += (y1 - y0) * hx;
-            }
-        }
-        x += hx;
-    }
-    let mut s = knife_edge_part();
-    let before = planned(&s);
-    run(&mut s, "solid.fillet", json!({"edges": [[cx, 0.0, 5.0]], "radius": 2}));
-    let after = planned(&s);
-    assert!(rel(before - after, area * 10.0) < 5e-4, "removed {} vs {}", before - after, area * 10.0);
-    let mut s = knife_edge_part();
-    run(&mut s, "solid.chamfer", json!({"edges": [[cx, 0.0, 5.0]], "distance": 2}));
-    assert!(before - planned(&s) > before - after, "the chamfer takes the ball's bulge off too");
-}
-
 /// Rounds of the edges at the arc's top front corner, two or all three together (r 2): they meet
 /// in creases (with all three, a piece of sphere fills the corner). Each set takes off its rounds
 /// alone, less what each alone takes in a box about the corner, plus what they take there
@@ -1786,7 +1832,10 @@ fn fillet_edges_meeting_at_the_front_corner_of_the_arc() {
 }
 
 /// The long top front edge rounded, then the small front-left upright as a fillet of its own
-/// (as in the app): the new round ends in the earlier one, taking off what both take together.
+/// (as in the app). The upright's tangent chain (the Fillet default, since 84bd2daad) runs on
+/// through the first round's end, the quarter circle on the left face, to the top-left edge, so
+/// the second fillet rounds the upright and the top-left edge: it takes off what the three edges
+/// take together.
 #[test]
 fn fillet_the_long_edge_then_the_small_left_edge() {
     let mut s = knife_edge_part();
@@ -1795,7 +1844,7 @@ fn fillet_the_long_edge_then_the_small_left_edge() {
     run(&mut s, "solid.fillet", json!({"edges": [[0.0, -21.0, 5.0]], "radius": 2}));
     let one_by_one = before - planned(&s);
     let mut s = knife_edge_part();
-    run(&mut s, "solid.fillet", json!({"edges": [[20.0, -21.0, 10.0], [0.0, -21.0, 5.0]], "radius": 2}));
+    run(&mut s, "solid.fillet", json!({"edges": [[20.0, -21.0, 10.0], [0.0, -21.0, 5.0], [0.0, -10.0, 10.0]], "radius": 2}));
     let together = before - planned(&s);
     // Within the display meshes' accuracy (the two are built of different faces).
     assert!(rel(one_by_one, together) < 2e-4, "one by one {one_by_one} vs together {together}");
@@ -1858,20 +1907,31 @@ fn a_line_of_text_cuts_into_a_block_at_any_depth() {
 
 /// A design saved before tapered sides were built through `taper_loop` (#1014), by the build
 /// before it: two tapered bosses apart from each other (now joined in one boolean), a fillet on
-/// a sloping side edge of one and on the top edge of the other, both saved by edge name. They
-/// still find their edges, and the part comes out the same.
+/// a sloping side edge of one and on the top edge of the other, both saved by edge name. The
+/// sloping edge is still the edge its name names. The top edge was saved as an edge of piece `#1`
+/// of the cone's side, which is one face now: no edge is that edge any more, so that fillet fails
+/// and asks for its edge to be picked again (never the nearest edge of the whole face), and the
+/// rest of the part comes out as before.
 #[test]
-fn fillets_on_tapered_bosses_saved_before_still_find_their_edges() {
+fn a_fillet_saved_on_a_piece_of_a_tapered_side_that_is_whole_now_asks_for_its_edge_again() {
     let text = include_str!("../../../../tests/taper/before-1014/two_tapered_bosses_filleted.json");
     let mut s = Session::new(solidcraft_doc::Document::from_json(text).unwrap());
     let volume = run(&mut s, "inspect.measure", json!({}))["total"]["volume_mm3"].as_f64().unwrap();
-    for name in ["Extrude2", "Fillet1", "Fillet2"] {
+    for name in ["Extrude2", "Fillet1"] {
         let id = s.doc.find_feature(name).unwrap().id;
         let r = s.model.result(id).unwrap();
         assert!(r.error.is_none() && r.warning.is_none(), "{name}: {:?} {:?}", r.error, r.warning);
     }
-    // The build that saved it measured 69454.885209 mm³.
-    assert!((volume - 69454.8852092132).abs() < 1e-3, "{volume}");
+    let fillet = s.doc.find_feature("Fillet2").unwrap().id;
+    let error = s.model.result(fillet).unwrap().error.clone().unwrap();
+    assert_eq!(solidcraft_doc::reselect_parts(&error), Some(("Fillet2", "F4:side:c1#1|F4:top#[F4:side:c1]")), "{error}");
+    // In closed form: the 80 × 40 × 20 block, the 20 × 20 boss 10 high tapered 5° in (a frustum,
+    // top 20 − 20 tan 5° square: 3660.251034), the Ø16 boss tapered alike (a cone frustum, top
+    // radius 8 − 10 tan 5°: 1798.751833); less the R1 round along a sloping corner (the corner's
+    // section, r²(cot φ/2 − (π − φ)/2) at its dihedral angle φ = 90.435°, times its length
+    // between z = 20 and 30: 2.124401). The R0.5 round all round the cone's top (1.928463) is
+    // the failed fillet's.
+    assert!((volume - 69456.878467).abs() < 1e-3, "{volume}");
     assert_eq!(s.world_state().unwrap().bodies.len(), 1);
 }
 

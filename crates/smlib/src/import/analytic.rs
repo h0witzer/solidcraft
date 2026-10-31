@@ -22,6 +22,9 @@ use solidcraft_geom::brep::eval::{CurveEval, SurfaceEval};
 
 use super::{R, Unsupported};
 
+/// Halvings one span's extent may take.
+const MAX_EXTENT_PIECES: usize = 4096;
+
 const NOT_ANALYTIC: Unsupported = Unsupported::NotYet("revolved surfaces other than planes, cylinders, cones, spheres and tori");
 
 /// `brep` with every revolution and extruded circle replaced by its analytic surface (borrowed
@@ -43,7 +46,12 @@ pub(super) fn analytic(brep: &b::Brep) -> R<Cow<'_, b::Brep>> {
                 }
             }
             b::Surface::RationalSpline { u_knots, v_knots, homogeneous } => {
-                extruded_circle(u_knots, v_knots, homogeneous, f.domain, 1e-9 * size.max(1.0))
+                let found = extruded_circle(u_knots, v_knots, homogeneous, trimmed(brep, f)?, 1e-9 * size.max(1.0));
+                // A face's trims run at most one turn round a cylinder (SMLib refuses more).
+                if found.as_ref().is_some_and(|(_, range)| range[0][1] - range[0][0] > TAU * (1.0 + 1e-9)) {
+                    return Err(Unsupported::Invalid("a cylinder's face whose trims run more than one turn round"));
+                }
+                found
             }
             _ => None,
         };
@@ -76,14 +84,16 @@ pub(super) fn analytic(brep: &b::Brep) -> R<Cow<'_, b::Brep>> {
 /// A rational spline that is a circular arc swept straight along the arc's axis, as a cylinder
 /// with the face's range on it: one direction linear (two rows of control points), the second
 /// row the first moved by one vector at right angles to the circle the first row runs on, the
-/// weights alike. `None` where it is not.
-fn extruded_circle(u_knots: &[f64], v_knots: &[f64], net: &[Vec<[f64; 4]>], domain: [[f64; 2]; 2], tol: f64) -> Option<(b::Surface, [[f64; 2]; 2])> {
+/// weights alike. `None` where it is not. The range is the face's own, its trims' box `trims`
+/// ([`trimmed`]), not the spline's: SMLib's spline of a cylinder's wall may run on past the face,
+/// more than a turn round (a blend's support surface extended past the face's ends).
+fn extruded_circle(u_knots: &[f64], v_knots: &[f64], net: &[Vec<[f64; 4]>], trims: [[f64; 2]; 2], tol: f64) -> Option<(b::Surface, [[f64; 2]; 2])> {
     let linear = |k: &[f64]| k.len() == 4 && k[0] == k[1] && k[2] == k[3] && k[1] < k[2];
     let (rows, arc_knots, arc_range, line_knots, line_range): ([Vec<[f64; 4]>; 2], &[f64], [f64; 2], &[f64], [f64; 2]) =
         if net.iter().all(|r| r.len() == 2) && linear(v_knots) && !linear(u_knots) {
-            ([net.iter().map(|r| r[0]).collect(), net.iter().map(|r| r[1]).collect()], u_knots, domain[0], v_knots, domain[1])
+            ([net.iter().map(|r| r[0]).collect(), net.iter().map(|r| r[1]).collect()], u_knots, trims[0], v_knots, trims[1])
         } else if net.len() == 2 && linear(u_knots) && !linear(v_knots) {
-            ([net.first()?.clone(), net.get(1)?.clone()], v_knots, domain[1], u_knots, domain[0])
+            ([net.first()?.clone(), net.get(1)?.clone()], v_knots, trims[1], u_knots, trims[0])
         } else {
             return None;
         };
@@ -95,7 +105,10 @@ fn extruded_circle(u_knots: &[f64], v_knots: &[f64], net: &[Vec<[f64; 4]>], doma
         return None;
     }
     let arc = CurveEval::new(&b::Curve::RationalSpline { knots: arc_knots.to_vec(), homogeneous: first.clone() }).ok()?;
-    let (center, radius, normal) = circle(&arc, arc_range)?;
+    // The circle from the arc's widest span, not from the face's range: three points on a
+    // face a small part of a turn round (6 mm of a 3000 mm radius) put the centre off the
+    // circle's plane and the radius off by 1e-8 mm, which SMLib does not take back as a cylinder.
+    let (center, radius, normal) = circle(&arc, widest_span(arc_knots, first.len())?, arc_range)?;
     let z = d.normalized()?;
     if normal.cross(z).len() > 1e-9 {
         return None;
@@ -121,6 +134,96 @@ fn extruded_circle(u_knots: &[f64], v_knots: &[f64], net: &[Vec<[f64; 4]>], doma
     let sorted = |a: f64, b: f64| if a <= b { [a, b] } else { [b, a] };
     let frame = b::Frame { origin: arr(center), x_axis: arr(x), y_axis: arr(y) };
     Some((b::Surface::Cylinder { frame, radius }, [sorted(0.0, angle), sorted(height(line_range[0]), height(line_range[1]))]))
+}
+
+/// The box in its surface's parameters round face `f`'s loops: each use's pcurve over its edge's
+/// interval, its least and greatest u and v ([`pcurve_box`]). The range the face takes of its
+/// surface, which may run on past it.
+fn trimmed(brep: &b::Brep, f: &b::Face) -> R<[[f64; 2]; 2]> {
+    let mut lo = [f64::INFINITY; 2];
+    let mut hi = [f64::NEG_INFINITY; 2];
+    for l in &f.loops {
+        let b::Loop::Edges { edges } = l else { return Err(Unsupported::Invalid("a vertex loop on a cylinder's face")) };
+        for u in edges {
+            let interval = brep.edges.get(u.edge as usize).ok_or(Unsupported::Invalid("edge"))?.interval;
+            let [ru, rv] = pcurve_box(&u.pcurve, interval).ok_or(Unsupported::Invalid("a pcurve that does not evaluate"))?;
+            for (k, r) in [ru, rv].into_iter().enumerate() {
+                lo[k] = lo[k].min(r[0]);
+                hi[k] = hi[k].max(r[1]);
+            }
+        }
+    }
+    if !(lo.iter().chain(&hi).all(|x| x.is_finite()) && lo[0] <= hi[0] && lo[1] <= hi[1]) {
+        return Err(Unsupported::Invalid("a face without trims"));
+    }
+    Ok([[lo[0], hi[0]], [lo[1], hi[1]]])
+}
+
+/// A pcurve's least and greatest u and v over `interval`, to rounding: on each Bézier span, the
+/// greatest value found at a span's points (its ends, then the ends of its halves) bounds the
+/// greatest from below, and its control points' (weights positive) from above; halves whose
+/// control points can't beat the best found are dropped, the others halved, until the two meet.
+fn pcurve_box(c: &b::Curve2, interval: [f64; 2]) -> Option<[[f64; 2]; 2]> {
+    use solidcraft_geom::bspline::{HPoint, bezier_segment, segment};
+    let (knots, ctrl): (&[f64], Vec<HPoint>) = match c {
+        b::Curve2::Spline { knots, points } => (knots, points.iter().map(|p| HPoint { x: p[0], y: p[1], z: 0.0, w: 1.0 }).collect()),
+        b::Curve2::RationalSpline { knots, homogeneous } => {
+            (knots, homogeneous.iter().map(|h| HPoint { x: h[0], y: h[1], z: 0.0, w: h[2] }).collect())
+        }
+    };
+    let p = knots.len().checked_sub(ctrl.len() + 1)?;
+    let [t0, t1] = interval;
+    let mut ends: Vec<f64> = vec![t0];
+    ends.extend(knots.iter().copied().filter(|k| *k > t0 && *k < t1));
+    ends.push(t1);
+    ends.dedup();
+    let mut out = [[f64::INFINITY, f64::NEG_INFINITY]; 2];
+    for w in ends.windows(2) {
+        let &[a, z] = w else { continue };
+        let (_, span) = segment(p, knots, &ctrl, a, z).ok()?;
+        if span.len() != p + 1 {
+            return None;
+        }
+        for (k, r) in out.iter_mut().enumerate() {
+            let along = |h: &HPoint| if k == 0 { h.x / h.w } else { h.y / h.w };
+            for sign in [1.0, -1.0] {
+                let value = |piece: &[HPoint]| -> Option<[f64; 2]> {
+                    let (first, last) = (piece.first()?, piece.last()?);
+                    let at = (sign * along(first)).max(sign * along(last));
+                    let hull = piece.iter().map(|h| sign * along(h)).fold(f64::NEG_INFINITY, f64::max);
+                    Some([at, hull])
+                };
+                let [mut best, _] = value(&span)?;
+                let mut pieces = vec![span.clone()];
+                let mut work = 0usize;
+                while let Some(piece) = pieces.pop() {
+                    let [at, hull] = value(&piece)?;
+                    best = best.max(at);
+                    if hull <= best + 64.0 * f64::EPSILON * (1.0 + best.abs()) {
+                        continue;
+                    }
+                    // Out of work (a pcurve running along its extreme to rounding), the piece's
+                    // control points bound it: the box still holds the curve.
+                    work += 1;
+                    if work > MAX_EXTENT_PIECES {
+                        best = hull;
+                        continue;
+                    }
+                    pieces.push(bezier_segment(&piece, 0.0, 0.5).ok()?);
+                    pieces.push(bezier_segment(&piece, 0.5, 1.0).ok()?);
+                }
+                if !best.is_finite() {
+                    return None;
+                }
+                if sign > 0.0 {
+                    r[1] = r[1].max(best);
+                } else {
+                    r[0] = r[0].min(-best);
+                }
+            }
+        }
+    }
+    Some(out)
 }
 
 /// An analytic surface's frame turned by `angle` about its axis: u then counts from there.
@@ -297,7 +400,7 @@ impl Revolution {
             return Ok((cone, [angle, v]));
         }
         // A circular profile.
-        let (center, radius, normal) = circle(&self.profile, t).ok_or(NOT_ANALYTIC)?;
+        let (center, radius, normal) = circle(&self.profile, t, t).ok_or(NOT_ANALYTIC)?;
         let slack = 1e-9 * radius.max(1.0);
         if normal.dot(self.z).abs() > 1e-9 || normal.dot(x).abs() > 1e-9 || (center - self.o).dot(y).abs() > slack {
             return Err(NOT_ANALYTIC);
@@ -406,11 +509,20 @@ fn agree((record, domain): (&b::Surface, [[f64; 2]; 2]), (analytic, range): (&b:
     Ok(d < 0.0)
 }
 
-/// The circle a curve runs along over `t`: centre, radius and unit normal (its turning sense),
-/// checked at 65 points within 10⁻⁹ of the radius (at least 1 mm).
-fn circle(c: &CurveEval, t: [f64; 2]) -> Option<(Vec3, f64, Vec3)> {
+/// The widest knot span of a B-spline with `points` control points on `knots`.
+fn widest_span(knots: &[f64], points: usize) -> Option<[f64; 2]> {
+    let degree = knots.len().checked_sub(points + 1)?;
+    knots.get(degree..=points)?.windows(2).map(|w| [w[0], w[1]]).max_by(|a, b| (a[1] - a[0]).total_cmp(&(b[1] - b[0])))
+}
+
+/// The circle a curve runs along over `t`, through its points at `fit` (a range of it on that
+/// circle a good part of a turn round, where three points fix the circle to rounding): centre,
+/// radius and unit normal (its turning sense over `fit`), checked at 65 points over `t` within
+/// 10⁻⁹ of the radius (at least 1 mm).
+fn circle(c: &CurveEval, fit: [f64; 2], t: [f64; 2]) -> Option<(Vec3, f64, Vec3)> {
+    let on = |s: f64| c.point(fit[0] + (fit[1] - fit[0]) * s);
     let at = |s: f64| c.point(t[0] + (t[1] - t[0]) * s);
-    let (p, q, r) = (at(0.0)?, at(1.0 / 3.0)?, at(2.0 / 3.0)?);
+    let (p, q, r) = (on(0.0)?, on(1.0 / 3.0)?, on(2.0 / 3.0)?);
     let (u, w) = (q - p, r - p);
     let normal = u.cross(w);
     let nn = normal.dot(normal);

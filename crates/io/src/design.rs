@@ -968,8 +968,8 @@ mod tests {
         assert!(result.is_err_and(|e| e.to_string().contains("not a regular file")));
     }
 
-    /// A saved model of one state holding `bodies` (no document evaluated it: enough for the
-    /// container, which stores whatever model it is given).
+    /// A saved model of one state holding `bodies`, none made by rounds (no document evaluated
+    /// it: enough for the container, which stores whatever model it is given).
     fn saved_model(bodies: Vec<solidcraft_kernel::Body>) -> solidcraft_doc::SavedModel {
         let records: Vec<Value> = (0..bodies.len())
             .map(|i| json!({"name": format!("Body{i}"), "feature": 1, "component": 0, "key": "0000000000000001", "names": 0, "body": i}))
@@ -982,6 +982,7 @@ mod tests {
             records: json!({
                 "features": [{"id": 1, "fingerprint": "0000000000000000", "ms": 0.0, "skipped": false, "state": 0}],
                 "states": [state], "model_bodies": records, "names": [{"faces": [], "info": []}], "sketches": [], "sheets": [],
+                "rounds": [],
             }),
             bodies,
         }
@@ -1087,7 +1088,10 @@ mod tests {
             .map(|(i, ms)| json!({"id": i + 1, "fingerprint": "0000000000000000", "ms": ms, "skipped": false, "state": i}))
             .collect();
         solidcraft_doc::SavedModel {
-            records: json!({"features": features, "states": states, "model_bodies": records, "names": [{"faces": [], "info": []}], "sketches": [], "sheets": []}),
+            records: json!({
+                "features": features, "states": states, "model_bodies": records, "names": [{"faces": [], "info": []}], "sketches": [],
+                "sheets": [], "validation": "each_feature", "rounds": [],
+            }),
             bodies,
         }
     }
@@ -1113,6 +1117,7 @@ mod tests {
         let (states, kept, all, within) = thinned(40);
         assert_eq!((states, kept.len(), within), (vec![true; 4], 40, true));
         assert_eq!(all.records, model.records);
+        assert_eq!(thinned(16).2.records["validation"], "each_feature", "the check mode it was evaluated under");
         // The final state and the slowest other (50 ms): the shared bodies count once, else
         // these two states would need 32 bodies' room.
         for bodies in [24, 31] {

@@ -274,18 +274,27 @@ fn planned(body: &Body, at: &[Vec3], r: &Ruled, handles: &[Option<Vec<Vec3>>]) -
         }
     }
     let field = Field { mode, flip: r.flip, distance: d };
-    let mut rulings = Vec::with_capacity(n);
+    // Each edge's face beside it (its surface, whether it is used along its natural normal,
+    // whether it lies left of the edge: the strip's tangent direction points away from it).
+    let mut sides = Vec::with_capacity(n);
     for (j, k) in chosen.iter().enumerate() {
         let (face, along) =
             k.and_then(|k| around.get(j)?.get(k).copied()).ok_or_else(|| KernelError::Invalid("a picked edge has no face beside it".into()))?;
         let surface = surfaces.get(face).and_then(Option::as_ref).ok_or_else(|| KernelError::Failed("ruled surface: a face's surface".into()))?;
-        // The face lies left of its own boundary seen along its (oriented) normal; the strip's
-        // tangent direction points away from it.
         let forward = body.face_forward(face);
-        let base = bases.get(j).ok_or_else(|| KernelError::Failed("ruled surface: an edge".into()))?;
-        rulings.push(Rulings { base, face: surface, forward, face_left: along == forward, field: &field });
+        sides.push((surface, forward, along == forward));
     }
-    let sampled: Vec<Sampled> = rulings.iter().map(|r| Sampled::of(r, eps)).collect::<Result<_>>()?;
+    fn rulings_on<'a>(bases: &'a [CurveN<4>], sides: &[(&'a SurfaceEval, bool, bool)], field: &'a Field) -> Vec<Rulings<'a>> {
+        bases.iter().zip(sides).map(|(base, &(face, forward, face_left))| Rulings { base, face, forward, face_left, field }).collect()
+    }
+    let sampled: Vec<Sampled> = rulings_on(&bases, &sides, &field).iter().map(|r| Sampled::of(r, eps)).collect::<Result<_>>()?;
+    // A free strip's far curve lies in its edge's spline space: a straight edge's (one linear
+    // span) holds only the chord between the strip's corners, so its rulings' ends would not count.
+    // Such an edge is taken as the cubic it is too (exact degree elevation, the same points at the
+    // same parameters), the lowest degree whose interior control points set each end's tangent
+    // and let the curve pass near the rulings' ends.
+    let bases: Vec<CurveN<4>> = bases.into_iter().zip(&sampled).map(|(c, s)| if s.affine.is_none() { cubic_if_straight(c) } else { c }).collect();
+    let rulings = rulings_on(&bases, &sides, &field);
     // Exact strips' far edges are their edges' images; the rest are solved together.
     let exact: Vec<Option<CurveN<4>>> = sampled.iter().zip(&bases).map(|(s, base)| s.affine.as_ref().map(|m| mapped(base, |p| m.apply(p)))).collect();
     let corner = |r: &Reading| r.0 + r.3 * d;
@@ -379,6 +388,18 @@ fn base_curve(r: &Brep, e: usize, forward: bool) -> Result<CurveN<4>> {
         }
     };
     Ok(if forward { c } else { reversed(&c) })
+}
+
+/// A straight edge's NURBS (degree 1, one span: its two ends) as the cubic Bézier it also is,
+/// by exact degree elevation (control points at thirds of the way, weights kept equal); any other
+/// curve as it is.
+fn cubic_if_straight(c: CurveN<4>) -> CurveN<4> {
+    let ([p0, p1], [t0, t1]) = match (c.degree, c.ctrl.as_slice(), c.knots.as_slice()) {
+        (1, [p0, p1], [a, _, _, z]) => ([*p0, *p1], [*a, *z]),
+        _ => return c,
+    };
+    let mix = |s: f64| std::array::from_fn::<f64, 4, _>(|i| p0[i] * (1.0 - s) + p1[i] * s);
+    CurveN { degree: 3, knots: vec![t0, t0, t0, t0, t1, t1, t1, t1], ctrl: vec![p0, mix(1.0 / 3.0), mix(2.0 / 3.0), p1] }
 }
 
 fn degree(knots: &[f64], n: usize) -> Result<usize> {
@@ -519,7 +540,7 @@ impl Sampled {
 // Rulings that turn along a free-form edge end on an offset curve, which has no exact NURBS form.
 // Such a strip's far edge is a curve this module defines instead, and the strip is exactly the
 // ruled surface between the edge and it: a B-spline on the edge's own degree, knots and weights
-// (only its control points are free), from the strip's start corner to its end corner (where the
+// (a straight edge's taken as its cubic, `cubic_if_straight`; only its control points are free), from the strip's start corner to its end corner (where the
 // rulings at the edge's ends reach). Its interior control points are given (the doc's handles)
 // or, by default, the least-squares solution of these weighted terms, the construction's
 // parameters:
@@ -1518,7 +1539,10 @@ mod tests {
 
     /// Off a doubly curved face (a saddle patch over a cup's rim) its normal turns along a
     /// straight edge: the strip is ruled to a far curve of its own, from corner to corner, which
-    /// its handles move.
+    /// its handles move. Lifting every handle (the far curve's interior control points) 1 mm in z
+    /// gives the far curve those control points and the same corners, so it rises by
+    /// 1 − R₀ − Rₙ (its end basis functions) inside and not at all at the corners; the strip built
+    /// with them has that curve for its far edge, away from where the default strip's runs.
     #[test]
     fn a_strip_off_a_curved_face_is_ruled_to_its_far_curve() {
         let b = box_solid(Vec3::new(-14.0, -14.0, 0.0), Vec3::new(14.0, 14.0, 20.0)).unwrap();
@@ -1533,9 +1557,29 @@ mod tests {
         assert!(s.is_surface() && s.face_count() == 1);
         let handles = ruled_far_handles(&cover, &edge, &r).unwrap();
         let [Some(h)] = handles.as_slice() else { panic!("one free strip: {handles:?}") };
+        assert!(!h.is_empty(), "the far curve has interior control points to move");
         let lifted: Vec<Vec3> = h.iter().map(|p| *p + Vec3::new(0.0, 0.0, 1.0)).collect();
-        let moved = ruled_surface_with(&cover, &edge, &r, &[Some(lifted)]).unwrap();
-        assert!(measure(&moved).unwrap().bbox.max.z > measure(&s).unwrap().bbox.max.z, "the handles move the far curve");
+        let moved = ruled_surface_with(&cover, &edge, &r, &[Some(lifted.clone())]).unwrap();
+        // The plan takes the handles as they are, and keeps the corners.
+        let (plain, given) = (planned(&cover, &edge, &r, &[]).unwrap(), planned(&cover, &edge, &r, &[Some(lifted.clone())]).unwrap());
+        let (far, far_moved) = (&plain.strips[0].top, &given.strips[0].top);
+        let ctrl = |c: &CurveN<4>| c.ctrl.iter().map(|h| Vec3::new(h[0] / h[3], h[1] / h[3], h[2] / h[3])).collect::<Vec<_>>();
+        let (before, after) = (ctrl(far), ctrl(far_moved));
+        assert_eq!(after.len(), lifted.len() + 2);
+        assert!(after[1..after.len() - 1].iter().zip(&lifted).all(|(a, b)| a.dist(*b) < 1e-12), "{after:?} vs {lifted:?}");
+        assert!(before[0].dist(after[0]) < 1e-12 && before[before.len() - 1].dist(after[after.len() - 1]) < 1e-12);
+        // The built strip's far edge is that curve (its edges' polylines within 1e-4 of their
+        // curves), and its middle is well off the default strip's edges.
+        let tol = 1e-4;
+        for i in 0..=32 {
+            let p = point(far_moved, f64::from(i) / 32.0).unwrap();
+            let (_, d) = moved.nearest_edge(p, tol).unwrap().unwrap();
+            assert!(d < 10.0 * tol, "the far curve at {i}/32, {p:?}, is {d} from the strip's edges");
+        }
+        let (mid, rose) = (point(far_moved, 0.5).unwrap(), point(far_moved, 0.5).unwrap().dist(point(far, 0.5).unwrap()));
+        assert!(rose > 0.1, "the middle rose {rose}");
+        let (_, d) = s.nearest_edge(mid, tol).unwrap().unwrap();
+        assert!(d > 0.5 * rose, "the default strip has an edge {d} from the moved middle (it rose {rose})");
     }
 
     /// Each strip is made in place of the edge it stands on; a corner face in place of the two

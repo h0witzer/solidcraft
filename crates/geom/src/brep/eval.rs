@@ -8,8 +8,9 @@
 //!
 //! Call on validated records. Evaluation of a well-formed record never panics: a point that
 //! cannot be had (a vanishing weight, a Newton step that does not converge) is `None`.
+use super::normal_section::normal_section;
 use super::pcurve::Error;
-use super::{Curve, Frame, Surface};
+use super::{Curve, Curve2, Frame, Surface};
 use crate::Vec3;
 use crate::bspline::MAX_SPLINE_DEGREE;
 use crate::tess::partials::{Partials, tabulate, trig_derivative};
@@ -338,6 +339,23 @@ pub enum CurveEval {
     Intersection(Box<Intersection>),
 }
 
+/// A curve's differential geometry at one parameter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CurveJet {
+    pub point: Vec3,
+    /// The unit tangent, along the curve's parameter.
+    pub tangent: Vec3,
+    /// The curvature vector `κ N`, 1/mm: towards the centre of curvature, its length the
+    /// curvature; zero where the curve is straight.
+    pub curvature: Vec3,
+}
+
+impl CurveJet {
+    fn is_finite(&self) -> bool {
+        self.point.is_finite() && self.tangent.is_finite() && self.curvature.is_finite()
+    }
+}
+
 /// A `surface_intersection` ready to evaluate.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Intersection {
@@ -402,6 +420,44 @@ impl CurveEval {
         }
     }
 
+    /// The point, unit tangent and curvature vector at `t` ([`CurveJet`]), exactly: from the
+    /// record's first two derivatives on a line, conic or spline (in closed form, or the basis
+    /// functions' own, weights divided out), straight on each segment of a polyline; on a traced
+    /// intersection from both surfaces' normal curvatures along its tangent
+    /// ([`Intersection::jet`]). `None` where the tangent vanishes, the two surfaces are tangent,
+    /// or a value is not finite.
+    pub fn jet(&self, t: f64) -> Option<CurveJet> {
+        if !t.is_finite() {
+            return None;
+        }
+        let (point, d1, d2) = match self {
+            CurveEval::Line { start, end } => (*start + (*end - *start) * t, *end - *start, Vec3::ZERO),
+            CurveEval::Conic { axes: a, radii } => {
+                let (s, c) = t.sin_cos();
+                let (x, y) = (a.x * (radii[0] * c), a.y * (radii[1] * s));
+                (a.o + x + y, a.y * (radii[1] * c) - a.x * (radii[0] * s), -(x + y))
+            }
+            CurveEval::Polyline(_) => {
+                let (p, d) = self.leader(t)?;
+                (p, d, Vec3::ZERO)
+            }
+            CurveEval::Spline(c) => match c.derivatives(t, 2)?.as_slice() {
+                [p, d1, d2] => (*p, *d1, *d2),
+                _ => return None,
+            },
+            CurveEval::Intersection(x) => return x.jet(t),
+        };
+        let speed2 = d1.len2();
+        if !(speed2 > 0.0) {
+            return None;
+        }
+        let tangent = d1 * (1.0 / speed2.sqrt());
+        // κ N = (r'' − (r''·T) T) / |r'|²: the part of the acceleration across the curve.
+        let curvature = (d2 - tangent * d2.dot(tangent)) * (1.0 / speed2);
+        let jet = CurveJet { point, tangent, curvature };
+        jet.is_finite().then_some(jet)
+    }
+
     fn leader(&self, t: f64) -> Option<(Vec3, Vec3)> {
         match self {
             CurveEval::Polyline(p) => {
@@ -440,6 +496,41 @@ impl Intersection {
             return None;
         }
         self.solve(lead, along)
+    }
+
+    /// The curve's [`CurveJet`] at `t`. The tangent is square to both surfaces' normals (along the
+    /// leader); the curvature vector lies in the plane of those normals, and its component along
+    /// each is that surface's normal curvature in the tangent's direction (Meusnier), from the
+    /// surface's exact partial derivatives ([`normal_section`]): two equations for its two
+    /// components. `None` where the surfaces are tangent (their normals do not span a plane).
+    fn jet(&self, t: f64) -> Option<CurveJet> {
+        let (lead, along) = self.leader.leader(t)?;
+        if !(along.len2() > 0.0) {
+            return None;
+        }
+        let point = self.solve(lead, along)?;
+        let mut feet = [(Vec3::ZERO, None); 2];
+        for (foot, s) in feet.iter_mut().zip(&self.surfaces) {
+            let q = s.project(point, None, f64::INFINITY)?;
+            let d = s.partials(q[0], q[1])?;
+            *foot = (d[1][0].cross(d[0][1]).normalized()?, Some(d));
+        }
+        let [(n0, Some(d0)), (n1, Some(d1))] = feet else { return None };
+        let mut tangent = n0.cross(n1).normalized()?;
+        if tangent.dot(along) < 0.0 {
+            tangent = -tangent;
+        }
+        let k0 = normal_section(&d0, n0, tangent)?.curvature;
+        let k1 = normal_section(&d1, n1, tangent)?.curvature;
+        // κN = a n0 + b n1 with κN·n0 = k0 and κN·n1 = k1.
+        let c = n0.dot(n1);
+        let det = 1.0 - c * c;
+        if !(det > 1e-12) {
+            return None;
+        }
+        let (a, b) = ((k0 - c * k1) / det, (k1 - c * k0) / det);
+        let jet = CurveJet { point, tangent, curvature: n0 * a + n1 * b };
+        jet.is_finite().then_some(jet)
     }
 
     /// Newton on the planes: each surface's tangent plane at the foot of the current point, and
@@ -481,4 +572,51 @@ fn solve3(rows: [Vec3; 3], rhs: [f64; 3]) -> Option<Vec3> {
     }
     let x = (bc * rhs[0] + ca * rhs[1] + ab * rhs[2]) * (1.0 / det);
     x.is_finite().then_some(x)
+}
+
+/// Four-point Gauss–Legendre nodes and weights on `[−1, 1]`.
+const GAUSS4: [(f64, f64); 4] = [
+    (-0.861_136_311_594_052_6, 0.347_854_845_137_453_8),
+    (-0.339_981_043_584_856_3, 0.652_145_154_862_546_2),
+    (0.339_981_043_584_856_3, 0.652_145_154_862_546_2),
+    (0.861_136_311_594_052_6, 0.347_854_845_137_453_8),
+];
+
+/// Pieces each pcurve is integrated in, and how many Gauss panels cover a v range.
+const FLUX_PIECES: usize = 32;
+const FLUX_PANELS: usize = 4;
+
+/// The flux of `field` through a face, `∫∫ field(S)·(S_u × S_v) du dv` over the (u, v) region its
+/// loops (record convention, each use its pcurve and direction) bound, by Green's theorem:
+/// `∮ −G du` with `G(u, v) = ∫ field·N ds` from `v0` to `v`. A quadrature for the sign of a
+/// shell's volume (`field = p / 3`) or a winding number, which only has to be right to well
+/// under a half: no geometry is made from it. Loops round a periodic direction need no seam
+/// edge, as a seam's two runs at constant u add nothing to `∮ G du`.
+pub fn face_flux(s: &SurfaceEval, v0: f64, loops: &[Vec<(&Curve2, bool)>], field: &dyn Fn(Vec3) -> Vec3) -> Option<f64> {
+    let g = |u: f64, v: f64| -> Option<f64> {
+        let (mut sum, h) = (0.0, (v - v0) / FLUX_PANELS as f64);
+        for panel in 0..FLUX_PANELS {
+            let a = v0 + h * panel as f64;
+            for (x, w) in GAUSS4 {
+                let t = a + 0.5 * h * (x + 1.0);
+                let (p, su, sv) = s.derivs(u, t)?;
+                sum += 0.5 * h * w * field(p).dot(su.cross(sv));
+            }
+        }
+        sum.is_finite().then_some(sum)
+    };
+    let mut total = 0.0;
+    for (c, forward) in loops.iter().flatten() {
+        let [t0, t1] = c.interval()?;
+        let at = |k: f64| {
+            let f = k / FLUX_PIECES as f64;
+            // Exactly the ends at f = 0 and 1, whatever the interval's rounding.
+            c.eval(if *forward { t0 * (1.0 - f) + t1 * f } else { t1 * (1.0 - f) + t0 * f })
+        };
+        for k in 0..FLUX_PIECES {
+            let (a, m, z) = (at(k as f64)?, at(k as f64 + 0.5)?, at(k as f64 + 1.0)?);
+            total -= g(m[0], m[1])? * (z[0] - a[0]);
+        }
+    }
+    total.is_finite().then_some(total)
 }

@@ -160,9 +160,9 @@ the most complete description of the house style.
 
 The reference for what the kernel builds is the kernel-cases ladder (`tests/kernel-cases/ladder/`,
 `cargo xtask kernel-cases --ladder`, [docs/kernel-ladder.md](docs/kernel-ladder.md)).
-A change to the persistent names of faces and edges, or to what a stored name finds, re-records the
-corpus's names in the same pull request, saying why:
-`NAMING_CORPUS_BLESS=1 cargo test --profile ci -p solidcraft-cli --test naming_corpus` (`tests/naming/`).
+The naming corpus checks persistent names: every name a corpus design stores still finds a face or
+an edge, and two builds name its faces and edges alike
+(`cargo test --profile ci -p solidcraft-cli --test naming_corpus`).
 [docs/mutation-testing.md](docs/mutation-testing.md) shows how to find kernel behaviour these
 black-box suites miss.
 
@@ -241,7 +241,8 @@ the surface itself). Expected values are either worked out in closed form
 (`tools/oracle-analytic/`) or computed by building the same recipe in FreeCAD, run as a separate
 program (`tools/freecad-oracle/`); each file says which. The generated
 [reference test report](docs/oracle.md) has the current case count and results. The reference-test
-CI job runs `cargo xtask oracle` during full validation; pull-request runs skip it. A case that
+CI job runs `cargo xtask oracle` during full validation, and on pull requests that reach
+`solidcraft-cli`. A case that
 fails because of a known bug names its issue in `expected.json` (`"known_failure": "#123"`);
 never change an expected value to match SolidCraft's output.
 

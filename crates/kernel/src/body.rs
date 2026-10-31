@@ -55,6 +55,15 @@ pub struct Body {
     /// Meshes of this record kept for reuse, set by [`Body::keeping_meshes`]: a check that
     /// intersects one large body with many small ones meshes it at the same tolerance each time.
     pub(crate) meshes: Option<std::sync::Arc<MeshMemo>>,
+    /// The SMLib result this body was decoded from, when the step that made it left SMLib's
+    /// check to the end of its feature ([`crate::validation`]): checked there as the step's own
+    /// check would have, then let go. Answers only for this record.
+    pub(crate) unchecked: Option<std::sync::Arc<crate::validation::Unchecked>>,
+    /// The constant-radius rounds that made this body from another, when they did
+    /// ([`crate::blend_corner::Rounds`]): a later round at a corner where they meet blends them
+    /// again with it. Anything else that makes a body leaves it out, and so does every new
+    /// history: the rounds are over the body its history is over.
+    pub(crate) rounds: Option<std::sync::Arc<crate::blend_corner::Rounds>>,
 }
 
 /// The meshes made of one record (see [`Body::keeping_meshes`]), by tolerance and angle. They
@@ -376,11 +385,11 @@ fn same_shared<T: PartialEq>(a: &Option<std::sync::Arc<T>>, b: &Option<std::sync
     }
 }
 
-/// `record`, checked to be a body's: valid structure (budgets, references, loops, regions,
+/// `record`, checked to be a body's: valid structure (references, loops, regions,
 /// canonical order) and at least one face. A solid's faces bound material; a surface body's lie
 /// in open shells.
 fn solid_record(record: Brep) -> Result<Brep> {
-    record.validate().map_err(|e| KernelError::Invalid(e.to_string()))?;
+    record.validate_built().map_err(|e| KernelError::Invalid(e.to_string()))?;
     if record.faces.is_empty() {
         return Err(KernelError::Failed("empty result".into()));
     }
@@ -411,6 +420,17 @@ pub struct Refusal {
     pub surface: Option<SurfaceKind>,
     /// SMLib's reason for the whole body, as the log words it.
     pub why: String,
+}
+
+/// Where a point lies against a body ([`Body::classify_point`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PointClass {
+    /// In the body's material.
+    Inside,
+    /// Outside the material, or in a cavity.
+    Outside,
+    /// Within the body's tolerance of a face, an edge or a vertex.
+    OnBoundary,
 }
 
 /// The kind of surface a face lies on, as a person modelling would name it.
@@ -473,11 +493,21 @@ impl Body {
             history: None,
             display_of: None,
             meshes: None,
+            unchecked: None,
+            rounds: None,
         }
     }
 
+    /// This body with `result`, the SMLib result of the step `what` it was decoded from, whose
+    /// check that step left to the end of its feature ([`crate::validation::check_kept`]).
+    pub(crate) fn left_unchecked(self, what: &str, how: crate::validation::Checked, result: solidcraft_smlib::Brep) -> Body {
+        let unchecked = crate::validation::Unchecked::new(&self.record, what, how, result);
+        Body { unchecked: Some(std::sync::Arc::new(unchecked)), ..self }
+    }
+
     /// The body of a schema 4 record (a solid, or a surface body of open shells): checked for
-    /// structure (budgets, references, loops, regions, canonical order). Its faces face as the
+    /// structure (references, loops, regions, canonical order; a record from a file is checked
+    /// against the file budgets where it is read). Its faces face as the
     /// record says.
     pub(crate) fn from_record(record: Brep) -> Result<Body> {
         Ok(Body::bare(solid_record(record)?, None))
@@ -573,6 +603,22 @@ impl Body {
         self
     }
 
+    /// This body with the lines `inputs`' faces were split along on purpose added to its own:
+    /// an operation combining bodies keeps their authored splits (each line once), as it keeps
+    /// their regularization protection.
+    pub(crate) fn inherit_split_lines(self, inputs: &[&Body]) -> Self {
+        let mut lines: Vec<Vec<Vec3>> = self.split_keep().to_vec();
+        for line in inputs.iter().flat_map(|input| input.split_keep()) {
+            if !lines.contains(line) {
+                lines.push(line.clone());
+            }
+        }
+        if lines.len() == self.split_keep().len() {
+            return self;
+        }
+        self.with_split_lines(Some(std::sync::Arc::new(lines)))
+    }
+
     /// Exact history of the operation that made this body, relative to that operation's
     /// operands (see [`crate::history`]); `None` when the operation does not report one.
     pub fn history(&self) -> Option<&crate::history::History> {
@@ -584,6 +630,7 @@ impl Body {
     pub(crate) fn with_history(mut self, history: crate::history::History, operands: &[&Body]) -> Result<Self> {
         history.check(&self, operands)?;
         self.history = Some(std::sync::Arc::new(history));
+        self.rounds = None;
         Ok(self)
     }
 
@@ -591,6 +638,7 @@ impl Body {
     pub(crate) fn with_history_counts(mut self, history: crate::history::History, operands: &[(usize, usize)]) -> Result<Self> {
         history.check_counts((self.face_count(), self.edge_count()), operands)?;
         self.history = Some(std::sync::Arc::new(history));
+        self.rounds = None;
         Ok(self)
     }
 
@@ -606,12 +654,45 @@ impl Body {
                 None
             }
         });
+        self.rounds = None;
         self
+    }
+
+    /// This body as the rounds of `edges` (each an edge of `before`, in its edge order, with its
+    /// radius) made it from `before` ([`crate::blend_corner::Rounds`]).
+    pub(crate) fn with_rounds(mut self, before: &Body, edges: Vec<(usize, f64)>) -> Self {
+        self.rounds = Some(std::sync::Arc::new(crate::blend_corner::Rounds { before: before.clone(), edges }));
+        self
+    }
+
+    /// The constant-radius rounds that made this body, when they did: the body they were made
+    /// on, and each edge they rounded (its index in that body's edge order) with its radius. A
+    /// later round at a corner where they meet blends them again with it, so a saved model
+    /// keeps this with the body ([`Body::with_rounds_of`]).
+    pub fn rounds(&self) -> Option<(&Body, &[(usize, f64)])> {
+        self.rounds.as_deref().map(|r| (&r.before, r.edges.as_slice()))
+    }
+
+    /// This body as the rounds of `edges` made it from `before`, as [`Body::rounds`] gave them
+    /// (read back from a saved model). Refused unless every edge is one of `before`'s, every
+    /// radius a fillet's, and this body's history is over `before`.
+    pub fn with_rounds_of(self, before: &Body, edges: Vec<(usize, f64)>) -> Result<Body> {
+        let bad = |what: &str| KernelError::Invalid(format!("rounds: {what}"));
+        if edges.is_empty() || edges.len() > before.edge_count() {
+            return Err(bad("no edges, or more than the body has"));
+        }
+        if edges.iter().any(|(e, r)| *e >= before.edge_count() || !(r.is_finite() && *r > 1e-6 && *r < 1e6)) {
+            return Err(bad("an edge the body before them does not have, or a radius no fillet takes"));
+        }
+        let history = self.history().filter(|h| h.operands == 1).ok_or_else(|| bad("the body has no history over the body before them"))?;
+        history.check_counts((self.face_count(), self.edge_count()), &[(before.face_count(), before.edge_count())])?;
+        Ok(self.with_rounds(before, edges))
     }
 
     /// This body with no history: an operation whose history is not known.
     pub(crate) fn without_history(mut self) -> Self {
         self.history = None;
+        self.rounds = None;
         self
     }
 
@@ -1273,9 +1354,37 @@ impl Body {
         Ok(best)
     }
 
-    /// Is the point inside the solid?
-    pub fn contains(&self, p: Vec3) -> bool {
-        self.mesh(&MeshTolerance::chord(self.size() * 2e-3)).map(|m| m.contains(p)).unwrap_or(false)
+    /// Where `p` lies against the body, decided exactly on its faces' surfaces and edges' curves
+    /// (SMLib's point classification at the body's own tolerance, no mesh): on the boundary when
+    /// within that tolerance of a face, an edge or a vertex, else inside its material or outside
+    /// (a cavity is outside). A mesh body's triangles are its exact shape: on its boundary
+    /// within the record's tolerance of a triangle, else inside when rays from the point cross
+    /// it an odd number of times.
+    pub fn classify_point(&self, p: Vec3) -> Result<PointClass> {
+        if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) {
+            return Err(KernelError::Invalid(format!("point classification: the point {p:?} is not finite")));
+        }
+        if let Some(m) = &self.mesh {
+            let mesh = m.to_mesh();
+            let near = mesh
+                .triangles
+                .iter()
+                .filter_map(|t| mesh.tri(t))
+                .any(|[a, b, c]| solidcraft_geom::compare::closest_on_triangle(p, a, b, c).dist(p) <= self.record.tolerance);
+            return Ok(if near {
+                PointClass::OnBoundary
+            } else if mesh.contains(p) {
+                PointClass::Inside
+            } else {
+                PointClass::Outside
+            });
+        }
+        let class = self.smlib()?.classify_point([p.x, p.y, p.z]).map_err(|e| KernelError::Failed(format!("SMLib point classification: {e}")))?;
+        Ok(match class {
+            solidcraft_smlib::PointClass::Inside => PointClass::Inside,
+            solidcraft_smlib::PointClass::Outside => PointClass::Outside,
+            solidcraft_smlib::PointClass::OnBoundary => PointClass::OnBoundary,
+        })
     }
 
     /// B-rep faces (a mesh body is one face; [`crate::measure`] counts its triangles).
@@ -1350,6 +1459,10 @@ impl Body {
     pub fn parts(&self, groups: &[Vec<usize>]) -> Result<Vec<Body>> {
         let regions = self.record.material_regions();
         let counts = [(self.face_count(), self.edge_count())];
+        // Sources are by face position: a table of another length belongs to another body.
+        if self.face_sources.as_ref().is_some_and(|all| all.len() != self.face_count()) {
+            return Err(KernelError::Invalid("lumps: face source table does not match the body".into()));
+        }
         groups
             .iter()
             .map(|group| {

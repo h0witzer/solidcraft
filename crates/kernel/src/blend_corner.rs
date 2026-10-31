@@ -1,11 +1,255 @@
 //! Fillets with a radius per edge. SMLib rounds every picked edge at its own radius in one
 //! blend, with the corners where the rounds meet: an end in the face beyond, two rounds trimming
 //! each other, or a corner patch where three meet.
+//!
+//! A later round at a corner where earlier rounds already meet in a mitre (the owner's ruling of
+//! 2026-10-30) makes the corner all of them would have made rounded at once: one smooth patch,
+//! the mitre gone. A body made by constant-radius rounds keeps what they were made on and which
+//! edges they rounded at which radius ([`Rounds`]); a later round reaching such a corner
+//! ([`later_corners`]) blends the earlier rounds' edges, from the earliest of the rounds that
+//! meet there on, with the new edges in one SMLib blend of the body before them, and the result's
+//! history is put over the body the later round was given ([`rebase`]): an earlier round's face
+//! is that face, trimmed anew; the corner patch, and every face the new edges make, is the later
+//! round's. The mitre's seam is no edge to round on its own: picked (a tangent chain reaches it
+//! from the new edge), it only says the corner is blended again.
+
+use std::collections::BTreeSet;
 
 use solidcraft_geom::Vec3;
 
 use crate::body::Body;
+use crate::history::{Change, EdgeOrigin, EdgeProv, FaceOrigin, FaceProv, History};
 use crate::{KernelError, Result};
+
+/// The constant-radius rounds that made a body ([`crate::fillet`], [`fillet_radii`]): the body
+/// they were made on, and each edge they rounded (its index in that body's edge order) with its
+/// radius. The body's history is over `before`.
+#[derive(Clone, Debug)]
+pub(crate) struct Rounds {
+    pub(crate) before: Body,
+    pub(crate) edges: Vec<(usize, f64)>,
+}
+
+/// A later round at corners where earlier rounds meet ([`later_corners`]): what is blended in
+/// one go, and what puts its history over the body the later round was given.
+pub(crate) struct Later {
+    /// The body before the earliest of the rounds that meet at the new edges' corners.
+    pub(crate) base: Body,
+    /// The edges blended on `base` (its edge order) with their radii: the edges of every round
+    /// from that earliest on, and the new edges.
+    pub(crate) edges: Vec<(usize, f64)>,
+    /// The body over `base`: the histories of those rounds composed.
+    chain: History,
+    /// The new edges: each one's index in the body, and in `base`.
+    new: Vec<(usize, usize)>,
+    /// The body's mitre seams at the new edges' corners, which the corner patches replace.
+    seams: Vec<usize>,
+}
+
+impl Later {
+    /// How many of `edges`, the last ones, are the new edges.
+    pub(crate) fn new_count(&self) -> usize {
+        self.new.len()
+    }
+}
+
+/// The history of `body` over the body `levels` rounds back ([`Rounds::before`] taken that many
+/// times), composed; `None` when a step has no record or history, or for no levels.
+fn down(body: &Body, levels: usize) -> Option<History> {
+    let mut at = body.clone();
+    let mut composed: Option<History> = None;
+    for _ in 0..levels {
+        let rounds = at.rounds.clone()?;
+        let step = at.history().filter(|h| h.operands == 1)?.clone();
+        composed = Some(match composed {
+            None => step,
+            Some(h) => h.substituted(0, &step).ok()?,
+        });
+        at = rounds.before.clone();
+    }
+    composed
+}
+
+/// The operand edge `edge` of a result comes from, through `h`, when it is (a piece of) one.
+fn edge_origin(h: &History, edge: usize) -> Option<usize> {
+    match h.edges.get(edge).map(|e| e.origins.as_slice()) {
+        Some([EdgeOrigin::Edge { operand: 0, edge }]) => Some(*edge),
+        _ => None,
+    }
+}
+
+/// Faces a blend made in place of edges (rounds, their corner patches), through `h`.
+fn rounds_of(h: &History) -> Vec<bool> {
+    h.faces
+        .iter()
+        .map(|f| f.change == Change::Generated && !f.origins.is_empty() && f.origins.iter().all(|o| matches!(o, FaceOrigin::Edge { .. })))
+        .collect()
+}
+
+/// Is `edge` (its faces through `h`) where the rounds of different edges meet: between two of
+/// `rounds` made in place of edges none of which both are (a mitre, or rounds running on into
+/// each other), not between a round and its own end cap or a corner patch it is part of?
+fn between_rounds(h: &History, rounds: &[bool], edge: usize) -> bool {
+    let round = |f: usize| rounds.get(f).copied().unwrap_or(false).then(|| h.faces.get(f)).flatten();
+    match h.edges.get(edge).map(|e| e.faces.as_slice()) {
+        Some([f, g]) if f != g => match (round(*f), round(*g)) {
+            (Some(a), Some(b)) => a.origins.iter().all(|o| !b.origins.contains(o)),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// The later rounds of `picked` (the body's edges, `sizes` their radii, as the blend resolved
+/// them) when one of them reaches a corner where rounds that made the body meet: the blend to
+/// make in their place, and the new edges (in the body's edge order, with their radii) the
+/// body's record of rounds takes. `Ok(None)` when none does, or when the rounds are not on record
+/// down to that corner. A picked seam between earlier rounds is refused unless a new edge of
+/// the same radius meets it: it has no round of its own.
+pub(crate) fn later_corners(body: &Body, picked: &[usize], sizes: &[f64]) -> Result<Option<(Later, Vec<(usize, f64)>)>> {
+    // The rounds on record, latest first: each one's body before it and the body over that.
+    let mut levels: Vec<(Rounds, History)> = Vec::new();
+    while let Some(h) = down(body, levels.len() + 1) {
+        let Some(r) = (match levels.last() {
+            None => body.rounds.as_deref().cloned(),
+            Some((r, _)) => r.before.rounds.as_deref().cloned(),
+        }) else {
+            break;
+        };
+        levels.push((r, h));
+    }
+    let Some((_, deepest)) = levels.last() else { return Ok(None) };
+    let rounds = rounds_of(deepest);
+    let record = body.record();
+    let ends = |e: usize| record.edges.get(e).map(|e| e.vertices).unwrap_or([u32::MAX; 2]);
+    let (seam_picks, new): (Vec<(usize, f64)>, Vec<(usize, f64)>) =
+        picked.iter().copied().zip(sizes.iter().copied()).partition(|(e, _)| between_rounds(deepest, &rounds, *e));
+    let corners: BTreeSet<u32> = new.iter().flat_map(|(e, _)| ends(*e)).collect();
+    let seams: Vec<usize> =
+        (0..record.edges.len()).filter(|e| between_rounds(deepest, &rounds, *e) && ends(*e).iter().any(|v| corners.contains(v))).collect();
+    for (seam, size) in &seam_picks {
+        let meets = new.iter().any(|(e, r)| r.to_bits() == size.to_bits() && ends(*e).iter().any(|v| ends(*seam).contains(v)));
+        if !meets {
+            return Err(KernelError::Invalid(
+                "fillet: a picked edge is where earlier rounds meet (a mitre), which has no round of its own: pick the edge that runs \
+                 into that corner, at its radius, and the corner is rounded again with it"
+                    .into(),
+            ));
+        }
+    }
+    if seams.is_empty() {
+        return Ok(None);
+    }
+    // The latest round from which on every seam is between rounds on record.
+    let Some(level) = levels.iter().position(|(_, h)| {
+        let rounds = rounds_of(h);
+        seams.iter().all(|s| between_rounds(h, &rounds, *s))
+    }) else {
+        return Ok(None);
+    };
+    let Some((base, chain)) = levels.get(level).map(|(r, h)| (r.before.clone(), h.clone())) else { return Ok(None) };
+    // Every round's edges from that level on, in `base`'s edge order.
+    let mut edges: Vec<(usize, f64)> = Vec::new();
+    for (step, (r, _)) in levels.iter().enumerate().take(level + 1) {
+        let inner = down(&r.before, level - step);
+        for (e, radius) in &r.edges {
+            let at = match &inner {
+                None => Some(*e),
+                Some(h) => edge_origin(h, *e),
+            };
+            let Some(at) = at else { return Ok(None) };
+            edges.push((at, *radius));
+        }
+    }
+    let mut mapped = Vec::with_capacity(new.len());
+    for (e, radius) in &new {
+        let Some(at) = edge_origin(&chain, *e) else { return Ok(None) };
+        mapped.push((*e, at));
+        edges.push((at, *radius));
+    }
+    Ok(Some((Later { base, edges, chain, new: mapped, seams }, new)))
+}
+
+/// The history of `result`, the blend `later` made of its base (`h`, over the base), over the
+/// body the later round was given (`body`, `later.chain` over the base): a face of the base's
+/// faces is the body's face of them, kept where both kept it, else trimmed anew (split or joined
+/// where they are several); an earlier round's face is that round's face in the body; a face
+/// made in place of a new edge (its round, and a corner patch where it meets earlier rounds) is
+/// new, made in place of the new edges and of the body's seams between the rounds it joins.
+/// Each edge is the body's edge between the faces it lies between there, else where its faces
+/// meet. `None` where a face has no counterpart.
+pub(crate) fn rebase(h: &History, later: &Later, body: &Body) -> Option<History> {
+    let chain = &later.chain;
+    let set = |p: &FaceProv| p.origins.iter().copied().collect::<BTreeSet<FaceOrigin>>();
+    let mut faces = Vec::with_capacity(h.faces.len());
+    for p in &h.faces {
+        let origins = set(p);
+        let new_edges: Vec<FaceOrigin> = later
+            .new
+            .iter()
+            .filter(|(_, at)| origins.contains(&FaceOrigin::Edge { operand: 0, edge: *at }))
+            .map(|(e, _)| FaceOrigin::Edge { operand: 0, edge: *e })
+            .collect();
+        if !new_edges.is_empty() {
+            // The seams between rounds all of whose origins this face takes up.
+            let replaced = later.seams.iter().filter(|s| {
+                chain.edges.get(**s).is_some_and(|e| e.faces.iter().all(|f| chain.faces.get(*f).is_some_and(|f| set(f).is_subset(&origins))))
+            });
+            let mut all = new_edges;
+            all.extend(replaced.map(|s| FaceOrigin::Edge { operand: 0, edge: *s }));
+            faces.push(crate::record::generated(all));
+            continue;
+        }
+        let candidates: Vec<usize> = if p.change == Change::Generated {
+            (0..chain.faces.len()).filter(|f| chain.faces.get(*f).is_some_and(|c| c.change == Change::Generated && set(c) == origins)).collect()
+        } else {
+            (0..chain.faces.len())
+                .filter(|f| chain.faces.get(*f).is_some_and(|c| c.change != Change::Generated && c.origins.iter().any(|o| origins.contains(o))))
+                .collect()
+        };
+        let change = match candidates[..] {
+            [] => return None,
+            [f] if p.change == Change::Kept && chain.faces.get(f).is_some_and(|c| c.change == Change::Kept) => Change::Kept,
+            [_] => Change::Modified,
+            _ => Change::Merged,
+        };
+        faces.push(FaceProv { origins: candidates.into_iter().map(|face| FaceOrigin::Face { operand: 0, face }).collect(), change });
+    }
+    crate::record::mark_shared_split(&mut faces);
+    // The body's faces under each result face, and the body's edges by the faces they separate.
+    let under = |f: usize| -> BTreeSet<usize> {
+        faces
+            .get(f)
+            .filter(|p| p.change != Change::Generated)
+            .map(|p| p.origins.iter().filter_map(|o| if let FaceOrigin::Face { face, .. } = o { Some(*face) } else { None }).collect())
+            .unwrap_or_default()
+    };
+    let body_edges = crate::history::edge_faces(body.record());
+    let edges = h
+        .edges
+        .iter()
+        .map(|e| {
+            let sides: Vec<BTreeSet<usize>> = e.faces.iter().map(|f| under(*f)).collect();
+            let same: Vec<EdgeOrigin> = if sides.iter().all(|s| !s.is_empty()) {
+                body_edges
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, between)| {
+                        between.len() == sides.len()
+                            && (between.iter().zip(&sides).all(|(f, s)| s.contains(f))
+                                || between.iter().rev().zip(&sides).all(|(f, s)| s.contains(f)))
+                    })
+                    .map(|(edge, _)| EdgeOrigin::Edge { operand: 0, edge })
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let origins = if same.is_empty() { crate::record::meeting(&e.faces, &faces) } else { same };
+            EdgeProv { faces: e.faces.clone(), origins }
+        })
+        .collect();
+    Some(History { operands: 1, faces, edges })
+}
 
 /// Fillet each edge nearest a point with its own radius.
 pub fn fillet_radii(body: &Body, edges: &[(Vec3, f64)]) -> Result<Body> {
@@ -59,6 +303,30 @@ mod tests {
         }
         let full = (1.0 - std::f64::consts::FRAC_PI_4) * (ra * ra + rb * rb + rc * rc) * 20.0;
         8000.0 - full + (sum - union) * hh * hh
+    }
+
+    /// What the strips leave of the corner block where a patch over the corner of rounds `ra`,
+    /// `rb`, `rc` on a, b, c lies: beyond a's end section (y < rc), b's (x > 20 − rc) and c's end
+    /// (z > 20 − max(ra, rb), where c's rails meet a's and b's), the box's material that no
+    /// strip removes, by columns along z. Outside that block such a body is the strips' (its
+    /// rounds are the strips' cylinders up to those ends), so its patch takes at most this
+    /// beyond them.
+    fn corner_block(ra: f64, rb: f64, rc: f64) -> f64 {
+        let len = |d: f64, r: f64| if d < r { r - (r * r - (r - d) * (r - d)).max(0.0).sqrt() } else { 0.0 };
+        let (n, depth) = (2000, ra.max(rb));
+        let h = rc / n as f64;
+        let mut kept = 0.0;
+        for i in 0..n {
+            let dx = (i as f64 + 0.5) * h;
+            for j in 0..n {
+                let dy = (j as f64 + 0.5) * h;
+                if (rc - dx).powi(2) + (rc - dy).powi(2) > rc * rc && dx < rc && dy < rc {
+                    continue;
+                }
+                kept += depth - len(dx, ra).max(len(dy, rb)).min(depth);
+            }
+        }
+        kept * h * h
     }
 
     /// Largest angle (degrees) between the two faces' normals along edges between curved faces.
@@ -136,8 +404,8 @@ mod tests {
             assert_eq!(result.unmeshed_faces(), 0);
             assert!(result.validity().is_empty(), "{:?}", result.validity());
             assert!((vol(&result) - vol(&reference)).abs() < 0.05);
-            assert!(!result.contains(Vec3::new(24.9, 0.1, 5.0)));
-            assert!(result.contains(Vec3::new(24.0, 1.0, 5.0)));
+            assert_eq!(result.classify_point(Vec3::new(24.9, 0.1, 5.0)).unwrap(), crate::PointClass::Outside);
+            assert_eq!(result.classify_point(Vec3::new(24.0, 1.0, 5.0)).unwrap(), crate::PointClass::Inside);
         }
     }
 
@@ -156,8 +424,8 @@ mod tests {
             assert!(result.validity().is_empty(), "{:?}", result.validity());
             assert!((vol(&result) - vol(&reference)).abs() < 0.05, "radius {radius}");
             // The old bottom radius is still 2, away from the newly rounded corner.
-            assert!(!result.contains(Vec3::new(12.5, 0.5, 0.5)));
-            assert!(result.contains(Vec3::new(12.5, 1.0, 1.0)));
+            assert_eq!(result.classify_point(Vec3::new(12.5, 0.5, 0.5)).unwrap(), crate::PointClass::Outside);
+            assert_eq!(result.classify_point(Vec3::new(12.5, 1.0, 1.0)).unwrap(), crate::PointClass::Inside);
         }
         // A tangent boundary of an earlier round is not a sharp edge, and cannot be
         // reinterpreted as the sharp edge exposed when that round is taken off.
@@ -168,30 +436,42 @@ mod tests {
         assert!(fillet_radii(&rounded, &[(seam, 2.0)]).is_err());
     }
 
+    /// A 40 x 80 x 27 box (and the same shelled 1 mm, open at the top) with its bottom edges
+    /// rounded R2 as four separate fillets (mitred at the bottom corners), then one vertical
+    /// edge R2: the same solid whichever of its picks comes first. Horizontal sections: below
+    /// z = r above the bottom, s up, the rectangle moved in by d = r − ρ, ρ = √(r² − (r − s)²),
+    /// with the rounded corner a quarter disc of radius ρ less than its square (the sphere octant
+    /// where the three rounds meet); above, the rectangle less that corner at r. With
+    /// ∫ ρ = π r² / 4, ∫ ρ² = 2 r³ / 3, ∫ d = r² (1 − π/4) and ∫ d² = r³ (5/3 − π/2) over the
+    /// bottom r. The shell's cavity, 38 x 78 x 26, lies clear of both rounds (the bottom round's
+    /// arc passes 2 − √2 from the outer corner along the diagonal, the cavity's corner 1).
     #[test]
     fn issue2422_vertical_after_separate_bottom_rounds() {
+        use std::f64::consts::{FRAC_PI_2, FRAC_PI_4};
         let origin = Vec3::new(-5.0, 7.2, -2.0);
-        let b = box_solid(origin, origin + Vec3::new(40.0, 80.0, 27.0)).unwrap();
+        let (l, w, h, r) = (40.0, 80.0, 27.0, 2.0);
+        let b = box_solid(origin, origin + Vec3::new(l, w, h)).unwrap();
         let bottom = [Vec3::new(15.0, 7.2, -2.0), Vec3::new(35.0, 47.2, -2.0), Vec3::new(15.0, 87.2, -2.0), Vec3::new(-5.0, 47.2, -2.0)];
+        let spandrel = 1.0 - FRAC_PI_4;
+        let solid = l * w * r - 2.0 * (l + w) * r * r * spandrel + 4.0 * r * r * r * (5.0 / 3.0 - FRAC_PI_2) - spandrel * 2.0 * r * r * r / 3.0
+            + (h - r) * (l * w - spandrel * r * r);
+        let cavity = (l - 2.0) * (w - 2.0) * (h - 1.0);
         // The issue has no design attached. Reconstruct its outside corner and bottom mitre,
         // using the reported picks, with and without the open cavity visible in the screenshot.
         let picks = [Vec3::new(-5.0, 87.2, 12.5), Vec3::new(-4.283446394180081, 86.48344639418008, -1.5001085324947512)];
-        for base in [b.clone(), crate::shell(&b, &[Vec3::new(15.0, 47.2, 25.0)], 1.0).unwrap()] {
+        for (base, want) in [(b.clone(), solid), (crate::shell(&b, &[Vec3::new(15.0, 47.2, 25.0)], 1.0).unwrap(), solid - cavity)] {
             // Each fillet with its tangent chain, as the Fillet feature asks for it by default
             // (tangent propagation).
             let mut rounded = base;
             for edge in bottom {
                 rounded = fillet(&rounded, &crate::tangent_chain(&rounded, &[edge]).unwrap(), 2.0).unwrap();
             }
-            let reference = fillet(&rounded, &crate::tangent_chain(&rounded, &picks[..1]).unwrap(), 2.0).unwrap();
-            for selection in [picks, [picks[1], picks[0]]] {
-                let result = fillet(&rounded, &crate::tangent_chain(&rounded, &selection).unwrap(), 2.0).unwrap();
-                assert_eq!(result.face_count(), reference.face_count());
-                assert_eq!(result.unmeshed_faces(), 0);
+            for selection in [&picks[..1], &picks[..], &[picks[1], picks[0]][..]] {
+                let result = fillet(&rounded, &crate::tangent_chain(&rounded, selection).unwrap(), 2.0).unwrap();
                 assert!(result.validity().is_empty(), "{:?}", result.validity());
-                assert!((vol(&result) - vol(&reference)).abs() < 0.05);
-                assert!(!result.contains(Vec3::new(-4.9, 87.1, 10.0)));
-                assert!(result.contains(Vec3::new(-4.1, 86.3, 10.0)));
+                assert!((vol(&result) - want).abs() < 1e-6 * want, "{selection:?}: {} vs {want}", vol(&result));
+                assert_eq!(result.classify_point(Vec3::new(-4.9, 87.1, 10.0)).unwrap(), crate::PointClass::Outside);
+                assert_eq!(result.classify_point(Vec3::new(-4.1, 86.3, 10.0)).unwrap(), crate::PointClass::Inside);
             }
         }
     }
@@ -223,31 +503,58 @@ mod tests {
     #[test]
     fn three_rounds_at_a_corner() {
         let (bx, a, b, c) = setup();
-        // Two rounds meeting in a mitre, then the third edge: a sphere octant.
+        // Two rounds meeting in a mitre, then the third edge with its tangent chain, as the Fillet
+        // feature asks for it (84bd2daad): the mitre's seam leaves c's end along c, so the chain
+        // is c and the seam, and the corner is a sphere octant. The cube less its three rounds
+        // (each (1 − π/4) r² over its 18 mm straight part) and the corner's 2 mm cube less the
+        // octant (r³ (1 − π/6)).
         let ab = fillet(&bx, &[a, b], 2.0).unwrap();
-        let r = fillet(&ab, &[c], 2.0).unwrap();
+        let r = fillet(&ab, &crate::tangent_chain(&ab, &[c]).unwrap(), 2.0).unwrap();
         let sphere = 8000.0 - 3.0 * (1.0 - std::f64::consts::FRAC_PI_4) * 4.0 * 18.0 - 8.0 * (1.0 - std::f64::consts::PI / 6.0);
         assert_eq!(r.face_count(), 10);
-        assert!((vol(&r) - sphere).abs() < 0.05, "{} vs {sphere}", vol(&r));
+        assert!(r.validity().is_empty(), "{:?}", r.validity());
+        assert!((vol(&r) - sphere).abs() < 1e-11 * sphere, "{} vs {sphere}", vol(&r));
         assert!(kink(&r) < 0.01);
-        // Different radii: a smooth patch over the corner, slightly more than the strips take.
+        // Different radii: a smooth patch over the corner, more than the strips take, and no more
+        // than they leave in the block it lies in: its rounds end at a's section y = rc, b's
+        // x = 20 − rc, and c's rails where they meet a's and b's (z = 20 − ra, z = 20 − rb), the
+        // patch's four corners. (2, 2, 3): 1.168 beyond the strips, of the 11.86 the block keeps;
+        // (2, 3, 4): 3.099 of 32.69.
         for (rs, sel) in [((2.0, 2.0, 3.0), fillet(&ab, &[c], 3.0)), ((2.0, 3.0, 4.0), fillet_radii(&bx, &[(a, 2.0), (b, 3.0), (c, 4.0)]))] {
             let r = sel.unwrap();
             assert_eq!(r.face_count(), 10);
             assert_eq!(r.unmeshed_faces(), 0);
             let k = kink(&r);
             assert!(k < 0.05, "kink {k}°");
-            let (v, s) = (vol(&r), strips(rs.0, rs.1, rs.2));
-            assert!(v < s + 0.05 && v > s - 3.0, "{v} vs {s}");
+            let (ra, rb, rc) = rs;
+            let ends = [
+                Vec3::new(20.0 - ra, rc, 20.0),
+                Vec3::new(20.0, rc, 20.0 - ra),
+                Vec3::new(20.0 - rc, rb, 20.0),
+                Vec3::new(20.0 - rc, 0.0, 20.0 - rb),
+            ];
+            for p in ends {
+                assert!(vertices(&r).iter().any(|q| q.dist(p) < 1e-9), "{rs:?}: no patch corner at {p:?}");
+            }
+            let (v, s) = (vol(&r), strips(ra, rb, rc));
+            assert!(v < s + 0.05 && v > s - corner_block(ra, rb, rc), "{v} vs {s}");
         }
     }
 
     #[test]
     fn corners_refuse_what_they_cannot_build() {
         let (bx, a, b, _) = setup();
-        // Larger than the faces, or not a size: errors, no panic. Large but fitting is fine.
+        // Not a size: errors, no panic. Large but fitting is fine.
         assert!(fillet_radii(&bx, &[(a, 15.0), (b, 2.0)]).is_ok_and(|r| r.unmeshed_faces() == 0));
-        assert!(fillet_radii(&bx, &[(a, 25.0), (b, 2.0)]).is_err());
+        // R25 on a overflows both its faces and goes first: its circle about (x, z) = (-5, -5)
+        // takes all of the top, and with it b, which is gone. What is left is R25's alone: the
+        // square [0, 20]² inside that circle, with t = x + 5, ∫₅^√600 √(625 − t²) dt − 5 (√600 − 5),
+        // along 20.
+        let g = |t: f64| 0.5 * (t * (625.0 - t * t).sqrt() + 625.0 * (t / 25.0).asin());
+        let w = 600f64.sqrt();
+        let want = 20.0 * (g(w) - g(5.0) - 5.0 * (w - 5.0));
+        let r = fillet_radii(&bx, &[(a, 25.0), (b, 2.0)]).unwrap();
+        assert!((vol(&r) - want).abs() < 1e-9 * want, "{} vs {want}", vol(&r));
         assert!(fillet_radii(&bx, &[(a, f64::NAN)]).is_err());
         assert!(fillet_radii(&bx, &[(a, 0.0)]).is_err());
         assert!(fillet_radii(&bx, &[]).is_err());
@@ -281,69 +588,18 @@ mod tests {
         }
     }
 
+    /// A chamfer 2 of a basin's rim loop (walls all sloping 10 over 20, the front rim 1 mm wide)
+    /// whose front leg runs off the rim over the slab's front edge builds, cut by the front face
+    /// (the owner's ruling of 2026-10-30, d7: a chamfer that reaches or runs past a rim builds).
+    /// Sliced at depth t below the top, each chamfer's strip beside its wall is
+    /// w(t) = d (1 − t/δ) wide, δ = d / √(1 + k²) with k = 1/2 the walls' run over drop; the four
+    /// meet in mitres at the rim's corners, so the section removed is the pocket's rectangle at t,
+    /// [20 + t/2, 80 − t/2] × [1 + t/2, 50 − t/2], grown by w(t) on every side and clipped to the
+    /// slab's front face y >= 0, less that rectangle. Its area is quadratic in t between δ and
+    /// where the front strip's edge 1 + t/2 − w(t) crosses y = 0, so Simpson's rule is exact on
+    /// each piece: 375.673069 taken from V0 = 140333.333333 (the prismatoid), 139957.660264.
     #[test]
-    fn sloped_rim_fillets_cannot_extend_outside_the_material() {
-        use solidcraft_geom::{Loop2, Plane, Vec2};
-        for margin in [0.5, 1.0] {
-            let rectangle = |x0, y0, x1, y1| Loop2::polygon(&[Vec2::new(x0, y0), Vec2::new(x1, y0), Vec2::new(x1, y1), Vec2::new(x0, y1)]);
-            let slab = box_solid(Vec3::ZERO, Vec3::new(100.0, 60.0, 30.0)).unwrap();
-            let pocket = crate::loft(&[
-                (Plane::XY.offset(30.0), rectangle(20.0, margin, 80.0, 50.0)),
-                (Plane::XY.offset(10.0), rectangle(30.0, 20.0, 70.0, 40.0)),
-            ])
-            .unwrap();
-            let basin = crate::boolean(&slab, &pocket, crate::BoolOp::Cut).unwrap().unwrap();
-            let picks = [Vec3::new(50.0, margin, 30.0), Vec3::new(80.0, 27.0, 30.0), Vec3::new(50.0, 50.0, 30.0), Vec3::new(20.0, 27.0, 30.0)];
-            for count in [1, 2, 4] {
-                assert!(fillet(&basin, &picks[..count], 4.0).is_err());
-                assert!(fillet(&basin, &picks[..count], margin * 0.5).is_ok());
-            }
-        }
-    }
-
-    #[test]
-    fn chamfers_meet_on_unequal_sloped_rim_walls() {
-        use solidcraft_geom::{Loop2, Plane, Vec2};
-        for margin in [1.0, 4.0] {
-            let rectangle = |x0, y0, x1, y1| Loop2::polygon(&[Vec2::new(x0, y0), Vec2::new(x1, y0), Vec2::new(x1, y1), Vec2::new(x0, y1)]);
-            let slab = box_solid(Vec3::ZERO, Vec3::new(100.0, 60.0, 30.0)).unwrap();
-            let pocket = crate::loft(&[
-                (Plane::XY.offset(30.0), rectangle(20.0, margin, 80.0, 50.0)),
-                (Plane::XY.offset(10.0), rectangle(30.0, 20.0, 70.0, 40.0)),
-            ])
-            .unwrap();
-            let basin = crate::boolean(&slab, &pocket, crate::BoolOp::Cut).unwrap().unwrap();
-            let picks = [Vec3::new(50.0, margin, 30.0), Vec3::new(80.0, 27.0, 30.0), Vec3::new(50.0, 50.0, 30.0), Vec3::new(20.0, 27.0, 30.0)];
-            for count in [2, 3, 4] {
-                if margin == 1.0 {
-                    assert!(crate::chamfer(&basin, &picks[..count], 2.0).is_err());
-                    assert!(crate::chamfer(&basin, &picks[..count], 1.0).is_err());
-                }
-                let distance = if margin == 1.0 { 0.5 } else { 2.0 };
-                let result = crate::chamfer(&basin, &picks[..count], distance).unwrap();
-                assert!(result.validity().is_empty());
-                assert_eq!(result.unmeshed_faces(), 0);
-                assert!(vol(&result) < vol(&basin));
-                assert!(vol(&basin) - vol(&result) < distance.powi(2) * (60.0 + 50.0 - margin));
-                let reverse: Vec<_> = picks[..count].iter().copied().rev().collect();
-                let reversed = crate::chamfer(&basin, &reverse, distance).unwrap();
-                assert!((vol(&result) - vol(&reversed)).abs() < 1e-6);
-                // These are exact planes, with every boundary on its owning face.
-                let rec = Faces::of(&result).unwrap();
-                for f in 0..rec.rec.faces.len() {
-                    let Some(n) = rec.plane_normal(f) else { continue };
-                    let points: Vec<Vec3> = rec.uses(f).filter_map(|u| rec.ends(u.edge as usize)).flat_map(|(a, b)| [a, b]).collect();
-                    let origin = points[0];
-                    for p in points {
-                        assert!((p - origin).dot(n).abs() < 1e-7);
-                    }
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn equal_slope_rim_loops_cannot_escape_the_face() {
+    fn a_rim_loop_chamfer_running_off_its_rim_builds() {
         use solidcraft_geom::{Loop2, Plane, Vec2};
         let rectangle = |x0, y0, x1, y1| Loop2::polygon(&[Vec2::new(x0, y0), Vec2::new(x1, y0), Vec2::new(x1, y1), Vec2::new(x0, y1)]);
         let slab = box_solid(Vec3::ZERO, Vec3::new(100.0, 60.0, 30.0)).unwrap();
@@ -352,9 +608,23 @@ mod tests {
                 .unwrap();
         let basin = crate::boolean(&slab, &pocket, crate::BoolOp::Cut).unwrap().unwrap();
         let picks = [Vec3::new(50.0, 1.0, 30.0), Vec3::new(80.0, 27.0, 30.0), Vec3::new(50.0, 50.0, 30.0), Vec3::new(20.0, 27.0, 30.0)];
-        assert!(crate::chamfer(&basin, &picks, 2.0).is_err());
-        assert!(fillet(&basin, &picks, 4.0).is_err());
-        assert!(crate::chamfer(&basin, &picks, 0.5).is_ok());
-        assert!(fillet(&basin, &picks, 0.5).is_ok());
+        let (d, k) = (2.0_f64, 0.5_f64);
+        let delta = d / (1.0 + k * k).sqrt();
+        let area = |t: f64| {
+            let w = d * (1.0 - t / delta);
+            let (x0, x1, y0, y1) = (20.0 + k * t, 80.0 - k * t, 1.0 + k * t, 50.0 - k * t);
+            (x1 - x0 + 2.0 * w) * (y1 + w - (y0 - w).max(0.0)) - (x1 - x0) * (y1 - y0)
+        };
+        // 1 + k t − d (1 − t/δ) = 0.
+        let crossing = (d - 1.0) / (k + d / delta);
+        let removed: f64 =
+            [(0.0, crossing), (crossing, delta)].iter().map(|&(a, b)| (b - a) / 6.0 * (area(a) + 4.0 * area(0.5 * (a + b)) + area(b))).sum();
+        assert!((removed - 375.673069).abs() < 1e-6, "{removed}");
+        let before = crate::measure(&basin).unwrap().volume;
+        assert!((before - 140333.333333).abs() < 1e-5, "{before}");
+        let result = crate::chamfer(&basin, &picks, d).unwrap_or_else(|e| panic!("{e}"));
+        assert!(result.validity().is_empty(), "{:?}", result.validity());
+        let v = crate::measure(&result).unwrap().volume;
+        assert!((v - (before - removed)).abs() < 1e-6 * before, "{v} vs {}", before - removed);
     }
 }

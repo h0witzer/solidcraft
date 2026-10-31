@@ -347,9 +347,9 @@ impl ModelBody {
         self.mesh.get().cloned()
     }
 
-    /// The isoparametric curves of face `face` for Isocurve Analysis: spaced by `count` on the
-    /// face's surface (so faces on one surface share them), exact and cut to its trims
-    /// ([`kernel::iso_grid`]), their points at the chord
+    /// The isoparametric curves of face `face` for Isocurve Analysis: `count` each way, evenly
+    /// spaced across the face (faces on one surface spaced together, so they share them), exact
+    /// and cut to its trims ([`kernel::iso_grid`]), their points at the chord
     /// tolerance of the viewport's display quality. Worked out once per face, count and display
     /// quality, and shared by every clone of this body (timeline snapshots, world states). A mesh
     /// body has no surfaces, so none.
@@ -390,21 +390,58 @@ pub struct SolvedSketch {
 /// A constant fillet of `edges`; with [`FilletFit::Reduce`](crate::FilletFit::Reduce), a radius too
 /// large for the geometry around them is reduced where it doesn't fit, to the largest that works
 /// for each group of edges sharing a face; the radius per edge is returned. With
-/// [`FilletFit::Taper`](crate::FilletFit::Taper) it tapers along each edge it doesn't fit.
+/// [`FilletFit::Taper`](crate::FilletFit::Taper) it tapers along each edge it doesn't fit. With
+/// the exact fit a radius too large is refused, naming the largest that fits ([`with_largest_fit`]).
+/// Also the picks whose edges a round overflowing its faces removed whole ([`kernel::fillet_removing`]).
 fn fillet_fitted(
     body: &kernel::Body,
     edges: &[Vec3],
     r: f64,
     fit: crate::FilletFit,
-) -> std::result::Result<(kernel::Body, Option<Vec<f64>>), kernel::KernelError> {
-    match kernel::fillet(body, edges, r) {
+) -> std::result::Result<(kernel::Body, Option<Vec<f64>>, Vec<Vec3>), kernel::KernelError> {
+    match kernel::fillet_removing(body, edges, r) {
+        Ok((b, gone)) => Ok((b, None, gone)),
+        Err(kernel::KernelError::TooLarge(why)) if fit == crate::FilletFit::Exact => {
+            Err(with_largest_fit(why, "radius", || kernel::fillet_max(body, edges, r)))
+        }
         Err(kernel::KernelError::TooLarge(why)) if fit == crate::FilletFit::Reduce => match kernel::fillet_max_each(body, edges, r)? {
             // Built at the radius asked for after all (the groups apart): nothing reduced.
-            Some((used, b)) => Ok((b, used.iter().any(|u| *u < r).then_some(used))),
+            Some((used, b)) => Ok((b, used.iter().any(|u| *u < r).then_some(used), Vec::new())),
             None => Err(kernel::KernelError::TooLarge(why)),
         },
-        Err(kernel::KernelError::TooLarge(_)) if fit == crate::FilletFit::Taper => kernel::fillet_tapered(body, edges, r).map(|(b, _)| (b, None)),
-        other => other.map(|b| (b, None)),
+        Err(kernel::KernelError::TooLarge(_)) if fit == crate::FilletFit::Taper => {
+            kernel::fillet_tapered(body, edges, r).map(|(b, _)| (b, None, Vec::new()))
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// The warning of a fillet some of whose edges a larger round, overflowing its faces, removed
+/// whole: they are gone, so they are not rounded.
+fn removed_note(gone: &[Vec3]) -> String {
+    let at = |p: &Vec3| format!("({}, {}, {})", show_mm(p.x), show_mm(p.y), show_mm(p.z));
+    match gone {
+        [one] => format!("the edge at {} was removed by the larger round, so it is not rounded", at(one)),
+        _ => format!("the edges at {} were removed by the larger round, so they are not rounded", gone.iter().map(at).collect::<Vec<_>>().join(", ")),
+    }
+}
+
+/// A blend's refusal as too large (`why`) with the largest `size` (radius, distance) that fits,
+/// as `search` finds it by building candidates ([`kernel::fillet_max`]): the refusal as it is
+/// when none fits or the search itself fails (a candidate failing for another reason says
+/// nothing about the size).
+fn with_largest_fit(
+    why: String,
+    size: &str,
+    search: impl FnOnce() -> std::result::Result<Option<(f64, kernel::Body)>, kernel::KernelError>,
+) -> kernel::KernelError {
+    match search() {
+        Ok(Some((largest, _))) => kernel::KernelError::TooLarge(format!("{why}; the largest {size} that fits is {} mm", show_mm(largest))),
+        Ok(None) => kernel::KernelError::TooLarge(why),
+        Err(e) => {
+            log::debug!("the largest {size} that fits: {e}");
+            kernel::KernelError::TooLarge(why)
+        }
     }
 }
 
@@ -1012,6 +1049,8 @@ pub struct Model {
     primed: Option<(u64, Arc<std::collections::HashMap<u64, FeatureResult>>)>,
     /// Shared with copies of this evaluator; states hold only a weak reference.
     frame_bodies: Arc<std::sync::Mutex<FrameBodies>>,
+    /// When SMLib's check runs on the features this model evaluates ([`Model::set_validation`]).
+    validation: kernel::Validation,
 }
 
 /// Parameters a feature uses directly (inputs, sketch dimensions and the expressions of a
@@ -1339,6 +1378,33 @@ fn context_digest(doc: &Document, vals: &BTreeMap<String, Value>) -> u64 {
         }
     }
     h.finish()
+}
+
+/// What the validation mode adds to the context digest: nothing for checking every step (how
+/// every evaluation before the mode checked, so its results and saved caches stand), so a result
+/// is taken from the cache only under the mode it was evaluated in.
+fn validation_digest(validation: kernel::Validation) -> u64 {
+    match validation {
+        kernel::Validation::EachStep => 0,
+        v => {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            ("validation", v.id()).hash(&mut h);
+            h.finish()
+        }
+    }
+}
+
+/// SMLib's check of every body a feature made or changed (in `after`, not in `before`, the
+/// state it started from), once its steps left their checks to its end: the first that fails is
+/// the feature's error, naming the body.
+fn check_kept(before: &ModelState, after: &ModelState) -> kernel::Result<()> {
+    for b in &after.bodies {
+        if before.bodies.iter().any(|old| old.body.same_shape(&b.body)) {
+            continue;
+        }
+        kernel::check_kept(&b.body).map_err(|e| kernel::KernelError::Failed(format!("body `{}`: {e}", b.name)))?;
+    }
+    Ok(())
 }
 
 /// Whether `after`, a state feature `f` evaluated to from `before` in an earlier evaluation, is
@@ -1826,6 +1892,19 @@ impl Model {
         self.primed = None;
     }
 
+    /// When SMLib's check runs on the features this model evaluates.
+    pub fn validation(&self) -> kernel::Validation {
+        self.validation
+    }
+
+    /// Check the features evaluated from now on under `validation` ([`kernel::Validation`]):
+    /// after every sweep, boolean and blend, once on the bodies each feature keeps, or not at
+    /// all. The results already there stand until their features are evaluated again; the cache
+    /// keeps results apart by mode, so one evaluated under another mode is not taken up.
+    pub fn set_validation(&mut self, validation: kernel::Validation) {
+        self.validation = validation;
+    }
+
     /// Re-evaluate the document, reusing results up to the first changed feature.
     pub fn evaluate(&mut self, doc: &Document) {
         let _span = solidcraft_profile::span("doc", "evaluate");
@@ -1842,7 +1921,8 @@ impl Model {
         let mut recomputed = 0;
         let mut restored = 0;
         let marker = doc.marker.unwrap_or(usize::MAX);
-        let ctx = context_digest(doc, &vals);
+        let validation = self.validation;
+        let ctx = context_digest(doc, &vals) ^ validation_digest(validation);
         let previous_context = self.context;
         let mut rolled_results = std::mem::take(&mut self.rolled_results);
         self.context = ctx;
@@ -2000,7 +2080,7 @@ impl Model {
                 }
                 Ok(None) => f,
                 Err(e) => {
-                    frame_error = Some(e.to_string());
+                    frame_error = Some(e.in_feature(&f.name).to_string());
                     f
                 }
             };
@@ -2009,8 +2089,11 @@ impl Model {
             let r = match frame_error.or(bad_param) {
                 Some(e) => Err(kernel::KernelError::Failed(e)),
                 None => kernel::guard(&f.name, || {
-                    eval_feature(doc, &vals, f, &mut next, &mut warning, &mut import_report, &mut repair)
-                        .map_err(|e| kernel::KernelError::Failed(e.to_string()))
+                    let (r, deferred) =
+                        kernel::validating(validation, || eval_feature(doc, &vals, f, &mut next, &mut warning, &mut import_report, &mut repair));
+                    r.map_err(|e| kernel::KernelError::Failed(e.in_feature(&f.name).to_string()))?;
+                    // The checks the feature's steps left to its end: the bodies it keeps.
+                    if deferred { check_kept(&state, &next) } else { Ok(()) }
                 }),
             };
             if r.is_ok() {
@@ -3432,18 +3515,18 @@ fn trusted_edge_name(f: &Feature, i: usize, p: Vec3) -> Option<&str> {
 }
 
 /// The body (index) an edge name finds an edge on, when one does: the one where the edge still
-/// runs through the pick `p`, else where the name is one edge (not split), else the nearest.
+/// runs through the pick `p`, else the nearest.
 fn named_body(st: &ModelState, name: &str, p: Vec3) -> Option<usize> {
     // Names start with the feature that made the face: only bodies with such a face can hold it.
     let bare = crate::naming::legacy_name(name).unwrap_or(name);
     let token = bare.find(':').map(|k| &bare[..=k]);
-    let mut best: Option<(usize, (bool, bool, f64))> = None;
+    let mut best: Option<(usize, (bool, f64))> = None;
     for (i, b) in st.bodies.iter().enumerate() {
         if b.body.is_mesh() || token.is_some_and(|t| !crate::naming::face_names(b).iter().any(|n| n.contains(t))) {
             continue;
         }
         let Ok(hit) = crate::naming::locate_edge(b, name, p) else { continue };
-        let score = (hit.on_point, !hit.split, -hit.point.dist(p));
+        let score = (hit.on_point, -hit.point.dist(p));
         if best.as_ref().is_none_or(|(_, s)| score.partial_cmp(s).is_some_and(|o| o.is_gt())) {
             best = Some((i, score));
         }
@@ -3515,8 +3598,9 @@ fn blend_bodies(st: &ModelState, f: &Feature, body: &Option<crate::BodyName>, pt
     Ok(out)
 }
 
-/// The edges `idx` of blend `f` found on body `mb`: by name first; a name that is gone falls back
-/// to the point, with a warning.
+/// The edges `idx` of blend `f` found on body `mb`: by name, where the edge was stored with one.
+/// A name that no longer finds exactly its edge fails the blend, asking for the edge to be picked
+/// again; so does a name a build stored for the wrong body (see `trusted_edge_name`).
 fn blend_edges_on(mb: &ModelBody, f: &Feature, edges: &[crate::Position], idx: &[usize], warning: &mut Option<String>) -> Result<Vec<Vec3>> {
     let pick = |i: usize| edges.get(i).map(|p| p.0).unwrap_or(Vec3::ZERO);
     if !f.edge_names.iter().any(|n| !n.is_empty()) {
@@ -3527,51 +3611,34 @@ fn blend_edges_on(mb: &ModelBody, f: &Feature, edges: &[crate::Position], idx: &
     let (mut out, mut notes) = (Vec::new(), Vec::new());
     for &i in idx {
         let p = pick(i);
-        let stored = f.edge_names.get(i).filter(|n| !n.is_empty());
-        let trusted = trusted_edge_name(f, i, p);
-        // A name recorded on another body (see `trusted_edge_name`): the pick alone.
-        if stored.is_some() && trusted.is_none() {
+        let Some(stored) = f.edge_names.get(i).filter(|n| !n.is_empty()) else {
+            // An edge picked without a name: by its point. A pick on the axis of a round must not
+            // fall through to the tangency seam (#775).
             let mut w = None;
-            match resolve_edges(&mb.body, &[p], &[], &mut w) {
-                Ok(q) => out.extend(q),
-                Err(_) => notes.push("an edge reference was not found at its point and was skipped".to_string()),
+            let refs: Vec<EdgeRef> = f.edge_refs.get(i).cloned().into_iter().collect();
+            let skipped = "edge `?` no longer exists and was skipped";
+            if pick_lies_on_a_round_axis(&mb.body, p) {
+                notes.push(skipped.into());
+            } else if let Ok(q) = resolve_edges(&mb.body, &[p], &refs, &mut w) {
+                out.extend(q);
+                notes.push("an edge reference without a name was found by its point".into());
+            } else {
+                notes.push(skipped.into());
             }
-            notes.extend(w);
             continue;
+        };
+        let hit =
+            trusted_edge_name(f, i, p).and_then(|n| crate::naming::locate_edge(mb, n, p).ok()).ok_or_else(|| DocError::reselect(stored.as_str()))?;
+        if let Some(note) = hit.note(stored) {
+            notes.push(note);
         }
-        match trusted.map(|n| (n, crate::naming::locate_edge(mb, n, p))) {
-            Some((n, Ok(hit))) => {
-                if let Some(note) = hit.note(n) {
-                    notes.push(note);
-                }
-                // The body changed since the pick: the pick may now sit at an end of the edge.
-                let moved = f.edge_refs.get(i).is_some_and(|r| {
-                    let now = mb.mesh().bounds();
-                    let tight = (mb.body.size() * 2e-3).max(1e-3);
-                    now.min.dist(r.min) > tight || now.max.dist(r.max) > tight
-                });
-                out.push(if moved { off_the_ends(mb, hit.edge, hit.point) } else { hit.point });
-            }
-            Some((_, Err(_))) | None => {
-                let mut w = None;
-                let refs: Vec<EdgeRef> = f.edge_refs.get(i).cloned().into_iter().collect();
-                let skipped = format!("edge `{}` no longer exists and was skipped", stored.map(String::as_str).unwrap_or("?"));
-                // The name is gone. A pick on the axis of a round must not fall through to the
-                // tangency seam (#775). A sharp edge that moved still resolves from the point,
-                // which an edit relies on.
-                if pick_lies_on_a_round_axis(&mb.body, p) {
-                    notes.push(skipped);
-                } else if let Ok(q) = resolve_edges(&mb.body, &[p], &refs, &mut w) {
-                    out.extend(q);
-                    notes.push(match stored {
-                        Some(n) => format!("edge `{n}` no longer exists; using the edge at the picked point"),
-                        None => "an edge reference without a name was found by its point".into(),
-                    });
-                } else {
-                    notes.push(skipped);
-                }
-            }
-        }
+        // The body changed since the pick: the pick may now sit at an end of the edge.
+        let moved = f.edge_refs.get(i).is_some_and(|r| {
+            let now = mb.mesh().bounds();
+            let tight = (mb.body.size() * 2e-3).max(1e-3);
+            now.min.dist(r.min) > tight || now.max.dist(r.max) > tight
+        });
+        out.push(if moved { off_the_ends(mb, hit.edge, hit.point) } else { hit.point });
     }
     if out.is_empty() {
         let why = if notes.is_empty() { String::new() } else { format!(" ({})", notes.join("; ")) };
@@ -3637,6 +3704,15 @@ fn blend_body(
     let (mut used, mut tapered) = (None, Vec::new());
     // The blended body, and the lineage of what the last blend started from.
     let (nb, from) = match &f.kind {
+        // A curvature-continuous fillet's corners are G2 patches, whatever `corner` says: SMLib's
+        // own corner patch is only tangent to its rounds.
+        FeatureKind::Fillet { style: crate::FilletStyle::Curvature, setbacks, .. } => {
+            let mut corners = Vec::with_capacity(setbacks.len());
+            for c in setbacks {
+                corners.push((c.vertex.0, val(vals, &c.distance, Kind::Length)?));
+            }
+            (kernel::fillet_g2_with_g2_corners(&mb.body, edges, r, &corners)?, input)
+        }
         FeatureKind::Fillet { corner, setbacks, .. } if matches!(corner, crate::FilletCorner::G2) || !setbacks.is_empty() => {
             // Each setback: its corner's vertex and its distance.
             let mut corners = Vec::with_capacity(setbacks.len());
@@ -3648,7 +3724,6 @@ fn blend_body(
                 crate::FilletCorner::Rolling => (kernel::fillet_setback(&mb.body, edges, r, &corners)?, input),
             }
         }
-        FeatureKind::Fillet { style: crate::FilletStyle::Curvature, .. } => (kernel::fillet_g2(&mb.body, edges, r)?, input),
         FeatureKind::Fillet { style: crate::FilletStyle::Chord, .. } => (kernel::fillet_chord(&mb.body, edges, r)?, input),
         FeatureKind::Fillet { style: crate::FilletStyle::Variable { radius2, start, mid, smooth }, .. } => {
             let r2 = val(vals, radius2, Kind::Length)?;
@@ -3675,9 +3750,12 @@ fn blend_body(
             (b, input)
         }
         FeatureKind::Fillet { fit, .. } => {
-            let (b, u) = fillet_fitted(&mb.body, edges, r, *fit)?;
+            let (b, u, gone) = fillet_fitted(&mb.body, edges, r, *fit)?;
             if let Some(u) = &u {
                 append_warning(warning, reduced_note(u, r));
+            }
+            if !gone.is_empty() {
+                append_warning(warning, removed_note(&gone));
             }
             used = u;
             (b, input)
@@ -4187,8 +4265,13 @@ fn hole_tools_and_prisms(
             // face, which would lie on the drill point's shoulder (a through hole, as drilled).
             let at = |h: f64| *position + dir * (-h);
             let eps = size * 1e-6;
-            let solid_at = |h: f64| st.bodies.iter().any(|b| b.body.contains(at(h)));
-            let exits_at_shoulder = solid_at(bottom + eps) && !solid_at(bottom - eps);
+            // Exact classification against every body: material where one has the point inside,
+            // air where all have it outside; a point within a body's tolerance of its boundary is
+            // neither, and the hole is then not taken to exit at its shoulder.
+            let classes = |h: f64| st.bodies.iter().map(|b| b.body.classify_point(at(h))).collect::<std::result::Result<Vec<_>, _>>();
+            let solid = classes(bottom + eps)?.contains(&kernel::PointClass::Inside);
+            let air = classes(bottom - eps)?.iter().all(|c| *c == kernel::PointClass::Outside);
+            let exits_at_shoulder = solid && air;
             if depth.is_some() && half > 1e-3 && half < std::f64::consts::FRAC_PI_2 && !exits_at_shoulder {
                 // One revolved tool (cylinder with a drill point).
                 let tip = r / half.tan();
@@ -5653,9 +5736,9 @@ fn copied_features(doc: &Document, vals: &BTreeMap<String, Value>, st: &ModelSta
 /// `mats`' own (which keep the numbers they always had), each nested source in a block of its
 /// own, so no two copies of one feature share an instance. Suppressed sources copy nothing.
 /// `f` with each face point moved onto its named face (on the body the feature names, when it
-/// names one and the face is there) in `state`, and notes for names that no longer find their
-/// face. `None` when `f` names no face; an error when the frame the faces are looked up in
-/// cannot be made (the feature fails with it).
+/// names one and the face is there) in `state`, and notes on how the faces were found. `None`
+/// when `f` names no face; an error when a name no longer finds its face (the feature asks for
+/// it to be picked again), or when the frame the faces are looked up in cannot be made.
 fn with_named_face_points(doc: &Document, state: &ModelState, f: &Feature) -> Result<Option<(Feature, Vec<String>)>> {
     // Cylindrical emboss resolves its named face in the selected body's frame
     // and certifies an analytic anchor; mesh projection here would undo that.
@@ -5695,7 +5778,7 @@ fn with_named_face_points(doc: &Document, state: &ModelState, f: &Feature) -> Re
                     _ => *p = hit.pick_point(&fst, *p),
                 }
             }
-            None => notes.push(format!("face `{n}` no longer exists; using the face at the picked point")),
+            None => return Err(DocError::reselect(n.as_str())),
         }
     }
     Ok(Some((g, notes)))
@@ -6220,53 +6303,27 @@ pub(crate) fn sheet_face_plane_in_frame(doc: &Document, st: &ModelState, comp: u
     })
 }
 
-/// The plane of the body face a sketch sits on, found again: among planar faces with the
-/// picked plane's normal, the one nearest `at`. The picked frame moves along its normal onto it.
-fn face_plane(st: &ModelState, picked: &Plane, at: Vec3, name: Option<&str>) -> (Plane, Option<String>) {
+/// The plane of the body face a sketch sits on, found again: the face its stored `name` finds,
+/// which must still be planar and face the picked plane's way (else the sketch fails, asking for
+/// its face to be picked again); without a name, among planar faces with the picked plane's
+/// normal, the one nearest `at`. The picked frame moves along its normal onto it.
+fn face_plane(st: &ModelState, picked: &Plane, at: Vec3, name: Option<&str>) -> Result<(Plane, Option<String>)> {
     let n = picked.normal();
-    // By name first: the face (or a piece of it) with that name, facing the same way.
     if let Some(name) = name {
-        // (distance from `at`, plane offset along n, what to say about how it was found)
-        let mut found: Option<(f64, f64, Option<String>)> = None;
-        for b in st.bodies.iter().filter(|b| !b.body.is_mesh()) {
-            let named = crate::naming::faces_with_stem(b, name);
-            if named.is_empty() {
-                continue;
-            }
-            let tol = (b.body.size() * 1e-3).max(1e-3);
-            let Ok(faces) = b.body.faces(tol) else { continue };
-            for f in faces {
-                let hit = named.contains(&f.index);
-                if let (true, Some(fnrm)) = (hit, f.plane_normal)
-                    && fnrm.dot(n) > 1.0 - 1e-6
-                {
-                    let d = f.centroid.dist(at);
-                    if found.as_ref().is_none_or(|x| d < x.0) {
-                        // A name saved before format 14 is found as it was then, without a note.
-                        let note = if crate::naming::legacy_name(name).is_some() {
-                            None
-                        } else if !crate::naming::face_has_name(b, f.index, name) {
-                            Some(format!("face `{name}` was split; using the piece nearest the picked point"))
-                        } else if !crate::naming::face_name_exact(b, f.index) && (f.centroid - at).dot(n).abs() > tol {
-                            // Named from geometry and moved off the picked plane: geometry alone decided.
-                            Some(format!("face `{name}` was found by geometry, not exact history; check it"))
-                        } else {
-                            None
-                        };
-                        found = Some((d, f.centroid.dot(n), note));
-                    }
-                }
-            }
+        let hit = crate::naming::locate_face(st, name, at).ok_or_else(|| DocError::reselect(name))?;
+        let b = st.bodies.get(hit.body).ok_or_else(|| DocError::reselect(name))?;
+        let tol = (b.body.size() * 1e-3).max(1e-3);
+        let face = b.body.faces(tol)?.into_iter().find(|f| f.index == hit.face).ok_or_else(|| DocError::reselect(name))?;
+        if !face.plane_normal.is_some_and(|fnrm| fnrm.dot(n) > 1.0 - 1e-6) {
+            return Err(DocError::reselect(name));
         }
-        if let Some((_, off, note)) = found {
-            return (picked.offset(off - picked.origin.dot(n)), note);
-        }
-        let (pl, w) = face_plane(st, picked, at, None);
-        let note = format!(
-            "the face `{name}` the sketch was on no longer exists; {}",
-            if w.is_some() { "the sketch stays where it was" } else { "using the face at the picked point" }
-        );
-        return (pl, Some(note));
+        let note = if !crate::naming::face_name_exact(b, hit.face) && (face.centroid - at).dot(n).abs() > tol {
+            // Named from geometry and moved off the picked plane: geometry alone decided.
+            Some(format!("face `{name}` was found by geometry, not exact history; check it"))
+        } else {
+            None
+        };
+        return Ok((picked.offset(face.centroid.dot(n) - picked.origin.dot(n)), note));
     }
     let mut best: Option<(f64, f64)> = None; // (distance from `at`, plane offset along n)
     for b in &st.bodies {
@@ -6290,13 +6347,13 @@ fn face_plane(st: &ModelState, picked: &Plane, at: Vec3, name: Option<&str>) -> 
             }
         }
     }
-    match best {
+    Ok(match best {
         Some((_, off)) => {
             let shift = off - picked.origin.dot(n);
             (picked.offset(shift), None)
         }
         None => (*picked, Some("the face the sketch was on is gone; the sketch stays where it was".into())),
-    }
+    })
 }
 
 /// A chamfer, equal or by its second distance or angle.
@@ -6316,7 +6373,10 @@ fn chamfer_with(
     };
     Ok(match side {
         Some(s) => kernel::chamfer_sides(b, edges, d, s, flip)?,
-        None => kernel::chamfer(b, edges, d)?,
+        None => match kernel::chamfer(b, edges, d) {
+            Err(kernel::KernelError::TooLarge(why)) => return Err(with_largest_fit(why, "distance", || kernel::chamfer_max(b, edges, d)).into()),
+            other => other?,
+        },
     })
 }
 
@@ -6388,7 +6448,7 @@ fn eval_feature(
                 (None, plane) if crate::sheet::plane_sheet_face(plane).is_some() => {
                     (doc.resolve_plane_in(vals, &sheet_face_plane_in_frame(doc, st, f.component, plane)?, 0, Some(&fst))?, None)
                 }
-                (None, PlaneRef::Face { plane: picked, at, name, anchor: None }) => face_plane(&fst, picked, *at, name.as_deref()),
+                (None, PlaneRef::Face { plane: picked, at, name, anchor: None }) => face_plane(&fst, picked, *at, name.as_deref())?,
                 (None, other) => (doc.resolve_plane_in(vals, other, 0, Some(&fst))?, None),
             };
             let mut sk = sketch.clone();
@@ -6396,8 +6456,8 @@ fn eval_feature(
             // ones its expressions give come first.
             doc.apply_text_values(vals, &mut sk)?;
             let mut warns = match anchor {
-                Some(anchor) => crate::project::refresh_face_anchor_links(doc, vals, &fst, &plane, &mut sk, anchor),
-                None => crate::project::refresh_links(doc, vals, &fst, &plane, &mut sk),
+                Some(anchor) => crate::project::refresh_face_anchor_links(doc, vals, &fst, &plane, &mut sk, anchor)?,
+                None => crate::project::refresh_links(doc, vals, &fst, &plane, &mut sk)?,
             };
             drop(fst);
             sk.refresh_offsets()?;
@@ -7415,11 +7475,19 @@ pub fn face_point_state<'a>(doc: &Document, st: &'a ModelState, kind: &FeatureKi
 /// The names of the faces a feature's face points lie on (empty where none), found in
 /// [`face_point_state`]. A To / From point is named after the nearest face over every body, the
 /// one `object_height` resolves it to, not the first body with a face within tolerance: a part
-/// resting a hair from the picked face would otherwise take its name.
+/// resting a hair from the picked face would otherwise take its name. Another feature's point is
+/// named on the bodies of the feature's own component first: each component's bodies lie in its
+/// own coordinates there, where a part inserted twice has a face at the same point in each.
 pub fn face_point_names(doc: &Document, st: &ModelState, kind: &FeatureKind, comp: u64) -> Result<Vec<String>> {
     let pts = kind.face_points();
     if !matches!(kind, FeatureKind::Extrude { .. } | FeatureKind::Revolve { .. }) {
-        return Ok(crate::naming::face_names_at(st, &pts));
+        let own = ModelState { bodies: st.bodies.iter().filter(|b| doc.model_body_component(b) == comp).cloned().collect(), ..ModelState::default() };
+        let names = crate::naming::face_names_at(&own, &pts);
+        return Ok(names
+            .into_iter()
+            .zip(&pts)
+            .map(|(name, p)| if name.is_empty() { crate::naming::face_names_at(st, std::slice::from_ref(p)).pop().unwrap_or_default() } else { name })
+            .collect());
     }
     let fst = face_point_state(doc, st, kind, comp)?;
     let normal = match kind {
@@ -8087,7 +8155,7 @@ mod named_face_lookup_tests {
             assert!(b.mesh.get().is_none(), "{} was meshed", b.name);
         }
         let h = hit.unwrap();
-        assert_eq!((h.body, h.split, h.merged), (7, false, false));
+        assert_eq!(h.body, 7);
         assert_eq!(found(hit), found(crate::naming::locate_face(&st, &name, top)));
         // Looking over every body names (and so meshes) them all.
         assert!(st.bodies.iter().all(|b| b.mesh.get().is_some()));
@@ -8108,12 +8176,12 @@ mod named_face_lookup_tests {
             }
         }
         let moved = crate::name_lookup::locate_face_on_body(&st, Some("Part1"), &name, top).unwrap();
-        assert_eq!((moved.body, moved.split), (2, false));
+        assert_eq!(moved.body, 2);
     }
 
     /// A copy of a body has its source's face names. Over every body the name finds the face on
-    /// both, and the one nearest the point is taken as a piece of a split face. A feature on the
-    /// copy takes the copy's face, whole.
+    /// both, and takes the one the point lies on; a point on neither finds no face (it is never
+    /// told apart by the nearest). A feature on the copy takes the copy's face.
     #[test]
     fn the_same_face_on_a_copy_is_not_a_piece_of_the_named_bodys_face() {
         let mut st = parts(2);
@@ -8125,7 +8193,8 @@ mod named_face_lookup_tests {
         let on_copy = crate::name_lookup::locate_face_on_body(&st, Some("Part1"), &name, top).unwrap();
         let everywhere = crate::naming::locate_face(&st, &name, top).unwrap();
         assert_eq!((on_copy.body, on_copy.face, on_copy.point), (everywhere.body, everywhere.face, everywhere.point));
-        assert_eq!((on_copy.split, everywhere.split), (false, true));
         assert_eq!(on_copy.note(&name), None);
+        assert!(crate::naming::locate_face(&st, &name, Vec3::new(15.0, 5.0, 30.0)).is_none());
+        assert_eq!(crate::name_lookup::locate_face_on_body(&st, Some("Part1"), &name, Vec3::new(15.0, 5.0, 30.0)).map(|hit| hit.body), Some(1));
     }
 }

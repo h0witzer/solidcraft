@@ -131,10 +131,10 @@ fn keep_component_looks(doc: &mut Document, owners: &BTreeMap<String, u64>, comp
 /// What the bodies `new` call the face or edge that `old` calls `name`, found where it is.
 fn renamed(old: &ModelState, new: &[&ModelBody], name: &str, near: Vec3) -> Option<String> {
     use solidcraft_doc::{appearance::face_index_at, naming};
-    if let Some((p, _)) = naming::point_on_face(old, name, near) {
+    if let Some(p) = naming::point_on_face(old, name, near) {
         return new.iter().find_map(|b| face_index_at(b, p).and_then(|i| naming::face_names(b).get(i).cloned()));
     }
-    let p = old.bodies.iter().find_map(|b| naming::find_edge(b, name, near).ok())?.0;
+    let p = old.bodies.iter().find_map(|b| naming::find_edge(b, name, near).ok())?;
     new.iter().find(|b| face_index_at(b, p).is_some()).and_then(|b| naming::edge_names_at(b, &[p]).pop())
 }
 
@@ -228,7 +228,7 @@ fn scope(s: &Session, comp: u64, cmd: &str) -> Result<Scope> {
     if source.marker.is_some_and(|m| m < source.features.len()) {
         return Err(bad(cmd, "move the timeline marker to the end first"));
     }
-    if !s.pending_moves.is_empty() {
+    if !s.uncaptured_moves().is_empty() {
         return Err(bad(cmd, "capture or revert the moved components first"));
     }
     let subtree: BTreeSet<u64> = source.components.iter().filter(|c| source.component_within(c.id, comp)).map(|c| c.id).collect();
@@ -376,7 +376,7 @@ fn part_design(s: &Session, sc: &Scope, stem: &str, cmd: &str) -> Result<(Sessio
     if !source.configs.is_empty() {
         notices.push(format!("the configurations stay in this design; {stem} has none"));
     }
-    let part = Session::new(part);
+    let part = Session::opened_validating(part, None, s.validation());
     let failing: Vec<String> = part.model.results.iter().filter_map(|r| r.error.as_ref().map(|e| format!("{} ({e})", r.name))).take(5).collect();
     if !failing.is_empty() {
         return Err(bad(cmd, format!("{name} does not build on its own: {}", failing.join("; "))));

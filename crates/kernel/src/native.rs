@@ -68,13 +68,8 @@ pub fn encode_native_body(body: &Body) -> Result<Vec<u8>> {
         let saved = SavedBody { solid: body.record().clone(), metadata: metadata::encode(body)?, runtime };
         // Structural validation does not invoke another geometric reconstruction.
         validate_topology(&saved)?;
-        let value = serde_json::to_value(saved).map_err(invalid)?;
-        validate_value(&value, 0)?;
-        if value_nodes(&value) > MAX_VALUES {
-            return Err(invalid("value budget"));
-        }
         let mut out = MAGIC.to_vec();
-        binary::write(&value, &mut out, 0)?;
+        binary::write_serialized(&saved, &mut out)?;
         Ok(out)
     })
 }
@@ -161,14 +156,71 @@ pub(crate) fn smlib_record_ordered(
 
 /// Where SMLib's faces and edges of `brep` (imported from `record`) are in the record's order:
 /// `None` where SMLib's export does not number them as the record does.
+///
+/// SMLib's export is in canonical order, and `order` says where SMLib's own face and edge `i`
+/// went in it. Where the canonical record numbers them as `record` does, `order` maps SMLib's
+/// to the record's. Otherwise SMLib may still keep the record's own order (an import lists
+/// SMLib's faces and edges in the record's order, and canonical order can list them otherwise,
+/// a tube's seam edges among them): the export put back in SMLib's order then numbers them as
+/// `record` does, and SMLib's face and edge `i` are the record's `i`.
 fn numbering(record: &solidcraft_geom::brep::Brep, brep: &solidcraft_smlib::Brep) -> Option<solidcraft_smlib::history::Order> {
     match brep.to_native_ordered() {
-        Ok((back, order)) => same_numbering(record, &back).then_some(order),
+        Ok((back, order)) => {
+            if same_numbering(record, &back) {
+                return Some(order);
+            }
+            let in_smlib_order = in_smlib_order(&back, &order)?;
+            same_numbering(record, &in_smlib_order).then(solidcraft_smlib::history::Order::default)
+        }
         Err(e) => {
             log::debug!(target: "smlib", "no order for an operand: {e}");
             None
         }
     }
+}
+
+/// The canonical record `back` with its faces and edges in SMLib's own order (`order`: where
+/// SMLib's face and edge `i` are in `back`), each loop naming its edges by SMLib's numbers.
+/// `None` where `order` is not a renumbering of `back`'s faces and edges (an edge split into
+/// pieces where solids touch along it is more than one record edge).
+fn in_smlib_order(back: &solidcraft_geom::brep::Brep, order: &solidcraft_smlib::history::Order) -> Option<solidcraft_geom::brep::Brep> {
+    use solidcraft_geom::brep::Loop;
+    let permutation = |to: &[usize], n: usize| -> Option<Vec<usize>> {
+        if to.is_empty() {
+            return Some((0..n).collect());
+        }
+        let mut from = vec![usize::MAX; n];
+        for (i, &k) in to.iter().enumerate() {
+            let slot = from.get_mut(k)?;
+            if *slot != usize::MAX {
+                return None;
+            }
+            *slot = i;
+        }
+        (to.len() == n).then_some(from)
+    };
+    if !order.pieces.is_empty() {
+        return None;
+    }
+    // `faces_from[k]`: SMLib's number of `back`'s face k; likewise for edges.
+    let faces_from = permutation(&order.faces, back.faces.len())?;
+    let edges_from = permutation(&order.edges, back.edges.len())?;
+    let mut out = back.clone();
+    for (k, face) in back.faces.iter().enumerate() {
+        let mut face = face.clone();
+        for l in &mut face.loops {
+            if let Loop::Edges { edges } = l {
+                for e in edges.iter_mut() {
+                    e.edge = u32::try_from(*edges_from.get(usize::try_from(e.edge).ok()?)?).ok()?;
+                }
+            }
+        }
+        *out.faces.get_mut(*faces_from.get(k)?)? = face;
+    }
+    for (k, edge) in back.edges.iter().enumerate() {
+        *out.edges.get_mut(*edges_from.get(k)?)? = edge.clone();
+    }
+    Some(out)
 }
 
 /// Whether two records of one body number its faces, edges and vertices alike: the same loops of
@@ -275,6 +327,8 @@ fn validate_value(v: &Value, depth: usize) -> Result<()> {
     Ok(())
 }
 
+/// How many values `v` is (a collection and each of its items): [`MAX_VALUES`] at most.
+#[cfg(test)]
 fn value_nodes(v: &Value) -> usize {
     match v {
         Value::Array(a) => a.iter().fold(1usize, |n, v| n.saturating_add(value_nodes(v))),
@@ -335,6 +389,63 @@ mod tests {
             if !body.is_surface() {
                 equal(&body, &restored);
             }
+        }
+    }
+
+    /// The encoding as it was made before the encoder wrote as it serialized: the whole record as
+    /// a JSON value, checked, then written.
+    fn encoded_through_a_value(body: &Body) -> Result<Vec<u8>> {
+        let runtime = Runtime { size: body.size, coarse_missing: None };
+        let saved = SavedBody { solid: body.record().clone(), metadata: metadata::encode(body)?, runtime };
+        validate_topology(&saved)?;
+        let value = serde_json::to_value(saved).map_err(invalid)?;
+        validate_value(&value, 0)?;
+        if value_nodes(&value) > MAX_VALUES {
+            return Err(invalid("value budget"));
+        }
+        let mut out = MAGIC.to_vec();
+        binary::write(&value, &mut out, 0)?;
+        Ok(out)
+    }
+
+    /// Written as it serializes, a body's encoding is the bytes its JSON value gave, byte for
+    /// byte: plain, blended, cut (history), extruded (face sources), coloured, painted, split
+    /// along lines, round (spline forms), open, and placed far off.
+    #[test]
+    fn the_encoding_is_the_bytes_of_the_record_as_a_json_value() {
+        use solidcraft_geom::{Loop2, Plane, Region2, Vec2};
+        let cube = crate::box_solid(Vec3::ZERO, Vec3::new(40., 30., 10.)).unwrap();
+        let rounded = crate::fillet(&cube, &[Vec3::new(20., 0., 10.)], 2.).unwrap();
+        let bore = crate::cylinder(Vec3::new(10., 10., -1.), Vec3::Z, 3., 12.).unwrap();
+        let cut = crate::boolean(&rounded, &bore, crate::BoolOp::Cut).unwrap().unwrap();
+        let region = Region2 {
+            outer: Loop2::polygon(&[Vec2::ZERO, Vec2::new(20., 0.), Vec2::new(20., 20.), Vec2::new(0., 20.)]),
+            holes: vec![Loop2::circle(Vec2::new(10., 10.), 4.)],
+        };
+        let extruded = crate::extrude(&Plane::XY, &[region], 0., 5.).unwrap().remove(0);
+        assert!(extruded.face_sources().is_some_and(|s| s.iter().any(Option::is_some)), "an extrusion carries its face sources");
+        assert!(cut.history().is_some(), "a cut carries its history");
+        let paint = crate::Paint { opacity: 0.5, faces: vec![crate::FacePaint { face: 1, color: [0.9, 0.1, 0.2], opacity: 0.75 }] };
+        let painted = cube.clone().with_color(Some([0.1, 0.5, 0.9])).with_paint(Some(paint));
+        let top = (0..cube.face_count()).find(|f| cube.planar_face(*f).is_some_and(|p| p.normal().z > 0.5 && p.origin.z > 9.)).unwrap();
+        let split =
+            crate::split_faces(&cube, &[top], &crate::SplitTool::Plane(Plane::from_normal(Vec3::new(20., 0., 0.), Vec3::X).unwrap())).unwrap();
+        let surface = crate::copy_faces(&cube, &[Vec3::new(20., 15., 10.)]).unwrap();
+        let far = crate::transform(&cut, Vec3::new(1.0e6, -2.5e5, 3.0e4), Vec3::ZERO, Vec3::Z, 0.7).unwrap();
+        let bodies = [
+            cube,
+            rounded,
+            cut,
+            extruded,
+            painted,
+            split,
+            surface,
+            crate::sphere(Vec3::ZERO, 12.).unwrap(),
+            crate::torus(Vec3::ZERO, 20., 4.).unwrap(),
+            far,
+        ];
+        for (i, body) in bodies.iter().enumerate() {
+            assert_eq!(encode_native_body(body).unwrap(), encoded_through_a_value(body).unwrap(), "body {i}");
         }
     }
 
@@ -414,6 +525,23 @@ mod tests {
         huge.push(7);
         huge.extend(u32::MAX.to_le_bytes());
         assert!(decode_native_body(&huge).is_err());
+    }
+
+    #[test]
+    fn a_kernel_body_past_the_file_item_budget_is_taken_and_a_file_of_it_refused() {
+        // The box with its first edge a polyline of the file item budget's worth of points: a
+        // record the kernel's own operations may make (#3992), and more than a file may carry.
+        let body = crate::box_solid(Vec3::ZERO, Vec3::new(10., 20., 30.)).unwrap();
+        let mut record = body.record().clone();
+        let [t0, t1] = record.edges[0].interval;
+        let n = solidcraft_geom::brep::MAX_ITEMS;
+        let points = (0..n).map(|i| [i as f64 * 1e-6, 0., 0.]).collect();
+        record.edges[0].curve = solidcraft_geom::brep::Curve::Polyline { points };
+        assert!(t0 >= 0.0 && t1 <= (n - 1) as f64);
+        Body::from_record(record.clone()).unwrap();
+        let saved = SavedBody { solid: record, metadata: metadata::encode(&body).unwrap(), runtime: Runtime { size: 0.0, coarse_missing: None } };
+        let refused = validate_topology(&saved).err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(refused.contains("item budget"), "{refused}");
     }
 
     #[test]

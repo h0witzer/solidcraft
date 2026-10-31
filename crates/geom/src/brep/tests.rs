@@ -742,19 +742,42 @@ fn a_reversed_face_is_walked_backwards() {
     b.validate().unwrap();
 }
 
+/// A valid record of more than [`MAX_ITEMS`] items: the sheet with its first edge a polyline of
+/// that many points (#3992).
+fn over_the_item_budget() -> Brep {
+    let mut b = sheet();
+    b.edges[0].curve = Curve::Polyline { points: (0..MAX_ITEMS).map(|i| [i as f64 * 1e-6, 0., 0.]).collect() };
+    b
+}
+
+#[test]
+fn the_item_budget_bounds_input_records_and_not_the_kernels_own() {
+    // A record from a file or the control channel is refused past the budget; the same record
+    // built by the kernel in memory (a boolean's result) is its own size and is taken (#3992).
+    let big = over_the_item_budget();
+    assert_eq!(big.validate().map_err(|e| e.0), Err("item budget"));
+    big.validate_built().unwrap();
+    // Every other check still holds for a built record.
+    let mut collapsed = big;
+    if let Curve::Polyline { points } = &mut collapsed.edges[0].curve {
+        points[1] = points[0];
+    }
+    assert_eq!(collapsed.validate_built().map_err(|e| e.0), Err("collapsed polyline segment"));
+}
+
 #[test]
 fn spline_domains_weights_and_nesting_are_bounded() {
-    let mut budget = Budget(0);
+    let mut budget = Budget::input();
     assert!(knots(&[0., 0., 1., 1.], 2, &mut budget).is_ok());
     for bad in [vec![0., 0., 0., 0.], vec![0., 1., 0., 1.], vec![0., 0., f64::INFINITY, 1.]] {
-        assert!(knots(&bad, 2, &mut Budget(0)).is_err());
+        assert!(knots(&bad, 2, &mut Budget::input()).is_err());
     }
     let c = Curve::RationalSpline { knots: vec![0., 0., 1., 1.], homogeneous: vec![[0., 0., 0., 0.], [1., 0., 0., 1.]] };
-    assert!(curve(&c, 0, &mut Budget(0)).is_err());
+    assert!(curve(&c, 0, &mut Budget::input()).is_err());
     let p = Surface::Plane { origin: [0.; 3], u_axis: [1., 0., 0.], v_axis: [2., 0., 0.] };
-    assert!(surface(&p, 0, &mut Budget(0)).is_err());
-    assert!(curve(&Curve::Line { start: [0.; 3], end: [1.; 3] }, MAX_DEPTH + 1, &mut Budget(0)).is_err());
-    assert!(Budget(MAX_ITEMS).add(1).is_err());
+    assert!(surface(&p, 0, &mut Budget::input()).is_err());
+    assert!(curve(&Curve::Line { start: [0.; 3], end: [1.; 3] }, MAX_DEPTH + 1, &mut Budget::input()).is_err());
+    assert!(Budget { used: MAX_ITEMS, limit: MAX_ITEMS }.add(1).is_err());
     assert_eq!(curve_natural(&Curve::Spline { knots: vec![0., 0., 0., 1., 2., 2., 2.], points: vec![[0.; 3]; 4] }), Natural::Range(0., 2.));
 }
 
@@ -763,7 +786,7 @@ fn exact_procedural_records_are_validated_and_round_trip() {
     let plane = |z: f64| Box::new(Surface::Plane { origin: [0., 0., z], u_axis: [1., 0., 0.], v_axis: [0., 1., 0.] });
     let leader = Box::new(Curve::Polyline { points: vec![[0.; 3], [0.; 3], [1., 0., 0.]] });
     let c = Curve::SurfaceIntersection { surfaces: [plane(0.), plane(1.)], leader: leader.clone(), tolerance: 1e-6 };
-    curve(&c, 0, &mut Budget(0)).unwrap();
+    curve(&c, 0, &mut Budget::input()).unwrap();
     assert_eq!(curve_natural(&c), Natural::Range(0., 2.));
     assert_eq!(serde_json::from_str::<Curve>(&serde_json::to_string(&c).unwrap()).unwrap(), c);
     let line = Box::new(Curve::Line { start: [0.; 3], end: [1.; 3] });
@@ -772,17 +795,17 @@ fn exact_procedural_records_are_validated_and_round_trip() {
         Curve::SurfaceIntersection { surfaces: [plane(0.), plane(1.)], leader: leader.clone(), tolerance: f64::NAN },
         Curve::SurfaceIntersection { surfaces: [plane(f64::INFINITY), plane(1.)], leader, tolerance: 1e-6 },
     ] {
-        assert!(curve(&bad, 0, &mut Budget(0)).is_err());
+        assert!(curve(&bad, 0, &mut Budget::input()).is_err());
     }
     let identity = [[1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]];
     let s = Surface::PlacedRevolution { profile: line.clone(), origin: [0.; 3], axis: [0., 0., 1.], matrix: identity, forward: false };
-    surface(&s, 0, &mut Budget(0)).unwrap();
+    surface(&s, 0, &mut Budget::input()).unwrap();
     assert_eq!(surface_natural(&s), [Natural::Periodic, UNBOUNDED]);
     assert_eq!(serde_json::from_str::<Surface>(&serde_json::to_string(&s).unwrap()).unwrap(), s);
     let mut flat = identity;
     flat[2] = [0.; 4];
     let bad = Surface::PlacedRevolution { profile: line, origin: [0.; 3], axis: [0., 0., 1.], matrix: flat, forward: true };
-    assert!(surface(&bad, 0, &mut Budget(0)).is_err());
+    assert!(surface(&bad, 0, &mut Budget::input()).is_err());
 }
 
 #[test]
@@ -800,16 +823,16 @@ fn analytic_records_are_unbounded_with_independent_frames() {
     let narrowing = Surface::Cone { frame: f.clone(), radius_at_origin: 2., half_angle: -0.2 };
     assert_eq!(surface_natural(&narrowing)[1], Natural::Range(f64::NEG_INFINITY, apex));
     for flat in [0., 1e-13, -1e-13, std::f64::consts::FRAC_PI_2, -std::f64::consts::FRAC_PI_2] {
-        assert!(surface(&Surface::Cone { frame: f.clone(), radius_at_origin: 2., half_angle: flat }, 0, &mut Budget(0)).is_err());
+        assert!(surface(&Surface::Cone { frame: f.clone(), radius_at_origin: 2., half_angle: flat }, 0, &mut Budget::input()).is_err());
     }
     for s in surfaces {
-        surface(&s, 0, &mut Budget(0)).unwrap();
+        surface(&s, 0, &mut Budget::input()).unwrap();
         let encoded = serde_json::to_string(&s).unwrap();
         assert_eq!(serde_json::from_str::<Surface>(&encoded).unwrap(), s);
         assert!(!encoded.contains("\"angle\"") && !encoded.contains("height") && !encoded.contains("longitude"));
     }
     for c in [Curve::Circle { frame: f.clone(), radius: 2. }, Curve::Ellipse { frame: f.clone(), radii: [2., 3.] }] {
-        curve(&c, 0, &mut Budget(0)).unwrap();
+        curve(&c, 0, &mut Budget::input()).unwrap();
         assert_eq!(serde_json::from_str::<Curve>(&serde_json::to_string(&c).unwrap()).unwrap(), c);
         assert_eq!(curve_natural(&c), Natural::Periodic);
         // A periodic edge may start anywhere and run up to one turn.
@@ -817,10 +840,10 @@ fn analytic_records_are_unbounded_with_independent_frames() {
     }
     let mut bad = f;
     bad.y_axis = bad.x_axis;
-    assert!(frame(&bad, &mut Budget(0)).is_err());
+    assert!(frame(&bad, &mut Budget::input()).is_err());
     assert!(interval(&[2., 1.], UNBOUNDED).is_err());
     assert!(radius(f64::NAN).is_err());
-    assert!(surface(&Surface::Torus { frame: a_frame(), major_radius: 1., minor_radius: 2., tube_start: 0.0 }, 0, &mut Budget(0)).is_err());
+    assert!(surface(&Surface::Torus { frame: a_frame(), major_radius: 1., minor_radius: 2., tube_start: 0.0 }, 0, &mut Budget::input()).is_err());
 }
 
 /// A cylinder face round its axis with a hole beside its seam: the seam at 350 degrees (so its
@@ -929,6 +952,55 @@ fn analytic_partials_are_the_derivatives_of_the_order_below() {
                 assert!(close((vp[i][j] - vm[i][j]) * (0.5 / h), d[i][j + 1], 1e-6), "{s:?} d/dv ({i},{j})");
             }
         }
+    }
+}
+
+/// A curve's curvature vector, exactly, on every kind of record: a circle's is 1/R towards its
+/// centre (as a conic and as SMLib's rational quadratic B-spline of it); an ellipse's at its
+/// vertices is a/b² and b/a²; a line is straight; and the circle where a plane z = 3 cuts a
+/// sphere of radius 5 about the origin, traced from a rough leader, has radius 4.
+#[test]
+fn curve_jets_are_exact_on_every_record() {
+    use crate::Vec3;
+    let near = |a: Vec3, b: Vec3| a.dist(b) <= 1e-9 * (1.0 + b.len());
+    let jet = |c: &Curve, t: f64| eval::CurveEval::new(c).unwrap().jet(t).unwrap();
+    let flat = Frame { origin: [1., 2., 3.], x_axis: [0.6, 0.8, 0.], y_axis: [-0.8, 0.6, 0.] };
+    let o = Vec3::new(1., 2., 3.);
+    for t in [0.0, 0.7, 2.5, 5.9] {
+        let j = jet(&Curve::Circle { frame: flat.clone(), radius: 4. }, t);
+        assert!(near(j.curvature, (o - j.point) * (1.0 / 16.0)), "{j:?}");
+        assert!(j.tangent.dot(j.curvature).abs() < 1e-12);
+    }
+    // A quarter circle of radius 2 as a rational quadratic.
+    let w = std::f64::consts::FRAC_1_SQRT_2;
+    let quarter =
+        Curve::RationalSpline { knots: vec![0., 0., 0., 1., 1., 1.], homogeneous: vec![[2., 0., 0., 1.], [2. * w, 2. * w, 0., w], [0., 2., 0., 1.]] };
+    for t in [0.0, 0.3, 0.5, 1.0] {
+        let j = jet(&quarter, t);
+        assert!(near(j.curvature, j.point * -0.25), "{t}: {j:?}");
+    }
+    let (a, b) = (10.0, 4.0);
+    let ellipse = Curve::Ellipse { frame: flat.clone(), radii: [a, b] };
+    assert!((jet(&ellipse, 0.0).curvature.len() - a / (b * b)).abs() < 1e-12);
+    assert!((jet(&ellipse, FRAC_PI_2).curvature.len() - b / (a * a)).abs() < 1e-12);
+    assert_eq!(jet(&Curve::Line { start: [0.; 3], end: [1., 2., 3.] }, 0.4).curvature, Vec3::ZERO);
+    // The plane z = 3 and a sphere of radius 5: a circle of radius 4 about (0, 0, 3).
+    let z = Frame { origin: [0.; 3], x_axis: [1., 0., 0.], y_axis: [0., 1., 0.] };
+    let leader = Curve::Polyline { points: (0..=12).map(|k| (k as f64 * TAU / 12.0).sin_cos()).map(|(s, c)| [4.1 * c, 4.1 * s, 3.2]).collect() };
+    let cut = Curve::SurfaceIntersection {
+        surfaces: [
+            Box::new(Surface::Plane { origin: [0., 0., 3.], u_axis: [1., 0., 0.], v_axis: [0., 1., 0.] }),
+            Box::new(Surface::Sphere { frame: z, radius: 5. }),
+        ],
+        leader: Box::new(leader),
+        tolerance: 1e-6,
+    };
+    for t in [0.0, 1.5, 4.25, 11.0] {
+        let j = jet(&cut, t);
+        let centre = Vec3::new(0., 0., 3.);
+        assert!((j.point.dist(centre) - 4.0).abs() < 1e-9 && (j.point.z - 3.0).abs() < 1e-12, "{j:?}");
+        assert!(near(j.curvature, (centre - j.point) * (1.0 / 16.0)), "{t}: {j:?}");
+        assert!(j.tangent.dot(j.point - centre).abs() < 1e-9);
     }
 }
 

@@ -233,7 +233,7 @@ fn feature_mirror_picks_clear_preview_and_replay_the_source_cut() {
     h.step(&json!({"until":{"dialog":null,"features":4}})).unwrap();
     let state = h.app.session.world_state().unwrap();
     assert_eq!(state.bodies.len(), 1, "a mirrored hole cuts the plate instead of copying it");
-    assert!(!state.bodies[0].body.contains(Vec3::new(70.0, 25.0, 2.5)));
+    assert_eq!(state.bodies[0].body.classify_point(Vec3::new(70.0, 25.0, 2.5)).unwrap(), solidcraft_engine::kernel::PointClass::Outside);
     let mirror = h.app.session.doc.features.last().unwrap().id;
     let reopened = crate::dialogs::for_feature(&h.app, mirror, None).unwrap();
     assert_eq!(reopened.inputs[0].accept, crate::selection::FEATURES);
@@ -255,7 +255,7 @@ fn a_face_extrude_keeps_the_picked_body_when_faces_coincide() {
     let after = app.session.model.state();
     assert_eq!(after.bodies.len(), 2);
     assert!(after.body("Other").unwrap().body.same(&before.body("Other").unwrap().body));
-    assert!(after.body("Wall").unwrap().body.contains(Vec3::new(49.0, 15.0, 10.0)));
+    assert_eq!(after.body("Wall").unwrap().body.classify_point(Vec3::new(49.0, 15.0, 10.0)).unwrap(), solidcraft_engine::kernel::PointClass::Inside);
 }
 
 #[test]
@@ -799,8 +799,8 @@ fn press_pull_then_curved_face_offsets_it() {
     crate::viewport::dialog_pick(&mut app, &hit, Sel::Face { body: "Body1".into(), index: wall, point: p });
     let d = app.dialog.clone().unwrap();
     assert!(matches!(d.kind, Kind::OffsetFaces { .. }));
-    // Both halves of the hole's wall.
-    assert_eq!(d.inputs[0].items.len(), 2);
+    // The hole's wall: one face, closed along its seam.
+    assert_eq!(d.inputs[0].items.len(), 1);
 
     let mut app = app_with(script);
     app.start("solid.press_pull");

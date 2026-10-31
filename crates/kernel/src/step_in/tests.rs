@@ -490,6 +490,17 @@ fn offset_surface_cube_import_is_closed_and_editable() {
     assert!(rel(measure(&result).unwrap().volume, 1000.0 - 40.0 * std::f64::consts::PI) < 1e-3);
 }
 
+/// A solid whose B-rep SMLib refuses, its faces too (here every SMLib call: the build has no
+/// SMLib), is refused with the kernel's reason, naming the solid. It once came in as a mesh of
+/// its faces, which the planner could still triangulate.
+#[cfg(not(feature = "smlib"))]
+#[test]
+fn a_solid_smlib_refuses_with_its_faces_is_refused_not_meshed() {
+    let text = format!("{HEAD}{}#60=SHAPE_REPRESENTATION('',(#101),$);\n{TAIL}", cube_entities());
+    let why = step_import(&text).map(|imp| imp.warnings).unwrap_err().to_string();
+    assert!(why.contains("solid 'Cube': not imported: ") && why.contains("SMLib"), "{why}");
+}
+
 /// A hand-written unit cube brep (`#100`…) in a representation with the given unit and items.
 fn cube_entities() -> String {
     let mut s = String::new();
@@ -1127,7 +1138,8 @@ fn surface_of_revolution_sense_follows_iso() {
 
 /// A tube revolved about a line it touches (a horn torus, as a tight sweep makes) is written as
 /// one rational B-spline face whose loop passes the pole twice, with no zero-length edge there:
-/// no TOROIDAL_SURFACE (it would be degenerate) and no surface of revolution.
+/// no TOROIDAL_SURFACE (it would be degenerate) and no surface of revolution. (Its volume, built
+/// and read back, is the rig's import/cov-step-horn-torus-quarter-round-trip.)
 #[test]
 fn horn_torus_written_as_one_spline_face() {
     let prof = Region2 { outer: Loop2::circle(Vec2::new(5.0, 0.0), 5.0), holes: vec![] };
@@ -1135,9 +1147,6 @@ fn horn_torus_written_as_one_spline_face() {
     let text = step_export(&[&b], "t").unwrap();
     assert!(!text.contains("TOROIDAL_SURFACE") && !text.contains("SURFACE_OF_REVOLUTION"));
     assert_eq!(text.matches("ADVANCED_FACE(").count(), 3, "{text}");
-    let imp = round_trip(&b);
-    let v = std::f64::consts::PI * 25.0 * std::f64::consts::TAU * 5.0 / 4.0;
-    assert!(rel(measure(&imp.bodies[0].body).unwrap().volume, v) < 1e-3);
 }
 
 /// How a torus-capped cylinder ([`torus_capped_cylinder`]) ends.
@@ -1388,10 +1397,10 @@ fn glued_halves_export_as_whole_faces() {
     assert_eq!(imp.bodies[0].file_faces, 8);
 }
 
-/// A slot plate with a round on its top outline (issue #612): the extruded arc ends and the
-/// rounds along the straight edges are lone B-spline sheets, written as cylinders bounded by
-/// their faces. The rounds' sheets reach far past their edges, and a reader bounding the part by
-/// its surfaces saw a 60 mm part as 130 mm long.
+/// A slot plate with a round on its top outline (issue #612): every surface the file writes is
+/// bounded by its face, whatever kind it is written as. The rounds' sheets once reached far past
+/// their edges, and a reader bounding the part by its surfaces saw a 60 mm part as 130 mm long.
+/// Read back, the part has its exact volume.
 #[test]
 fn rounded_slot_exports_cylinders() {
     use solidcraft_geom::Seg2;
@@ -1408,10 +1417,7 @@ fn rounded_slot_exports_cylinders() {
     let edges = [Vec3::new(30.0, -10.0, 4.0), Vec3::new(30.0, 10.0, 4.0), Vec3::new(0.0, 0.0, 4.0), Vec3::new(60.0, 0.0, 4.0)];
     let b = fillet(&plate, &edges, 1.0).unwrap();
     let text = step_export(&[&b], "t").unwrap();
-    assert!(!text.contains("B_SPLINE_SURFACE"), "{text}");
-    assert_eq!(text.matches("CYLINDRICAL_SURFACE(").count(), 4);
-    assert_eq!(text.matches("TOROIDAL_SURFACE(").count(), 2);
-    // No point of the file (surface placements included) lies outside the part.
+    // No point of the file (control points and surface placements included) lies outside the part.
     let imp = round_trip(&b);
     for line in text.lines().filter(|l| l.contains("CARTESIAN_POINT")) {
         let Some(xyz) = line.split("((").nth(1).and_then(|r| r.split("))").next()) else { continue };
@@ -1427,10 +1433,9 @@ fn rounded_slot_exports_cylinders() {
 }
 
 /// A slot plate rounded along its top and bottom outlines, with a ramp cut across one end
-/// (issue #1198). The other end's half turn is still written as a cylinder (its corners alone
-/// point both ways: the seam comes from points along its edges). The faces the ramp crosses keep
-/// their B-spline sheets, cut down to the faces: the rounds' sheets reached 35 mm past both ends,
-/// and readers bounding the part by its surfaces saw a 60 mm part as 130 mm long.
+/// (issue #1198): every surface the file writes is cut down to its face, so nothing reaches past
+/// the part's ends (the rounds' sheets once reached 35 mm past both, and readers bounding the part
+/// by its surfaces saw a 60 mm part as 130 mm long), and the part reads back whole.
 #[test]
 fn ramp_cut_slot_exports_sheets_bounded_by_their_faces() {
     use solidcraft_geom::Seg2;
@@ -1453,10 +1458,6 @@ fn ramp_cut_slot_exports_sheets_bounded_by_their_faces() {
     let tool = extrude(&side, &[ramp], -12.0, 0.0).unwrap().pop().unwrap();
     let b = boolean(&rounded, &tool, BoolOp::Cut).unwrap().unwrap();
     let text = step_export(&[&b], "t").unwrap();
-    // Both ends' walls and the three rounds along the sides it leaves whole; the two the ramp
-    // crosses stay sheets.
-    assert_eq!(text.matches("CYLINDRICAL_SURFACE(").count(), 5, "{text}");
-    assert_eq!(text.matches("B_SPLINE_SURFACE(").count(), 2, "{text}");
     // No point of the file (control points and placements included) lies past the part's ends.
     for line in text.lines().filter(|l| l.contains("CARTESIAN_POINT")) {
         let Some(xyz) = line.split("((").nth(1).and_then(|r| r.split("))").next()) else { continue };
@@ -1758,7 +1759,9 @@ fn periodic_knot_tube(first: u64, x: f64, r: f64, h: f64) -> (String, u64) {
 /// Two such tubes far apart in one body: the body's size sets a chord tolerance coarse beside
 /// the tubes, and meshing a face at it divided the surface's whole parameter box, whose
 /// corners lay outside the domain. The division never converged there (#1374's recursion),
-/// and the import grew by gigabytes without end.
+/// and the import grew by gigabytes without end. The sheet comes in as SMLib's B-rep of its two
+/// faces, each the file's face (SMLib lists the seam edges in another canonical order than the
+/// file, and keeps the file's own order), each a cylinder's side.
 #[test]
 fn periodic_knot_tube_faces_import_and_mesh() {
     let t0 = std::time::Instant::now();
@@ -1770,9 +1773,16 @@ fn periodic_knot_tube_faces_import_and_mesh() {
     );
     let imp = step_import(&text).unwrap();
     assert_eq!(imp.bodies.len(), 1, "{:?}", imp.warnings);
-    let m = measure(&imp.bodies[0].body).unwrap();
+    let tubes = &imp.bodies[0];
+    assert!(tubes.refused.is_none() && !tubes.body.is_mesh() && tubes.body.is_surface(), "{:?} {:?}", tubes.refused, imp.warnings);
+    assert_eq!(tubes.face_origin, vec![fa, fb], "{:?}", imp.warnings);
+    // Each face is the file's quadratic circle of radius r (corner weights √2/2 to 12 digits,
+    // a radius off by under 1e-12 of r) moved straight along its axis by h: a cylinder's side,
+    // 2π r h. SMLib integrates to 1e-8.
+    let m = measure(&tubes.body).unwrap();
     let area = 2.0 * std::f64::consts::TAU * r * h;
-    assert!(rel(m.area, area) < 0.02, "area {} (expected {area})", m.area);
+    assert!(rel(m.area, area) < 1e-6, "area {} (expected {area})", m.area);
+    assert_eq!(tubes.body.unmeshed_faces(), 0);
     assert!(t0.elapsed().as_secs_f64() < 60.0, "took {:?}", t0.elapsed());
 }
 

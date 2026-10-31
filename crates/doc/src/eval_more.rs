@@ -44,17 +44,8 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                 {
                     let mut scoped = ModelState::default();
                     scoped.bodies.push(mb.clone());
-                    let (picked, split) = crate::naming::point_on_face(&scoped, name, at)
-                        .ok_or_else(|| DocError::Invalid("selected cylinder face no longer exists".into()))?;
-                    if split {
-                        return Err(DocError::Invalid("selected cylinder face was split".into()));
-                    }
-                    let (index, _, _) = crate::project::nearest_face(&mb.mesh(), picked)
-                        .ok_or_else(|| DocError::Invalid("selected cylinder face cannot be resolved".into()))?;
-                    if !crate::naming::face_has_name(&mb, index as usize, name) {
-                        return Err(DocError::Invalid("selected cylinder face is ambiguous".into()));
-                    }
-                    at = kernel::cylinder_emboss_anchor(&mb.body, index as usize, picked)?;
+                    let hit = crate::name_lookup::locate_face(&scoped, name, at).ok_or_else(|| DocError::reselect(name.as_str()))?;
+                    at = kernel::cylinder_emboss_anchor(&mb.body, hit.face, hit.point)?;
                 }
                 let result = kernel::emboss_cylinder_at(&mb.body, at, &plane, &regions, if *deboss { -d } else { d })?;
                 if let Some(slot) = st.bodies.get_mut(i) {
@@ -412,25 +403,24 @@ fn point_on_polyline(pts: &[Vec2], d: f64) -> Vec2 {
 
 /// The points of a feature's picked edges: by name first; a name that is gone keeps its point,
 /// with a warning.
-fn edge_picks(f: &Feature, mb: &ModelBody, picks: &[crate::Position], warning: &mut Option<String>) -> Vec<Vec3> {
+fn edge_picks(f: &Feature, mb: &ModelBody, picks: &[crate::Position], warning: &mut Option<String>) -> Result<Vec<Vec3>> {
     let mut out = Vec::with_capacity(picks.len());
     for (i, p) in picks.iter().enumerate() {
+        // A name that no longer finds its edge fails the feature, asking for the edge to be
+        // picked again.
         let name = f.edge_names.get(i).filter(|n| !n.is_empty());
-        out.push(match name.map(|n| (n, crate::naming::locate_edge(mb, n, p.0))) {
-            Some((n, Ok(hit))) => {
+        out.push(match name {
+            Some(n) => {
+                let hit = crate::naming::locate_edge(mb, n, p.0).map_err(|_| DocError::reselect(n.as_str()))?;
                 if let Some(note) = hit.note(n) {
                     append_warning(warning, note);
                 }
                 hit.point
             }
-            Some((n, Err(_))) => {
-                append_warning(warning, format!("edge `{n}` no longer exists; using the edge at the picked point"));
-                p.0
-            }
             None => p.0,
         });
     }
-    out
+    Ok(out)
 }
 
 /// Rebuild a sheet body's solid from its model.
@@ -485,7 +475,7 @@ fn convert_to_sheet(
             relief_depth: rv.relief_depth,
         })
     };
-    let picks = edge_picks(f, &mb, bends, warning);
+    let picks = edge_picks(f, &mb, bends, warning)?;
     let placement = doc.component_transform(doc.model_body_component(&mb));
     let to_world = doc.model_body_offset(&mb).map(|offset| crate::mat_mul(&placement, offset)).unwrap_or(placement);
     let conversion = crate::convert_surfaces(&mb, &values, &picks, faces, direction == "outside", &to_world)?;
@@ -961,9 +951,21 @@ pub(super) fn sheet_eval(
     }
 }
 
-/// Current unmodified extrusion caps, including placement, certify the tool's depth.
-/// Tessellation can drift in thickness at distant coordinates and cannot certify a slab.
+/// The tool's depth along the sketch normal (from `source`), the roundoff of that depth and the
+/// tool's current footprint where it differs from the profile: from its current unmodified
+/// extrusion caps, including placement, else from its exact record proving it a uniform prism
+/// along the normal (a To Object tool trimmed by the body it runs to, whose boolean leaves no
+/// extrusion faces: its section is its footprint). Tessellation can drift in thickness at
+/// distant coordinates and cannot certify a slab.
 fn sheet_tool_span(body: &Body, source: &Plane) -> Option<(f64, f64, f64, Option<(Plane, Region2)>)> {
+    extrusion_tool_span(body, source).or_else(|| {
+        let prism = kernel::certified_prism_section(body, source).ok().flatten()?;
+        (prism.tolerance <= 1e-7).then_some((prism.lo, prism.hi, prism.tolerance, Some((*source, prism.region))))
+    })
+}
+
+/// [`sheet_tool_span`] from the tool's extrusion caps.
+fn extrusion_tool_span(body: &Body, source: &Plane) -> Option<(f64, f64, f64, Option<(Plane, Region2)>)> {
     use kernel::FaceSource;
     #[derive(PartialEq)]
     enum Signature<'a> {
@@ -1540,6 +1542,13 @@ fn sheet_prism_cut(
             }
             let (a, b) = nominal_depth.unwrap_or((a, b));
             let (z0, z1) = (a.min(b).max(0.0), a.max(b).min(sh.t));
+            // A depth within a few units in the last place of the numbers it is worked out from
+            // is on the face: a flange panel's frame, turned by the cosine and sine of its angle,
+            // puts its faces an ulp (2e-16 mm) off the tool's cap they meet. A thinner layer is
+            // the tool's own and stays (refused below when under the resolution).
+            let ulps =
+                4.0 * f64::EPSILON * (apply_point(&w, Vec3::ZERO).len() + plane.origin.len() + span.0.abs() + span.1.abs() + sh.t) / sign.abs();
+            let (z0, z1) = (if z0 <= ulps { 0.0 } else { z0 }, if sh.t - z1 <= ulps { sh.t } else { z1 });
             // Sub-resolution layers must not be silently erased by endpoint snapping.
             let depth_resolved = ![z0, sh.t - z1, z1 - z0].into_iter().any(|d| d > 0.0 && d < 1e-6);
             labels.extend(letters.iter().filter_map(|r| sh.region_to_flat(pi, plane, r).ok()));

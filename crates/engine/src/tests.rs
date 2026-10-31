@@ -89,6 +89,45 @@ fn fillet_as_wide_as_a_face_rounds_it_off() {
     assert!(s.execute("solid.fillet", &json!({"edges": [[21, 0, 10]], "radius": 3.5})).is_err());
 }
 
+/// The owner's ruling of 2026-10-30: two edges of a 20 mm box rounded r2 in one fillet (they
+/// meet in a mitre at the corner (20, 0, 20), the upright edge there sharp), then the upright edge
+/// r3 in a second fillet, whose tangent chain takes the mitre's seam with it. The corner is one
+/// smooth patch, the body rounding all three at once makes (kernel `fillet_radii` of the box with
+/// each edge's radius: 10 faces, 7928.743041 mm³); the r2 rounds keep their names, and the r3
+/// round and the corner patch are the second fillet's.
+#[test]
+fn a_later_round_at_a_mitred_corner_is_blended_with_the_rounds_there() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 20, "width": 20, "height": 20, "body_name": "Box"}));
+    let first = run(&mut s, "solid.fillet", json!({"edges": [[20, 10, 20], [10, 0, 20]], "radius": 2}))["feature"].as_u64().unwrap();
+    // A point halfway along each r2 round, at 45° between its faces.
+    let k = 2.0 - 2.0_f64.sqrt();
+    let rounds = [solidcraft_geom::Vec3::new(20.0 - k, 10.0, 20.0 - k), solidcraft_geom::Vec3::new(10.0, k, 20.0 - k)];
+    let named = |s: &mut Session, at: solidcraft_geom::Vec3| {
+        let st = s.model.state();
+        let (d, index) = solidcraft_doc::appearance::nearest_face(st.body("Box").unwrap(), at).unwrap();
+        // Found on the display mesh, whose facets lie within its chord of the faces.
+        assert!(d < 0.05, "{at:?} is {d} off the nearest face");
+        let faces = run(s, "model.faces", json!({"body": "Box"}))["faces"].as_array().cloned().unwrap_or_default();
+        faces.iter().find(|f| f["index"].as_u64() == Some(index as u64)).and_then(|f| f["name"].as_str()).unwrap_or_default().to_string()
+    };
+    let before: Vec<String> = rounds.iter().map(|p| named(&mut s, *p)).collect();
+    assert!(before.iter().all(|n| n.starts_with(&format!("F{first}:blend:"))), "{before:?}");
+    let second = run(&mut s, "solid.fillet", json!({"edges": [[20, 0, 10]], "radius": 3}))["feature"].as_u64().unwrap();
+    assert!(s.model.results.iter().all(|r| r.error.is_none()), "{:?}", s.model.results);
+    let v = volume(&mut s);
+    assert!((v - 7928.743041).abs() < 1e-5, "{v}");
+    let faces = run(&mut s, "model.faces", json!({"body": "Box"}))["faces"].as_array().cloned().unwrap_or_default();
+    assert_eq!(faces.len(), 10);
+    let after: Vec<String> = rounds.iter().map(|p| named(&mut s, *p)).collect();
+    assert_eq!(after, before);
+    // The r3 round (halfway up, at 45°) and the corner patch: the two faces the second fillet made.
+    let k3 = 3.0 - 4.5_f64.sqrt();
+    assert!(named(&mut s, solidcraft_geom::Vec3::new(20.0 - k3, k3, 10.0)).starts_with(&format!("F{second}:blend:")));
+    let made = faces.iter().filter(|f| f["name"].as_str().is_some_and(|n| n.starts_with(&format!("F{second}:")))).count();
+    assert_eq!(made, 2, "{faces:?}");
+}
+
 #[test]
 fn join_extrude_from_a_chamfered_top_face() {
     let mut s = Session::default();
@@ -133,10 +172,16 @@ fn join_extrude_from_a_chamfered_top_face() {
             assert!((solved.plane.origin.z - height).abs() < 1e-8);
             assert!(solved.sketch.links.iter().all(|link| link.auto_face && !link.lost));
             let body = &state.bodies[0];
-            assert!(body.body.contains(solidcraft_geom::Vec3::new(0., 0., height + 4.)));
-            assert!(!body.body.contains(solidcraft_geom::Vec3::new(0., 0., height + 6.)));
-            assert!(body.body.contains(solidcraft_geom::Vec3::new(10. - bevel - 0.5, 0., height + 4.)));
-            assert!(!body.body.contains(solidcraft_geom::Vec3::new(10. - bevel + 0.5, 0., height + 4.)));
+            assert_eq!(body.body.classify_point(solidcraft_geom::Vec3::new(0., 0., height + 4.)).unwrap(), solidcraft_kernel::PointClass::Inside);
+            assert_eq!(body.body.classify_point(solidcraft_geom::Vec3::new(0., 0., height + 6.)).unwrap(), solidcraft_kernel::PointClass::Outside);
+            assert_eq!(
+                body.body.classify_point(solidcraft_geom::Vec3::new(10. - bevel - 0.5, 0., height + 4.)).unwrap(),
+                solidcraft_kernel::PointClass::Inside
+            );
+            assert_eq!(
+                body.body.classify_point(solidcraft_geom::Vec3::new(10. - bevel + 0.5, 0., height + 4.)).unwrap(),
+                solidcraft_kernel::PointClass::Outside
+            );
         }
     }
 }
@@ -425,6 +470,111 @@ fn fillet_the_edges_between_two_overlapping_cylinders() {
     run(&mut s, "timeline.redefine", json!({"feature": "Round", "command": "solid.fillet", "params": {"edges": [[q[0], q[1], 5]], "radius": 13}}));
     let (v, expect) = (volume(&mut s), (profile + round_gap(c1, r1, c2, r2, q, 13.0)) * 10.0);
     assert!(rel(v, expect) < 2e-4, "{v} vs {expect}");
+}
+
+/// A bar 40 long, 16 wide and 10 tall whose far end is a half disc of radius 8 about (40, 8),
+/// with a disc of radius 8 about the same centre sketched on its top (the top's outline
+/// projected) and extruded 10 up, joined: the bar's sides run tangent into the cylinder.
+/// V0 = 40·16·10 + π·8²·10/2 + π·8²·10.
+fn peg(s: &mut Session) -> f64 {
+    run(s, "sketch.create", json!({"plane": "XY", "name": "Peg"}));
+    run(s, "sketch.line", json!({"points": [[0, 0], [40, 0]]}));
+    run(s, "sketch.arc.center_point", json!({"center": [40, 8], "start": [40, 0], "end": [40, 16]}));
+    run(s, "sketch.line", json!({"points": [[40, 16], [0, 16]]}));
+    run(s, "sketch.line", json!({"points": [[0, 16], [0, 0]]}));
+    run(s, "sketch.finish", json!({}));
+    run(s, "solid.extrude", json!({"sketch": "Peg", "distance": 10, "body_name": "Peg"}));
+    run(s, "sketch.create", json!({"plane": {"origin": [0, 0, 10], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Top"}));
+    run(s, "sketch.project", json!({"refs": [{"face": [2, 8, 10]}]}));
+    run(s, "sketch.circle.center", json!({"center": [40, 8], "radius": 8}));
+    run(s, "sketch.finish", json!({}));
+    run(
+        s,
+        "solid.extrude",
+        json!({"sketch": "Top", "distance": 10, "operation": "join", "targets": ["Peg"], "profiles": [{"point": [40, 8]}], "exact_regions": true}),
+    );
+    6400.0 + 960.0 * PI
+}
+
+/// Simpson's rule over [a, b] with `n` (even) intervals.
+fn simpson(f: impl Fn(f64) -> f64, a: f64, b: f64, n: usize) -> f64 {
+    let h = (b - a) / n as f64;
+    let inner: f64 = (1..n).map(|i| if i % 2 == 1 { 4.0 } else { 2.0 } * f(a + h * i as f64)).sum();
+    (f(a) + f(b) + inner) * h / 3.0
+}
+
+/// The material an r2 round of the peg's front top edge (y = 0, z = 10) takes off: the spandrel
+/// (height 2 - sqrt(4 - (2 - y)²) above the round at y) from x = `from` to where the cylinder's
+/// wall, x = 40 - sqrt(64 - (8 - y)²), takes over (the round runs into the wall there).
+fn peg_front_round(from: f64) -> f64 {
+    let spandrel = |y: f64| 2.0 - (4.0 - (2.0 - y) * (2.0 - y)).max(0.0).sqrt();
+    let wall = |y: f64| 40.0 - (64.0 - (8.0 - y) * (8.0 - y)).max(0.0).sqrt();
+    simpson(|y| spandrel(y) * (wall(y) - from), 0.0, 2.0, 20_000)
+}
+
+/// The peg's front top edge rounded r2: SMLib's result holds the upper half of the cylinder's
+/// wall as a rational spline whose parameter range runs more than a turn round, past the face's
+/// trims (half a turn). Taken as a cylinder over the spline's range (past 360°) SMLib refused it
+/// on the way back (SM_ERR_INVALID_INPUT), so the round seemed to build and the body could not
+/// be measured or changed. It goes back as the cylinder over the face's own range: the body
+/// measures, a round of the three edges at the bar's other top corner builds on it, and that
+/// wall comes back from SMLib a cylinder of radius 8.
+#[test]
+fn rounds_on_a_bar_running_tangent_into_a_cylinder() {
+    let mut s = Session::default();
+    let v0 = peg(&mut s);
+    run(&mut s, "solid.fillet", json!({"edges": [[20, 0, 10]], "radius": 2}));
+    let (v, expect) = (volume(&mut s), v0 - peg_front_round(0.0));
+    assert!(rel(v, expect) < 1e-7, "{v} vs {expect}");
+    // The vertical edge, the left top edge and the round's end arc on the left face: each
+    // spandrel (1 - π/4)·r² along the edge outside the corner cube of side 2, the cube less the
+    // rolling ball's eighth, 8 - 4π/3.
+    run(&mut s, "solid.fillet", json!({"edges": [[0, 0, 4], [0, 9, 10], [0, 0.5858, 9.4142]], "radius": 2}));
+    let strip = (1.0 - PI / 4.0) * 4.0;
+    let expect = v0 - peg_front_round(2.0) - strip * (8.0 + 14.0) - (8.0 - 4.0 * PI / 3.0);
+    let v = volume(&mut s);
+    assert!(rel(v, expect) < 1e-7, "{v} vs {expect}");
+    for b in &s.model.state().bodies {
+        let bad = b.body.validity();
+        assert!(bad.is_empty(), "{}: {bad:?}", b.name);
+    }
+    // The wall's upper half (x < 40, z in [10, 20], round (40, 8)): every face on the surface
+    // through (32, 8, 15) is a cylinder of radius 8.
+    let state = s.model.state();
+    let rec = state.bodies[0].body.record();
+    let p0 = solidcraft_geom::Vec3::new(32.0, 8.0, 15.0);
+    let on: Vec<&solidcraft_geom::brep::Surface> = rec
+        .faces
+        .iter()
+        .map(|f| &f.surface)
+        .filter(|s| {
+            let e = solidcraft_geom::brep::eval::SurfaceEval::new(s).ok();
+            e.and_then(|e| e.project(p0, None, 1e-6).and_then(|uv| e.point(uv))).is_some_and(|q| q.dist(p0) < 1e-6)
+        })
+        .collect();
+    let kinds: Vec<String> = on.iter().map(|s| format!("{s:?}").chars().take(48).collect()).collect();
+    assert!(
+        !on.is_empty() && on.iter().all(|s| matches!(s, solidcraft_geom::brep::Surface::Cylinder { radius, .. } if (radius - 8.0).abs() < 1e-9)),
+        "{kinds:?}"
+    );
+}
+
+/// After the peg's front top round, the edge where that round runs into the cylinder's wall: its
+/// faces are tangent at its lower end (40, 0, 8), where the round's contact with the front face
+/// meets the wall's tangent line with it, and meet at a crease everywhere else. It is no smooth
+/// edge (it was refused as one, judged at that end alone); the wall's seam with the front face,
+/// tangent all along, still is.
+#[test]
+fn an_edge_tangent_at_one_end_only_is_not_smooth() {
+    let mut s = Session::default();
+    peg(&mut s);
+    run(&mut s, "solid.fillet", json!({"edges": [[20, 0, 10]], "radius": 2}));
+    let fillet = |s: &mut Session, at: [f64; 3]| s.execute("solid.fillet", &json!({"edges": [at], "radius": 1, "tangent_chain": false}));
+    if let Err(e) = fillet(&mut s, [37.2641, 0.4827, 9.3025]) {
+        assert!(!e.to_string().contains("is smooth"), "{e}");
+    }
+    let seam = fillet(&mut s, [40.0, 0.0, 4.0]).unwrap_err().to_string();
+    assert!(seam.contains("is smooth: its faces meet tangentially"), "{seam}");
 }
 
 /// The top outline of two overlapping cylinders whose concave edges were rounded: the walls of
@@ -736,6 +886,36 @@ pub(crate) fn hostile_values() -> Vec<Value> {
     ]
 }
 
+/// A copy of `s` as it stands: its design and model (sharing their bodies, as undo does), its
+/// undo and redo, its open sketch and the design it was entered from, and its log.
+fn copy_with_history(s: &Session) -> Session {
+    Session { undo: s.undo.clone(), redo: s.redo.clone(), sketch_entry: s.sketch_entry.clone(), log: s.log.clone(), ..s.scratch() }
+}
+
+/// The hostile-parameter test's copy starts where a session built afresh stands: cancelling its
+/// sketch and undoing step for step give the same designs, and the copied session is untouched.
+#[test]
+fn a_copy_with_history_undoes_like_the_session_it_copies() {
+    let start = |s: &mut Session| {
+        run(s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+        run(s, "sketch.create", json!({"plane": "XY"}));
+        run(s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [5, 5]}));
+    };
+    let mut fresh = Session::default();
+    start(&mut fresh);
+    let mut original = Session::default();
+    start(&mut original);
+    let before = original.doc.clone();
+    let mut copy = copy_with_history(&original);
+    for (command, params) in [("sketch.cancel", json!({})), ("edit.undo", json!({})), ("edit.undo", json!({})), ("edit.redo", json!({}))] {
+        run(&mut fresh, command, params.clone());
+        run(&mut copy, command, params);
+        assert_eq!(*fresh.doc, *copy.doc, "{command}");
+        assert_eq!(fresh.active_sketch, copy.active_sketch, "{command}");
+    }
+    assert!(std::sync::Arc::ptr_eq(&original.doc, &before) && original.active_sketch.is_some(), "the copied session is untouched");
+}
+
 /// Every command, every parameter name it documents, every hostile value: no panic escapes and
 /// no command panics internally.
 #[test]
@@ -880,16 +1060,20 @@ fn hostile_params_never_panic() {
                 scope.spawn(|| {
                     let mut internal = Vec::new();
                     while let Some(&id) = ids.get(next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)) {
+                        // A model with a sketch, a body and an active sketch, so most commands get far.
+                        // Built once per command and copied for each call: SMLib serialises every
+                        // call behind one lock, so building the box for each of the ~3000 calls
+                        // ran one after another on every thread (over half an hour in CI).
+                        let mut start = Session::default();
+                        let _ = start.execute("solid.box", &json!({"length": 10, "width": 10, "height": 10}));
+                        let _ = start.execute("sketch.create", &json!({"plane": "XY"}));
+                        let _ = start.execute("sketch.rectangle.two_point", &json!({"p0": [0, 0], "p1": [5, 5]}));
                         for v in hostile_values() {
                             for k in keys {
                                 if k == "path" && (id.starts_with("parameters.") || id == "timeline.export_script") {
                                     continue; // parameter and script files: covered by their own tests (no stray files)
                                 }
-                                let mut s = Session::default();
-                                // A model with a sketch, a body and an active sketch, so most commands get far.
-                                let _ = s.execute("solid.box", &json!({"length": 10, "width": 10, "height": 10}));
-                                let _ = s.execute("sketch.create", &json!({"plane": "XY"}));
-                                let _ = s.execute("sketch.rectangle.two_point", &json!({"p0": [0, 0], "p1": [5, 5]}));
+                                let mut s = copy_with_history(&start);
                                 let p = json!({ k: v.clone() });
                                 if let Err(EngineError::Internal(id, msg)) = s.execute(id, &p) {
                                     internal.push(format!("{id} {p}: {msg}"));
@@ -1563,7 +1747,7 @@ fn auto_extrude_joins_side_contact_elbow_and_keeps_new_body_explicit() {
             assert!(body.validity().is_empty());
             assert_eq!(body.lumps().unwrap().len(), 1);
             assert_eq!(body.face_count(), 8, "the two flat elbow sides must be single faces");
-            assert!(body.contains(geom::Vec3::new(5.0, 10.0, 25.0)));
+            assert_eq!(body.classify_point(geom::Vec3::new(5.0, 10.0, 25.0)).unwrap(), solidcraft_kernel::PointClass::Inside);
         }
     }
 }
@@ -1585,7 +1769,7 @@ fn auto_extrude_joins_corner_screw_boss() {
     let body = &st.bodies.first().unwrap().body;
     assert_eq!(body.lumps().unwrap().len(), 1);
     assert!(body.validity().is_empty());
-    assert!(!body.contains(geom::Vec3::new(10.0, 10.0, 32.0)), "the screw hole stays open");
+    assert_eq!(body.classify_point(geom::Vec3::new(10.0, 10.0, 32.0)).unwrap(), solidcraft_kernel::PointClass::Outside, "the screw hole stays open");
 }
 
 #[test]
@@ -2496,6 +2680,13 @@ mod naming {
         s.model.result(id).and_then(|r| r.warning.clone())
     }
 
+    /// The reference feature `name` failed on, asking for it to be picked again.
+    fn reselect(s: &Session, name: &str) -> Option<String> {
+        let id = s.doc.find_feature(name).map(|f| f.id)?;
+        let error = s.model.result(id).and_then(|r| r.error.clone())?;
+        solidcraft_doc::reselect_parts(&error).filter(|(feature, _)| *feature == name).map(|(_, reference)| reference.to_string())
+    }
+
     /// A 40 x 30 x 10 block (sketch S: l1…l4 counter-clockwise from the origin), a hole H, a
     /// fillet on the right top edge.
     fn block() -> Session {
@@ -2553,8 +2744,10 @@ mod naming {
         assert_eq!(warning(&s, "Round"), None);
     }
 
+    /// The notch leaves the filleted edge in two pieces: neither is the edge, so the fillet fails,
+    /// asking for its edge again, and never rounds the piece nearest the pick.
     #[test]
-    fn a_split_edge_warns_and_takes_the_nearest_piece() {
+    fn a_split_edge_fails_the_fillet_asking_for_the_edge_again() {
         let mut s = block();
         // Upstream of the fillet, a notch through the middle of the filleted edge.
         run(&mut s, "timeline.roll_to", json!({"feature": "Hole"}));
@@ -2563,12 +2756,13 @@ mod naming {
         run(&mut s, "sketch.finish", json!({}));
         run(&mut s, "solid.extrude", json!({"sketch": "N", "distance": 10, "operation": "cut", "name": "Notch"}));
         run(&mut s, "timeline.roll_to", json!({}));
-        let w = warning(&s, "Round").unwrap_or_default();
-        assert!(w.contains("split"), "{w}");
+        assert_eq!(reselect(&s, "Round").as_deref(), Some("F2:side:l2|F2:top"));
     }
 
+    /// The face the filleted edge bounded is gone with its sketch line: the fillet fails, asking
+    /// for its edge again.
     #[test]
-    fn a_removed_segment_warns() {
+    fn a_removed_segment_fails_the_fillet_asking_for_the_edge_again() {
         let mut s = block();
         // Replace the right side (l2) of the rectangle with a new line: the face it made is gone.
         let sk = s.doc.find_feature("S").map(|f| f.id).unwrap();
@@ -2577,8 +2771,7 @@ mod naming {
         run(&mut s, "sketch.line", json!({"points": [[40, 0], [40, 30]], "ids": ["right"]}));
         let r: Result<Value, _> = s.execute("sketch.finish", &json!({}));
         assert!(r.is_ok() || r.is_err());
-        let w = warning(&s, "Round").unwrap_or_default();
-        assert!(w.contains("no longer exists"), "{w}");
+        assert_eq!(reselect(&s, "Round").as_deref(), Some("F2:side:l2|F2:top"));
     }
 
     fn face_names(s: &mut Session, body: &str) -> Vec<String> {
@@ -2637,7 +2830,9 @@ mod naming {
         model.evaluate(&reopened);
         assert_eq!(model.state().sketch(reopened.find_feature("Top").unwrap().id).unwrap().plane.origin.z, 10.);
         assert!((model.state().bodies[0].mesh().bounds().max.z - 15.).abs() < 1e-6);
-        // A historical format-10 attachment uses its saved generic face name and no strong anchor.
+        // A format-10 attachment has only the face name that build worked out from geometry, and
+        // no strong anchor: that name finds no face today. The sketch fails, asking for its face
+        // again, and so does the peg on it; the block builds.
         let mut old = (*s.doc).clone();
         let solidcraft_doc::FeatureKind::Sketch { plane: solidcraft_doc::PlaneRef::Face { anchor, name, .. }, sketch } =
             &mut old.features.iter_mut().find(|f| f.name == "Top").unwrap().kind
@@ -2645,6 +2840,7 @@ mod naming {
             panic!("fixture must contain a face sketch");
         };
         *anchor = None;
+        let saved = name.clone().unwrap();
         for link in &mut sketch.links {
             if link.auto_face {
                 link.auto_face = false;
@@ -2652,30 +2848,20 @@ mod naming {
             }
         }
         old.format = "solidcraft/10".into();
-        let mut legacy = Session::new(solidcraft_doc::Document::from_json(&old.to_json()).unwrap());
-        assert_eq!(attached(&legacy), Some(10.));
-        assert!((top(&mut legacy) - 15.).abs() < 1e-6);
+        let legacy = Session::new(solidcraft_doc::Document::from_json(&old.to_json()).unwrap());
+        let error = |s: &Session, name: &str| s.model.results.iter().find(|r| r.id == s.doc.find_feature(name).unwrap().id).unwrap().error.clone();
+        let reference = format!("{}{saved}", solidcraft_doc::naming::LEGACY_MARK);
+        assert_eq!(error(&legacy, "Top").as_deref().and_then(solidcraft_doc::reselect_parts), Some(("Top", reference.as_str())));
+        assert!(error(&legacy, "Peg").is_some());
+        assert!(error(&legacy, "Block").is_none());
         // An upstream join that trims the certified face: the attachment stays on what is left
         // of it and never follows the substitute roof (see face_tests for a face covered whole).
-        for target in [&mut s, &mut legacy] {
-            run(target, "timeline.roll_to", json!({"feature": "Block"}));
-            run(target, "sketch.create", json!({"plane": "XY", "name": "B"}));
-            run(target, "sketch.rectangle.two_point", json!({"p0": [8, -5], "p1": [45, 35]}));
-            run(target, "sketch.finish", json!({}));
-            run(target, "solid.extrude", json!({"sketch": "B", "distance": 20, "operation": "join", "name": "Boss"}));
-            run(target, "timeline.roll_to", json!({}));
-        }
-        assert_eq!(attached(&legacy), Some(10.), "historical weak naming retains its saved geometry behavior");
-        assert!((top(&mut legacy) - 20.).abs() < 1e-6);
-        let legacy_reopened = Session::new(solidcraft_doc::Document::from_json(&legacy.doc.to_json()).unwrap());
-        assert_eq!(attached(&legacy_reopened), Some(10.));
-        assert!((legacy_reopened.model.state().bodies[0].mesh().bounds().max.z - 20.).abs() < 1e-6);
-        let solidcraft_doc::FeatureKind::Sketch { plane: solidcraft_doc::PlaneRef::Face { anchor, .. }, .. } =
-            &legacy_reopened.doc.find_feature("Top").unwrap().kind
-        else {
-            panic!("saved historical face reference must remain present");
-        };
-        assert!(anchor.is_none(), "opening old face references must not infer a strict attachment");
+        run(&mut s, "timeline.roll_to", json!({"feature": "Block"}));
+        run(&mut s, "sketch.create", json!({"plane": "XY", "name": "B"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [8, -5], "p1": [45, 35]}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"sketch": "B", "distance": 20, "operation": "join", "name": "Boss"}));
+        run(&mut s, "timeline.roll_to", json!({}));
         let failed = |s: &Session, name: &str| s.model.results.iter().find(|r| r.id == s.doc.find_feature(name).unwrap().id).unwrap().error.is_some();
         assert!(!failed(&s, "Top"));
         assert!(!failed(&s, "Peg"));
@@ -3949,10 +4135,11 @@ fn extrude_reply_lists_the_bodies_it_created() {
     assert_eq!(r["created_bodies"], json!(["Ribs", "Ribs (2)", "Ribs (3)"]), "{r}");
 }
 
-/// A design saved before format 14 names the bodies past its stored names `BodyN`, as it did when
-/// it was saved, so later features that name them still find them (#373).
+/// A design saved before format 14 with fewer stored body names than bodies (#373) opens and
+/// evaluates: the first body takes its stored name, and every body has a name of its own. (The
+/// names the others had when it was saved are not promised.)
 #[test]
-fn a_design_saved_before_format_14_keeps_generic_names_past_body_name() {
+fn a_design_saved_before_format_14_with_fewer_body_names_opens_and_names_every_body() {
     let mut s = Session::default();
     run(&mut s, "sketch.create", json!({"plane": "XY", "name": "R"}));
     for x in [0, 10, 20] {
@@ -3970,9 +4157,31 @@ fn a_design_saved_before_format_14_keeps_generic_names_past_body_name() {
     std::fs::write(&design, legacy.to_string()).unwrap();
     let mut old = Session::default();
     run(&mut old, "doc.open", json!({"path": design.to_string_lossy()}));
+    assert!(old.model.results.iter().all(|r| r.error.is_none()), "{:?}", old.model.results);
     let names: Vec<String> = old.model.state().bodies.iter().map(|b| b.name.clone()).collect();
-    assert_eq!(names, ["Ribs", "Body1", "Body2"]);
+    assert_eq!((names.len(), names.first().map(String::as_str)), (3, Some("Ribs")), "{names:?}");
+    assert_eq!(names.iter().collect::<std::collections::BTreeSet<_>>().len(), 3, "{names:?}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// R21 on the bottom front edge of a 50 x 50 x 20 block overflows the 20 mm front face (its circle
+/// about (y, z) = (21, 21) reaches the top only at y = 21 - sqrt(440)) and goes first; the front
+/// left upright, picked with it, lies wholly in what it removes (every (0, 0, z) is outside that
+/// circle), so it is gone: not rounded, and the feature says so. The block is R21's alone: the
+/// section loses 20 (21 - sqrt(440)) + int_0^sqrt(440) (21 - sqrt(441 - u^2)) du, along 50.
+#[test]
+fn fillet_edge_removed_by_a_larger_overflowing_round_is_noted() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 50, "width": 50, "height": 20}));
+    let out = run(&mut s, "solid.fillet", json!({"edges": [[25, 0, 0], [0, 0, 10]], "radius": 21, "tangent_chain": false, "name": "Round"}));
+    let w = 440f64.sqrt();
+    let f = 0.5 * (w * (441.0 - w * w).sqrt() + 441.0 * (w / 21.0).asin());
+    let lost = 20.0 * (21.0 - w) + 21.0 * w - f;
+    let want = 50.0 * 50.0 * 20.0 - 50.0 * lost;
+    assert!(rel(volume(&mut s), want) < 1e-9, "{} vs {want}", volume(&mut s));
+    let id = out["feature"].as_u64().unwrap();
+    let warning = s.model.result(id).and_then(|r| r.warning.clone()).unwrap_or_default();
+    assert_eq!(warning, "the edge at (0, 0, 10) was removed by the larger round, so it is not rounded");
 }
 
 #[test]
@@ -3983,7 +4192,9 @@ fn fillet_fit_reduce_uses_the_largest_radius_that_fits() {
     run(&mut s, "parameters.add", json!({"name": "w", "expression": "6 mm"}));
     run(&mut s, "solid.box", json!({"length": 14, "width": "w", "height": 10, "corner": [14, 0, 0]}));
     let mids = json!([[14, 0, 5], [28, 0, 5], [14, 6, 5], [28, 6, 5]]);
-    assert!(s.execute("solid.fillet", &json!({"edges": mids, "radius": 3.5})).is_err());
+    // The exact fit refuses it, naming the largest radius that fits.
+    let e = s.execute("solid.fillet", &json!({"edges": mids, "radius": 3.5})).unwrap_err().to_string();
+    assert!(e.contains("the largest radius that fits is 3 mm"), "{e}");
     let out = run(&mut s, "solid.fillet", json!({"edges": mids, "radius": 3.5, "fit": "reduce", "name": "Round"}));
     assert_eq!(out["radius_applied"].as_f64(), Some(3.0), "{out}");
     let full = 840.0 - (4.0 - PI) * 9.0 * 10.0;
@@ -4005,42 +4216,85 @@ fn fillet_fit_reduce_uses_the_largest_radius_that_fits() {
     assert!(s.execute("solid.fillet", &json!({"edges": mids, "radius": 1, "fit": "taper", "type": "chord"})).is_err());
 }
 
+/// A plate 15 high whose top narrows from 20 to `tip` mm along 40 mm (a wedge at 0), and, with
+/// `wall`, a wall standing behind its slanted side from z = -15 to 30, which the plate's top and
+/// bottom end on in concave edges: a blend of its front edges can't run past them.
+fn tapering_plate(tip: f64, wall: bool) -> Session {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XY"}));
+    let pts = if tip > 0.0 { json!([[0, 0], [40, 0], [40, tip], [0, 20]]) } else { json!([[0, 0], [40, 0], [0, 20]]) };
+    run(&mut s, "sketch.line", json!({"points": pts, "closed": true}));
+    run(&mut s, "solid.extrude", json!({"distance": 15}));
+    if wall {
+        run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, -15], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}}));
+        run(&mut s, "sketch.line", json!({"points": [[40, tip], [0, 20], [0, 30], [40, 30]], "closed": true}));
+        run(&mut s, "solid.extrude", json!({"distance": 45, "operation": "join"}));
+        assert_eq!(s.model.state().bodies.len(), 1);
+    }
+    s
+}
+
+/// [`tapering_plate`]'s volume: the plate, and the wall's 20 (40 − tip) section along 45.
+fn tapering_plate_volume(tip: f64, wall: bool) -> f64 {
+    (40.0 * (20.0 + tip) / 2.0) * 15.0 + if wall { 20.0 * (40.0 - tip) * 45.0 } else { 0.0 }
+}
+
 #[test]
 fn fillet_fit_taper_follows_the_room_along_the_edge() {
-    // #293: the top front edge of a plate whose top narrows from 20 to `tip` mm along 40 mm.
-    // At a 2 mm tip it can't take 3 mm; taper keeps 3 where it fits and comes down to 0.9 of the
-    // 2 mm there. With an 8 mm tip 3 fits and stays constant; a plate closing to a point
-    // tapers to 0. The warning says what was done.
+    // #293: the top front edge of a plate whose top narrows from 20 to `tip` mm along 40 mm,
+    // against a wall. At a 2 mm tip it can't take 3 mm; taper keeps 3 where it fits and comes
+    // down to 0.9 of the 2 mm there. With an 8 mm tip 3 fits and stays constant. The warning
+    // says what was done.
     let (k, edge) = (1.0 - PI / 4.0, json!([[20, 0, 15]]));
-    let plate = |tip: f64| {
-        let mut s = Session::default();
-        run(&mut s, "sketch.create", json!({"plane": "XY"}));
-        let pts = if tip > 0.0 { json!([[0, 0], [40, 0], [40, tip], [0, 20]]) } else { json!([[0, 0], [40, 0], [0, 20]]) };
-        run(&mut s, "sketch.line", json!({"points": pts, "closed": true}));
-        run(&mut s, "solid.extrude", json!({"distance": 15}));
-        s
-    };
     let warning = |s: &Session, out: &Value| out["feature"].as_u64().and_then(|id| s.model.result(id)).and_then(|r| r.warning.clone());
 
-    let mut s = plate(2.0);
+    let mut s = tapering_plate(2.0, true);
     assert!(s.execute("solid.fillet", &json!({"edges": edge, "radius": 3})).is_err());
     let out = run(&mut s, "solid.fillet", json!({"edges": edge, "radius": 3, "fit": "taper"}));
     let w = warning(&s, &out).unwrap_or_default();
     assert!(w.contains("tapers to the room on 1 of 1 edges, down to 1.8 mm"), "{w}");
     // Between the material a constant 1.8 and a constant 3 would remove.
-    let (v, full) = (volume(&mut s), 40.0 * 22.0 / 2.0 * 15.0);
+    let (v, full) = (volume(&mut s), tapering_plate_volume(2.0, true));
     assert!(v < full - k * 1.8 * 1.8 * 40.0 && v > full - k * 9.0 * 40.0, "{v}");
     let json = serde_json::to_string(&s.doc.features).unwrap();
     assert_eq!(json.matches("\"fit\":\"taper\"").count(), 1, "{json}");
 
-    let mut s = plate(8.0);
+    let mut s = tapering_plate(8.0, true);
     let out = run(&mut s, "solid.fillet", json!({"edges": edge, "radius": 3, "fit": "taper"}));
     assert_eq!(warning(&s, &out), None);
-    assert!(rel(volume(&mut s), 40.0 * 28.0 / 2.0 * 15.0 - k * 9.0 * 40.0) < 2e-4);
+    assert!(rel(volume(&mut s), tapering_plate_volume(8.0, true) - k * 9.0 * 40.0) < 2e-4);
 
-    let mut s = plate(0.0);
-    let out = run(&mut s, "solid.fillet", json!({"edges": edge, "radius": 16, "fit": "taper"}));
-    let w = warning(&s, &out).unwrap_or_default();
+    // Without the wall the 2 mm top's far edge is a cliff: R3 runs over it and is cut from the
+    // plate as if the top went on (the blend-overflow decision, 237f0ae74), so it fits and the
+    // taper leaves it constant. At x the plate's section is [0, w] × [0, 15], w = 20 − 0.45 x:
+    // the round takes its whole (1 − π/4)·9 where w >= 3, and where w < 3 the part of the
+    // 3 × 3 corner outside the circle about (3, 3) with s <= w, 3 w − (F(3) − F(3 − w)),
+    // F(v) = (v √(9 − v²) + 9 asin(v/3)) / 2.
+    let mut s = tapering_plate(2.0, false);
+    let out = run(&mut s, "solid.fillet", json!({"edges": edge, "radius": 3, "fit": "taper"}));
+    assert_eq!(warning(&s, &out), None);
+    let f = |v: f64| 0.5 * (v * (9.0 - v * v).max(0.0).sqrt() + 9.0 * (v / 3.0).asin());
+    let n = 20000;
+    let taken: f64 = (0..n)
+        .map(|i| {
+            let w = 20.0 - 0.45 * 40.0 * (i as f64 + 0.5) / n as f64;
+            if w >= 3.0 { 9.0 * k } else { 3.0 * w - (f(3.0) - f(3.0 - w)) }
+        })
+        .sum::<f64>()
+        * 40.0
+        / n as f64;
+    let want = tapering_plate_volume(2.0, false) - taken;
+    assert!(rel(volume(&mut s), want) < 1e-6, "{} vs {want}", volume(&mut s));
+}
+
+#[test]
+fn fillet_fit_taper_closes_to_a_point() {
+    // #293: a wedge against a wall, its top closing to a point at x = 40: no constant radius
+    // fits there, and taper comes down to 0 at the point.
+    let mut s = tapering_plate(0.0, true);
+    assert!(s.execute("solid.fillet", &json!({"edges": [[20, 0, 15]], "radius": 16})).is_err());
+    let out = run(&mut s, "solid.fillet", json!({"edges": [[20, 0, 15]], "radius": 16, "fit": "taper"}));
+    let w = out["feature"].as_u64().and_then(|id| s.model.result(id)).and_then(|r| r.warning.clone()).unwrap_or_default();
     assert!(w.contains("on 1 of 1 edges, down to 0 mm"), "{w}");
 }
 
@@ -4048,10 +4302,7 @@ fn fillet_fit_taper_follows_the_room_along_the_edge() {
 fn spline_fillet_takes_over_a_taper() {
     // A tapered fillet keeps each edge's radius spline; given back as a `spline` fillet it makes
     // the same part, and its control radii are then the user's to change.
-    let mut s = Session::default();
-    run(&mut s, "sketch.create", json!({"plane": "XY"}));
-    run(&mut s, "sketch.line", json!({"points": [[0, 0], [40, 0], [40, 2], [0, 20]], "closed": true}));
-    run(&mut s, "solid.extrude", json!({"distance": 15}));
+    let mut s = tapering_plate(2.0, true);
     let edge = json!([[20, 0, 15]]);
     let out = run(&mut s, "solid.fillet", json!({"edges": edge, "radius": 3, "fit": "taper"}));
     let id = out["feature"].as_u64().unwrap();
@@ -4077,29 +4328,54 @@ fn spline_fillet_takes_over_a_taper() {
 
 #[test]
 fn fillet_fit_reduce_keeps_the_radius_where_it_fits() {
-    // A 2 mm fin on a block: its top edge can't take 4, a corner of the block far from it can.
-    // Only the fin's edge is reduced; the reply gives each edge's radius.
+    // A 14 x 6 x 10 post on a block: its four vertical edges can't take 3.5 (two rounds on its
+    // 6 mm ends would cross), a corner of the block far from it can. Only the post's edges are
+    // reduced, to 3 (a full round); the reply gives each edge's radius.
     let mut s = Session::default();
     run(&mut s, "solid.box", json!({"length": 40, "width": 30, "height": 20}));
-    run(&mut s, "solid.box", json!({"length": 2, "width": 30, "height": 10, "corner": [19, 0, 20], "operation": "join"}));
+    run(&mut s, "solid.box", json!({"length": 14, "width": 6, "height": 10, "corner": [2, 2, 20], "operation": "join"}));
     assert_eq!(s.model.state().bodies.len(), 1);
-    let edges = json!([[21, 15, 30], [40, 0, 10]]);
-    let out = run(&mut s, "solid.fillet", json!({"edges": edges, "radius": 4, "fit": "reduce"}));
-    let fin = out["radius_applied"].as_f64().unwrap();
-    assert!(fin < 4.0, "{out}");
+    let post = [[2.0, 2.0, 25.0], [16.0, 2.0, 25.0], [2.0, 8.0, 25.0], [16.0, 8.0, 25.0]];
+    let edges = json!([post[0], post[1], post[2], post[3], [40, 0, 10]]);
+    let out = run(&mut s, "solid.fillet", json!({"edges": edges, "radius": 3.5, "fit": "reduce"}));
+    assert_eq!(out["radius_applied"].as_f64(), Some(3.0), "{out}");
     let each: Vec<(Vec<f64>, f64)> = out["radii_applied"]
         .as_array()
         .unwrap()
         .iter()
         .map(|x| (x["edge"].as_array().unwrap().iter().filter_map(Value::as_f64).collect(), x["radius"].as_f64().unwrap()))
         .collect();
-    assert_eq!(each, [(vec![21.0, 15.0, 30.0], fin), (vec![40.0, 0.0, 10.0], 4.0)], "{out}");
-    let removed = (1.0 - PI / 4.0) * (fin * fin * 30.0 + 16.0 * 20.0);
-    let want = 40.0 * 30.0 * 20.0 + 2.0 * 30.0 * 10.0 - removed;
+    let mut want_each: Vec<(Vec<f64>, f64)> = post.iter().map(|p| (p.to_vec(), 3.0)).collect();
+    want_each.push((vec![40.0, 0.0, 10.0], 3.5));
+    assert_eq!(each, want_each, "{out}");
+    // The post's full round takes (4 − π)·9 of its section along its 10 mm height, the block's
+    // corner (1 − π/4)·3.5² along 20.
+    let removed = (4.0 - PI) * 9.0 * 10.0 + (1.0 - PI / 4.0) * 3.5 * 3.5 * 20.0;
+    let want = 40.0 * 30.0 * 20.0 + 14.0 * 6.0 * 10.0 - removed;
     assert!(rel(volume(&mut s), want) < 2e-4, "{} vs {want}", volume(&mut s));
     let id = out["feature"].as_u64().unwrap();
     let warning = s.model.result(id).and_then(|r| r.warning.clone()).unwrap_or_default();
-    assert!(warning.contains("on 1 of 2 edges"), "{warning}");
+    assert!(warning.contains("on 4 of 5 edges"), "{warning}");
+}
+
+/// A 2 mm fin's top edge at R4 runs over the fin's top, past its far edge (a cliff): it is cut
+/// as if the top went on (the blend-overflow decision), so with `fit: reduce` nothing is reduced.
+/// The fin's section loses the 4 x 4 square at its edge less the quarter disc about (17, 26)
+/// inside the fin (x >= 19), as `fillet_max_each_reduces_only_where_the_radius_does_not_fit`
+/// in the kernel finds it.
+#[test]
+fn fillet_fit_reduce_keeps_a_round_over_a_cliff() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 40, "width": 30, "height": 20}));
+    run(&mut s, "solid.box", json!({"length": 2, "width": 30, "height": 10, "corner": [19, 0, 20], "operation": "join"}));
+    let out = run(&mut s, "solid.fillet", json!({"edges": [[21, 15, 30], [40, 0, 10]], "radius": 4, "fit": "reduce"}));
+    assert_eq!(out["radius_applied"].as_f64(), None, "{out}");
+    let id = out["feature"].as_u64().unwrap();
+    assert_eq!(s.model.result(id).and_then(|r| r.warning.clone()), None);
+    let disc = |a: f64| 0.5 * (a * (16.0 - a * a).max(0.0).sqrt() + 16.0 * (a / 4.0).asin());
+    let removed = (2.0 * 4.0 - (disc(4.0) - disc(2.0))) * 30.0 + (1.0 - PI / 4.0) * 16.0 * 20.0;
+    let want = 40.0 * 30.0 * 20.0 + 2.0 * 30.0 * 10.0 - removed;
+    assert!(rel(volume(&mut s), want) < 1e-6, "{} vs {want}", volume(&mut s));
 }
 
 #[test]
@@ -4243,12 +4519,12 @@ fn a_side_drawn_in_two_collinear_pieces_extrudes_into_one_face() {
     assert_eq!(run(&mut s, "inspect.measure", json!({}))["bodies"][0]["kernel"]["faces"], 6);
     let names: Vec<&str> = f.iter().filter_map(|x| x["name"].as_str()).collect();
     assert!(names.contains(&format!("F2:side:{}", pieces[0]).as_str()), "{names:?}");
-    // The second piece's name answers for the same face, so a reference made when the side was
-    // two faces (an edge of the second piece) still finds its edge.
+    // The extrude made the side from both pieces: the second piece's role names that very face
+    // too, so an edge named after it is that edge.
     let st = s.model.state();
     let body = st.body("Body1").unwrap();
     let edge = format!("F2:side:{}|F2:top", pieces[1]);
-    let (at, _) = solidcraft_doc::naming::find_edge(body, &edge, geom::Vec3::new(15.0, 0.0, 5.0)).unwrap();
+    let at = solidcraft_doc::naming::find_edge(body, &edge, geom::Vec3::new(15.0, 0.0, 5.0)).unwrap();
     assert!(at.y.abs() < 1e-9 && (at.z - 5.0).abs() < 1e-9, "{edge} at {at:?}");
     // A sketch attaches to the joined side as to any side.
     assert_eq!(run(&mut s, "sketch.create", json!({"plane": {"face": [15, 0, 2.5]}}))["attachment"], "exact_face");

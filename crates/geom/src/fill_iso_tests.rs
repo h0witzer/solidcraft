@@ -3,13 +3,18 @@ use crate::brep::eval::SurfaceEval;
 use crate::brep::{Curve, Frame, Surface};
 use crate::linkage::surface_jet;
 
+/// A homogeneous point of an edge.
+fn eval_edge_h(e: &IsoEdge, t: f64) -> SplineResult<HPoint> {
+    Space::new(e.degree, e.knots.clone())?.eval(&e.homogeneous(), t, 0)
+}
+
 const R: f64 = 10.0;
 /// The window's half-widths in longitude and latitude.
 const ALPHA: f64 = 0.5;
 const BETA: f64 = 0.35;
 
 fn spec() -> IsoSpec<'static> {
-    IsoSpec { tol: 1e-6, angle_tol: 0.05f64.to_radians(), crown: 0.0, points: &[] }
+    IsoSpec { tol: 1e-6, angle_tol: 0.05f64.to_radians(), crown: 0.0, corner_turn: 1f64.to_radians(), points: &[] }
 }
 
 /// The arc of the circle about `frame`'s z of radius `r` from angle `a0` to `a1`, on its NURBS
@@ -205,7 +210,7 @@ fn hostile_edges_are_refused() {
 #[test]
 fn a_rational_patch_s_derivatives_are_its_differences() {
     let edges = window();
-    let q = Quilt::new(&edges, &[Vec::new(), Vec::new()], 3).unwrap();
+    let q = Quilt::new(&edges, &loop_sides(&edges, spec().corner_turn).0, false, &[Vec::new(), Vec::new()], 3).unwrap();
     let p = &q.patches[0];
     assert!(p.rational);
     let (u, v, h) = (0.3, 0.6, 1e-5);
@@ -216,4 +221,210 @@ fn a_rational_patch_s_derivatives_are_its_differences() {
         let differences = (p.eval(a.0, a.1, lu, lv).unwrap() - p.eval(b.0, b.1, lu, lv).unwrap()) * (0.5 / h);
         assert!(exact.dist(differences) < 1e-5 * exact.len().max(1.0), "∂({du}, {dv}): {exact:?} vs {differences:?}");
     }
+}
+
+/// The four quarter arcs of the circle of radius `r` about z at height `z`, on their NURBS form.
+fn circle_quarters(z: f64, r: f64) -> Vec<IsoEdge> {
+    let f = frame(Vec3::Z * z, Vec3::X, Vec3::Y);
+    let q = std::f64::consts::FRAC_PI_2;
+    (0..4).map(|k| arc(f.clone(), r, [k as f64 * q, (k + 1) as f64 * q], false)).collect()
+}
+
+/// Neighbours given by a normal and a leave direction at each point of the loop.
+fn beside_by<'a>(
+    edges: &'a [IsoEdge],
+    frame_at: impl Fn(Vec3) -> (Vec3, Vec3) + 'a,
+) -> impl FnMut(usize, &[f64]) -> Result<Vec<Option<Across>>, String> + 'a {
+    move |k, ts| {
+        ts.iter()
+            .map(|t| {
+                let p = eval_edge_h(&edges[k], *t).map_err(|e| e.to_string())?.project().ok_or("a point at infinity")?;
+                let (normal, leave) = frame_at(p);
+                Ok(Some(Across { leave, normal, bend: None, jet: None }))
+            })
+            .collect()
+    }
+}
+
+/// Whether any patch of the fill folds (its normal reverses between neighbouring samples).
+fn any_fold(fill: &IsoFill) -> bool {
+    fill.patches.iter().any(|p| {
+        let s = SurfaceEval::new(&Surface::RationalSpline {
+            u_knots: p.surface.knots()[0].clone(),
+            v_knots: p.surface.knots()[1].clone(),
+            homogeneous: (0..p.surface.count()[0])
+                .map(|i| (0..p.surface.count()[1]).map(|j| p.surface.point(i, j)).map(|h| [h.x, h.y, h.z, h.w]).collect())
+                .collect(),
+        })
+        .unwrap();
+        let n = 48;
+        let normal = |i: usize, j: usize| {
+            let (_, su, sv) = s.derivs(i as f64 / n as f64, j as f64 / n as f64).unwrap();
+            su.cross(sv).normalized()
+        };
+        (0..=n).any(|i| {
+            (0..=n).any(|j| {
+                let Some(a) = normal(i, j) else { return false };
+                [(i + 1, j), (i, j + 1)].iter().any(|&(k, l)| k <= n && l <= n && normal(k, l).is_some_and(|b| a.dot(b) <= 0.0))
+            })
+        })
+    })
+}
+
+/// A tube's end: the circle in four quarter arcs, G1 to the tube's wall (its normal radial, the
+/// wall going on upwards). Every vertex of the loop is smooth: the cross derivative of a side
+/// there is the next side's tangent, along the edge itself.
+#[test]
+fn a_tube_end_capped_g1_holds_the_wall_and_does_not_fold() {
+    let edges = circle_quarters(30.0, 10.0);
+    let radial = |p: Vec3| (Vec3::new(p.x, p.y, 0.0).normalized().unwrap(), Vec3::Z);
+    let s = IsoSpec { tol: 2e-5, ..spec() };
+    let fill = iso_fill(&edges, &mut beside_by(&edges, radial), &s).unwrap();
+    eprintln!("tube end g1: {} patches, {:?}", fill.patches.len(), fill.achieved);
+    assert!(fill.achieved.normal_excess <= s.angle_tol);
+    assert!(!any_fold(&fill), "the cap folds");
+    // No corner of the loop: four patches round it and one inside, none with a flat corner
+    // (two derivatives parallel), which a patch on the circle's own quarters would have.
+    assert_eq!(fill.patches.len(), 5, "the ring and the inner patch");
+    for (k, p) in fill.patches.iter().enumerate() {
+        for c in [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]] {
+            let (angle, ..) = corner_angle(p, c);
+            assert!(angle > 0.5 && angle < 179.5, "patch {k}: a flat corner at {c:?}: {angle}°");
+        }
+    }
+    // A crown fills the middle out of the tube, the inner patch whole.
+    let crowned = iso_fill(&edges, &mut beside_by(&edges, radial), &IsoSpec { crown: 0.1, ..s }).unwrap();
+    let top = |f: &IsoFill| f.patches[4].surface.eval(0.5, 0.5).unwrap().z;
+    assert!(top(&crowned) > top(&fill) + 0.5, "{} {}", top(&crowned), top(&fill));
+}
+
+/// The angle (degrees) between a patch's two derivatives at a corner of its square, and their
+/// lengths.
+fn corner_angle(p: &IsoPatch, uv: [f64; 2]) -> (f64, f64, f64) {
+    let s = SurfaceEval::new(&Surface::RationalSpline {
+        u_knots: p.surface.knots()[0].clone(),
+        v_knots: p.surface.knots()[1].clone(),
+        homogeneous: (0..p.surface.count()[0])
+            .map(|i| (0..p.surface.count()[1]).map(|j| p.surface.point(i, j)).map(|h| [h.x, h.y, h.z, h.w]).collect())
+            .collect(),
+    })
+    .unwrap();
+    let (_, su, sv) = s.derivs(uv[0], uv[1]).unwrap();
+    let cos = su.dot(sv) / (su.len() * sv.len());
+    (cos.clamp(-1.0, 1.0).acos().to_degrees(), su.len(), sv.len())
+}
+
+/// Loops of five to eight sides about a centre on a wavy rim: at the centre every
+/// patch has a proper corner (its two derivatives neither vanishing nor parallel). Parametric C1
+/// across the spokes cannot give that for N other than a multiple of four: it asks the spokes'
+/// tangents at the centre `d_{k−1} + d_{k+1} = 0`, which only `d = 0` meets.
+#[test]
+fn patches_about_a_centre_have_proper_corners_there() {
+    for n in 5..=8usize {
+        let corners: Vec<Vec3> = (0..n)
+            .map(|k| {
+                let a = 0.3 + k as f64 * std::f64::consts::TAU / n as f64;
+                Vec3::new(20.0 * a.cos(), 20.0 * a.sin(), 3.0 * (2.0 * a).sin())
+            })
+            .collect();
+        // Quadratic edges bowed up out of the rim's surface.
+        let edges: Vec<IsoEdge> = (0..n)
+            .map(|k| {
+                let (a, b) = (corners[k], corners[(k + 1) % n]);
+                IsoEdge { degree: 2, knots: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], points: vec![a, (a + b) * 0.5 + Vec3::Z * 2.0, b], weights: None }
+            })
+            .collect();
+        let mut g0 = |_k: usize, ts: &[f64]| -> Result<Vec<Option<Across>>, String> { Ok(vec![None; ts.len()]) };
+        let fill = iso_fill(&edges, &mut g0, &IsoSpec { tol: 2e-5, ..spec() }).unwrap();
+        let worst = fill
+            .patches
+            .iter()
+            .map(|p| corner_angle(p, [1.0, 1.0]))
+            .fold((180.0f64, f64::MAX), |(a, l), (b, x, y)| (a.min(b).min(180.0 - b), l.min(x).min(y)));
+        eprintln!("{n} sides: at the centre the patches' corners are at least {:.2}° from flat, derivatives at least {:.3e} long", worst.0, worst.1);
+        assert!(worst.0 > 0.5 && worst.1 > 1e-3, "{n} sides: a flat corner at the centre {worst:?}");
+    }
+}
+
+/// Half a round post's side, as SMLib holds it: its half circles are each two arcs, split at the
+/// cylinder's seam (35.12° round), so the loop has six edges but four corners. The seam vertices,
+/// where the loop runs straight on, are not corners of the region: one patch on four sides, each
+/// edge a straight line on its stretch of a side, and no flat corner.
+#[test]
+fn a_loop_whose_edges_run_straight_on_at_seams_is_one_patch_on_its_corners() {
+    let seam = 35.12f64.to_radians();
+    let h = std::f64::consts::FRAC_PI_2;
+    let (bottom, top) = (frame(Vec3::ZERO, Vec3::X, Vec3::Y), frame(Vec3::Z * 20.0, Vec3::X, Vec3::Y));
+    let line = |a: Vec3, b: Vec3| IsoEdge { degree: 1, knots: vec![0.0, 0.0, 1.0, 1.0], points: vec![a, b], weights: None };
+    let edges = vec![
+        arc(bottom.clone(), 10.0, [seam, h], false),
+        line(Vec3::new(0.0, 10.0, 0.0), Vec3::new(0.0, 10.0, 20.0)),
+        arc(top.clone(), 10.0, [seam, h], true),
+        arc(top, 10.0, [-h, seam], true),
+        line(Vec3::new(0.0, -10.0, 20.0), Vec3::new(0.0, -10.0, 0.0)),
+        arc(bottom, 10.0, [-h, seam], false),
+    ];
+    let mut g0 = |_k: usize, ts: &[f64]| -> Result<Vec<Option<Across>>, String> { Ok(vec![None; ts.len()]) };
+    let fill = iso_fill(&edges, &mut g0, &IsoSpec { tol: 2e-5, ..spec() }).unwrap();
+    assert_eq!(fill.patches.len(), 1, "four corners, one patch");
+    let sides = &fill.patches[0].sides;
+    assert_eq!(sides.len(), 6, "every edge on the patch's boundary");
+    // Round the square, each edge from where the one before it ends.
+    let uv = |s: &IsoSide| match s {
+        IsoSide::Edge { uv, .. } | IsoSide::Spoke { uv, .. } => *uv,
+    };
+    for (a, b) in sides.iter().zip(sides.iter().cycle().skip(1)) {
+        assert_eq!(uv(a)[1], uv(b)[0], "{sides:?}");
+    }
+    assert!(!any_fold(&fill), "the patch folds");
+    // Its corners are the loop's four, none flat.
+    for c in [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]] {
+        let (angle, ..) = corner_angle(&fill.patches[0], c);
+        assert!(angle > 0.5 && angle < 179.5, "a flat corner at {c:?}: {angle}°");
+    }
+}
+
+/// A crown fills the middle out to the side the neighbours' normals face, whichever way the
+/// patch itself is parameterised: the sphere window, its neighbours' normals outward, rises away
+/// from the centre; given them inward, it sinks.
+#[test]
+fn a_crown_fills_out_to_the_side_the_neighbours_face() {
+    let edges = window();
+    let middle = |f: &IsoFill| f.patches[0].surface.eval(0.5, 0.5).unwrap().len();
+    let plain = middle(&iso_fill(&edges, &mut sphere_beside(&edges, 1), &spec()).unwrap());
+    let crowned = IsoSpec { crown: 0.1, ..spec() };
+    let out = middle(&iso_fill(&edges, &mut sphere_beside(&edges, 1), &crowned).unwrap());
+    let mut inward = {
+        let mut beside = sphere_beside(&edges, 1);
+        move |k: usize, ts: &[f64]| -> Result<Vec<Option<Across>>, String> {
+            Ok(beside(k, ts)?.into_iter().map(|a| a.map(|a| Across { normal: a.normal * -1.0, ..a })).collect())
+        }
+    };
+    let sunk = middle(&iso_fill(&edges, &mut inward, &crowned).unwrap());
+    eprintln!("the window's middle {plain:.4} from the centre, crowned {out:.4}, crowned to inward neighbours {sunk:.4}");
+    assert!(out > plain + 0.1 && sunk < plain - 0.1, "{plain} {out} {sunk}");
+}
+
+/// The same loop fills to the same bits every time, about a centre and in a ring (a design is
+/// rebuilt on reading it back, and must come back the same surface).
+#[test]
+fn a_fill_is_the_same_to_the_last_bit_every_time() {
+    let tube = circle_quarters(30.0, 10.0);
+    let radial = |p: Vec3| (Vec3::new(p.x, p.y, 0.0).normalized().unwrap(), Vec3::Z);
+    let s = IsoSpec { tol: 2e-5, ..spec() };
+    let ring = |_: usize| iso_fill(&tube, &mut beside_by(&tube, radial), &s).unwrap();
+    let corners: Vec<Vec3> =
+        (0..6).map(|k| Vec3::new((k as f64 * 1.047).cos(), (k as f64 * 1.047).sin(), 0.0) * 20.0 + Vec3::Z * (k % 2) as f64).collect();
+    let hexagon: Vec<IsoEdge> = (0..6)
+        .map(|k| {
+            let (a, b) = (corners[k], corners[(k + 1) % 6]);
+            IsoEdge { degree: 2, knots: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0], points: vec![a, (a + b) * 0.5 + Vec3::Z * 2.0, b], weights: None }
+        })
+        .collect();
+    let mut g0 = |_k: usize, ts: &[f64]| -> Result<Vec<Option<Across>>, String> { Ok(vec![None; ts.len()]) };
+    let centre = |g0: &mut dyn FnMut(usize, &[f64]) -> Result<Vec<Option<Across>>, String>| iso_fill(&hexagon, g0, &s).unwrap();
+    let (a, b) = (ring(0), ring(1));
+    assert_eq!(a.patches, b.patches, "the ring");
+    let (a, b) = (centre(&mut g0), centre(&mut g0));
+    assert_eq!(a.patches, b.patches, "about a centre");
 }

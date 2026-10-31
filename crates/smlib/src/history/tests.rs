@@ -55,6 +55,17 @@ fn new_edges_are_where_their_faces_meet() {
     h.check_counts((3, 3), &[(3, 8), (5, 4)]).unwrap();
 }
 
+/// A face split in two (a split line across operand 0's face 0): the new edge lies between two
+/// pieces of one face, where nothing met, so it comes from nothing.
+#[test]
+fn a_split_line_comes_from_nothing() {
+    let raw = Raw::decode(&[1, 2, 1, 2, 1, 0, 0, 2, 1, 0, 0, 2, 0, 1, 0]).unwrap();
+    let h = raw.history(&[Order::default()], &Order::default()).unwrap();
+    assert_eq!(h.faces.iter().map(|f| (f.origins.clone(), f.change)).collect::<Vec<_>>(), vec![(vec![face(0, 0)], Change::Split); 2]);
+    assert_eq!(h.edges[0].faces, vec![0, 1]);
+    assert!(h.edges[0].origins.is_empty(), "{:?}", h.edges[0].origins);
+}
+
 #[test]
 fn renumbers_into_canonical_order() {
     let raw = Raw::decode(RECORDS).unwrap();
@@ -96,7 +107,7 @@ fn a_fillet_face_comes_from_its_edge() {
     let mut h = History { operands: 1, faces, edges: vec![edge(4, 6), edge(5, 6), edge(0, 6), edge(2, 6), edge(0, 4)] };
     // The operand's own edges: edge 0 between faces 4 and 5, edge 1 between 0 and 4.
     let operand = vec![edge(4, 5), edge(0, 4)];
-    blends(&mut h, &operand, &[0, 1]);
+    blends(&mut h, &operand, &[0], &[1]);
     assert_eq!(h.faces[6].origins, vec![FaceOrigin::Edge { operand: 0, edge: 0 }]);
     assert!(h.faces[..6].iter().all(|f| f.origins.len() == 1));
 }

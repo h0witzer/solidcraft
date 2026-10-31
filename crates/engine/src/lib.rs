@@ -377,13 +377,6 @@ pub struct Session {
     pub(crate) followed: Option<cmd::inspect::Followed>,
     /// Project a face's edges into a sketch created on it (the default; `sketch.auto_project`).
     pub auto_project: bool,
-    /// A new metric tapped hole given no `diameter` drills the major diameter less the pitch,
-    /// as before the tap maker's drills (a user preference); false: the tap maker's drill.
-    pub metric_tap_drill_major_less_pitch: bool,
-    /// A new symmetric surface extrude given no `convention` reads its distance on each side, as
-    /// surface extrudes did before they matched solid ones (a user preference); false: the total,
-    /// split evenly around the start plane, as a solid extrude reads it.
-    pub surface_extrude_symmetric_per_side: bool,
     /// How calls that break a command's parameter contract are treated (off by default). It
     /// belongs to the session, not the design, so it survives opening and starting designs.
     pub param_check: schema::ParamCheck,
@@ -400,6 +393,11 @@ pub struct Session {
     pub active_occurrence_path: Option<Vec<u64>>,
     /// Occurrence moves not captured yet (Capture Position keeps them, a recompute drops them).
     pub pending_moves: std::collections::BTreeMap<u64, solidcraft_doc::Mat>,
+    /// The placements the exploded view (`explode.show`) put in `pending_moves` to be shown:
+    /// display only. An entry of `pending_moves` still equal to its one here is the exploded view's,
+    /// not a move of the design's, so the placements the design reports and Capture Position
+    /// keeps leave it out ([`Session::uncaptured_moves`]).
+    pub exploded: std::collections::BTreeMap<u64, solidcraft_doc::Mat>,
     world_cache: std::sync::Mutex<Option<WorldCache>>,
     /// The design the joints were last solved for, as the solve left it, and the model it read
     /// (see [`Session::solve_joints`]).
@@ -434,6 +432,9 @@ pub struct Session {
     /// The faces Isocurve Analysis shows the isoparametric curves of, for the viewport to draw
     /// ([`Session::isocurve_lines`]). View state: not part of the design and not an undo step.
     pub isocurves: Vec<IsoPick>,
+    /// The curvature combs `inspect.curvature_comb` shows, for the viewport to draw; `None` when
+    /// the analysis is off. View state: not part of the design and not an undo step.
+    pub comb: Option<CombView>,
     /// What is hidden or shown in the view (`browser.visibility`): saved with the design and an
     /// undo step of its own ([`Snapshot::visibility`]). A design brings its saved visibility when
     /// it opens (`Session::new`).
@@ -533,6 +534,35 @@ pub struct IsoPick {
     pub count: usize,
 }
 
+/// What Curvature Comb Analysis shows: the picks, the options every comb is drawn with, and
+/// the teeth drawn, all at one scale so their lengths compare. View state only.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct CombView {
+    pub picks: Vec<CombPick>,
+    /// Teeth per curve.
+    pub density: usize,
+    /// The multiplier on the automatic scale.
+    pub length: f64,
+    /// A fixed comb length per unit curvature, in place of the automatic one.
+    pub fixed_scale: Option<f64>,
+    /// The comb length per unit curvature the teeth are drawn at, shared by every comb.
+    pub scale: f64,
+    /// Each comb's teeth as (foot, tip), in world coordinates.
+    pub teeth: Vec<Vec<[Vec3; 2]>>,
+}
+
+/// A curve Curvature Comb Analysis shows, as it was picked (found again whenever it is drawn).
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CombPick {
+    /// A sketch curve.
+    Curve { sketch: u64, curve: String },
+    /// The body edge whose exact curve passes nearest `at`.
+    Edge { at: Vec3 },
+    /// The face at `at`, combed along `count` iso curves each way.
+    Face { at: Vec3, count: usize },
+}
+
 impl SurfaceAnalysis {
     /// How a picture shades the faces for this analysis.
     pub fn mode(self) -> render::AnalysisMode {
@@ -569,20 +599,31 @@ impl Session {
     /// `doc`'s evaluation ([`Model::adopt`]); otherwise the timeline is evaluated.
     /// Use [`Self::opened_at`] when the document's file location is known.
     /// `SOLIDCRAFT_NO_MODEL_CACHE` set always evaluates.
-    pub fn opened(mut doc: Document, saved: Option<&solidcraft_doc::SavedModel>) -> Self {
+    pub fn opened(doc: Document, saved: Option<&solidcraft_doc::SavedModel>) -> Self {
+        Self::opened_validating(doc, saved, solidcraft_kernel::Validation::default())
+    }
+
+    /// [`Self::opened`], its features evaluated under `validation` ([`Session::set_validation`]).
+    pub fn opened_validating(mut doc: Document, saved: Option<&solidcraft_doc::SavedModel>, validation: solidcraft_kernel::Validation) -> Self {
         // A design's font files are checked like its other paths before it is evaluated.
         solidcraft_io::vfs::install_checks();
         // The session keeps what is hidden (an undo step of its own); the design file carries it.
         let visibility = std::mem::take(&mut doc.visibility);
         let doc = Arc::new(doc);
+        // A model saved under another check mode holds that mode's results: evaluated again.
         let adopted = saved
             .filter(|_| solidcraft_geom::env::var_os("NO_MODEL_CACHE").is_none())
-            .and_then(|saved| Model::adopt(&doc, saved).map_err(|e| log::info!("the saved model is not used: {e}")).ok());
-        let model = adopted.unwrap_or_else(|| {
-            let mut model = Model::new();
-            model.evaluate(&doc);
-            model
-        });
+            .and_then(|saved| Model::adopt(&doc, saved).map_err(|e| log::info!("the saved model is not used: {e}")).ok())
+            .filter(|model| model.validation() == validation);
+        let model = match adopted {
+            Some(model) => model,
+            None => {
+                let mut model = Model::new();
+                model.set_validation(validation);
+                model.evaluate(&doc);
+                model
+            }
+        };
         Session {
             saved: doc.clone(),
             doc,
@@ -603,14 +644,13 @@ impl Session {
             document_id: cmd::inspect::new_document_id(),
             followed: None,
             auto_project: true,
-            metric_tap_drill_major_less_pitch: false,
-            surface_extrude_symmetric_per_side: false,
             param_check: schema::ParamCheck::Off,
             easyprint_upload: None,
             live_links: None,
             active_component: 0,
             active_occurrence_path: None,
             pending_moves: Default::default(),
+            exploded: Default::default(),
             world_cache: Default::default(),
             joints_settled: None,
             occurrence_visibility_cache: Default::default(),
@@ -627,6 +667,7 @@ impl Session {
             analysis: None,
             continuity: Vec::new(),
             isocurves: Vec::new(),
+            comb: None,
             checkpoints: Vec::new(),
             next_checkpoint: 1,
             replacements: 0,
@@ -651,8 +692,7 @@ impl Session {
     /// checkpoint keeps, not the replaced session's file path (docs/mcp.md).
     pub fn replace_design(&mut self, fresh: Session) {
         let auto_project = self.auto_project;
-        let metric_tap_drill_major_less_pitch = self.metric_tap_drill_major_less_pitch;
-        let surface_extrude_symmetric_per_side = self.surface_extrude_symmetric_per_side;
+        let validation = self.validation();
         let param_check = self.param_check;
         let easyprint_upload = self.easyprint_upload.take();
         let render_viewport = self.render_viewport.clone();
@@ -668,8 +708,9 @@ impl Session {
         self.crash_journal = crash_journal;
         self.command_check = command_check;
         self.auto_project = auto_project;
-        self.metric_tap_drill_major_less_pitch = metric_tap_drill_major_less_pitch;
-        self.surface_extrude_symmetric_per_side = surface_extrude_symmetric_per_side;
+        // The user's, like `auto_project`: the commands that open a design evaluate it under it
+        // already (`Session::opened_validating`).
+        self.set_validation(validation);
         self.param_check = param_check;
         self.easyprint_upload = easyprint_upload;
         self.render_viewport = render_viewport;
@@ -901,6 +942,20 @@ impl Session {
             Some(cell) => cell.get_or_init(compute).clone(),
             None => compute(),
         }
+    }
+
+    /// When SMLib's check runs on the features evaluated: after every sweep, boolean and blend,
+    /// once on the bodies each feature keeps (the default), or not at all. A user's setting,
+    /// kept when another design is opened (`diagnostics.validation`, the app's preference).
+    pub fn validation(&self) -> solidcraft_kernel::Validation {
+        self.model.validation()
+    }
+
+    /// Evaluate the features computed from now on under `validation` ([`Session::validation`]);
+    /// the results already there stand until their features are computed again
+    /// (`timeline.compute_all` computes every one).
+    pub fn set_validation(&mut self, validation: solidcraft_kernel::Validation) {
+        self.model.set_validation(validation);
     }
 
     pub fn refresh(&mut self) {
@@ -1412,14 +1467,13 @@ impl Session {
             document_id: self.document_id.clone(),
             followed: None,
             auto_project: self.auto_project,
-            metric_tap_drill_major_less_pitch: self.metric_tap_drill_major_less_pitch,
-            surface_extrude_symmetric_per_side: self.surface_extrude_symmetric_per_side,
             param_check: self.param_check,
             easyprint_upload: self.easyprint_upload.clone(),
             live_links: None,
             active_component: self.active_component,
             active_occurrence_path: self.active_occurrence_path.clone(),
             pending_moves: self.pending_moves.clone(),
+            exploded: self.exploded.clone(),
             world_cache: std::sync::Mutex::new(self.world_cache.lock().ok().and_then(|cache| cache.clone())),
             joints_settled: self.joints_settled.clone(),
             occurrence_visibility_cache: Default::default(),
@@ -1436,6 +1490,7 @@ impl Session {
             analysis: None,
             continuity: Vec::new(),
             isocurves: Vec::new(),
+            comb: None,
             checkpoints: Vec::new(),
             next_checkpoint: 1,
             replacements: 0,
@@ -1609,6 +1664,7 @@ impl Session {
         self.active_component = computed.active_component;
         self.active_occurrence_path = computed.active_occurrence_path;
         self.pending_moves = computed.pending_moves;
+        self.exploded = computed.exploded;
         // Joints the computation hid (an import's rigid group) stay hidden.
         for j in computed.visibility.hidden_joints {
             if !self.visibility.hidden_joints.contains(&j) {

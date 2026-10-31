@@ -27,14 +27,25 @@ fn error(s: &Session, name: &str) -> Option<String> {
     s.model.result(id(s, name)).and_then(|r| r.error.clone())
 }
 
+/// The reference feature `name` failed on, asking for it to be picked again.
+fn reselect(s: &Session, name: &str) -> Option<String> {
+    let error = error(s, name)?;
+    solidcraft_doc::reselect_parts(&error).filter(|(feature, _)| *feature == name).map(|(_, reference)| reference.to_string())
+}
+
 /// Whether any body holds `p`.
 fn solid_at(s: &Session, p: [f64; 3]) -> bool {
-    s.model.state().bodies.iter().any(|b| b.body.contains(Vec3::new(p[0], p[1], p[2])))
+    s.model.state().bodies.iter().any(|b| b.body.classify_point(Vec3::new(p[0], p[1], p[2])).unwrap() == solidcraft_kernel::PointClass::Inside)
 }
 
 /// Which body holds `p`.
 fn body_at(s: &Session, p: [f64; 3]) -> Option<String> {
-    s.model.state().bodies.iter().find(|b| b.body.contains(Vec3::new(p[0], p[1], p[2]))).map(|b| b.name.clone())
+    s.model
+        .state()
+        .bodies
+        .iter()
+        .find(|b| b.body.classify_point(Vec3::new(p[0], p[1], p[2])).unwrap() == solidcraft_kernel::PointClass::Inside)
+        .map(|b| b.name.clone())
 }
 
 fn names(s: &Session, body: &str) -> Vec<(String, bool)> {
@@ -143,8 +154,8 @@ fn a_blend_follows_its_named_edge_to_a_moved_lid_instead_of_the_body_below() {
         let lid_volume = solidcraft_kernel::measure(&lid.body).unwrap().volume;
         assert!((base_volume - 24000.0).abs() < 0.01, "{command}: the base stays sharp: {base_volume}");
         assert!((lid_volume - (6000.0 - removed)).abs() < 0.01, "{command}: the lid keeps its blend: {lid_volume}");
-        assert!(base.body.contains(Vec3::new(39.9, 29.9, 12.5)));
-        assert!(!lid.body.contains(Vec3::new(39.9, 29.9, 22.5)));
+        assert_eq!(base.body.classify_point(Vec3::new(39.9, 29.9, 12.5)).unwrap(), solidcraft_kernel::PointClass::Inside);
+        assert_eq!(lid.body.classify_point(Vec3::new(39.9, 29.9, 22.5)).unwrap(), solidcraft_kernel::PointClass::Outside);
     }
 }
 
@@ -171,14 +182,16 @@ fn a_piece_keeps_its_identity_when_the_cut_that_made_it_moves_or_shrinks() {
     change(&mut s, "slot_w", "0.05 mm");
     assert_eq!(warning(&s, "Raise"), None);
     assert!(solid_at(&s, [39.0, 15.0, 11.0]) && !solid_at(&s, [27.0, 15.0, 11.0]));
-    // Gone altogether (suppressed), the piece is the whole top again: said, not guessed.
+    // Gone altogether (suppressed), the top is whole again, which is not the piece: the raise
+    // fails, asking for its face again, never guessed.
     run(&mut s, "timeline.suppress", json!({"feature": "Slot", "suppressed": true}));
-    let w = warning(&s, "Raise").unwrap_or_default();
-    assert!(w.contains("split") || w.contains("no longer exists"), "{w}");
+    assert_eq!(reselect(&s, "Raise").as_ref(), raise.face_names.first());
 }
 
+/// A face merged into another is not the face that was picked: the feature on it fails, asking
+/// for its face again; when the faces part again, the reference finds its face.
 #[test]
-fn a_face_merged_into_another_answers_to_its_name_and_says_so() {
+fn a_face_merged_into_another_asks_for_its_face_again() {
     let mut s = Session::default();
     block(&mut s);
     run(&mut s, "parameters.add", json!({"name": "boss_h", "expression": "5 mm"}));
@@ -191,13 +204,13 @@ fn a_face_merged_into_another_answers_to_its_name_and_says_so() {
     let raise = s.doc.find_feature("Raise").cloned().unwrap();
     assert_eq!(raise.face_names, vec![format!("F{boss}:top")]);
     assert!(solid_at(&s, [50.0, 15.0, 5.5]) && !solid_at(&s, [50.0, 15.0, 6.5]));
-    // As tall as the block, the boss's top and the block's are one face: the reference finds
-    // it and says it was merged.
+    // As tall as the block, the boss's top and the block's are one face: not the boss's top.
     change(&mut s, "boss_h", "10 mm");
+    assert_eq!(reselect(&s, "Raise").as_ref(), raise.face_names.first());
+    assert!(!solid_at(&s, [50.0, 15.0, 10.5]) && !solid_at(&s, [20.0, 15.0, 10.5]), "nothing is raised");
+    change(&mut s, "boss_h", "5 mm");
     assert_eq!(error(&s, "Raise"), None);
-    let w = warning(&s, "Raise").unwrap_or_default();
-    assert!(w.contains("merged"), "{w}");
-    assert!(solid_at(&s, [50.0, 15.0, 10.5]) && solid_at(&s, [20.0, 15.0, 10.5]), "the merged top is raised as one");
+    assert!(solid_at(&s, [50.0, 15.0, 5.5]) && !solid_at(&s, [20.0, 15.0, 10.5]));
 }
 
 #[test]
@@ -498,11 +511,11 @@ fn split_pieces_keep_their_numbers_across_evaluations() {
     }
 }
 
-/// #3902: a design saved before the pieces of a face were numbered by place opens with the
-/// numbers it was saved with, so a reference to `…#1` stays on the piece it was made on. The
-/// grooved disc's top is split in two, numbered the other way round by place.
+/// #3902: a design saved before the pieces of a face were numbered by place opens with its
+/// features marked `kernel_piece_order`, and evaluates: its pieces are named alike every time it
+/// is evaluated. (Which numbers they get is not promised to be the ones it was saved with.)
 #[test]
-fn a_design_saved_before_pieces_were_numbered_by_place_keeps_their_numbers() {
+fn a_design_saved_before_pieces_were_numbered_by_place_opens_marked_and_names_alike() {
     let mut s = Session::default();
     s.run_script(&grooved_disc()).unwrap();
     let by_place = listed(&mut s, "Disc");
@@ -521,11 +534,9 @@ fn a_design_saved_before_pieces_were_numbered_by_place_keeps_their_numbers() {
     assert!(old.features.iter().all(|f| f.kernel_piece_order), "the features of an older design keep the old numbering");
     let mut reopened = Session::new(old);
     reopened.refresh();
+    assert!(reopened.model.results.iter().all(|r| r.error.is_none()), "{:?}", reopened.model.results);
     let kept = listed(&mut reopened, "Disc");
-    let at = |faces: &[(String, bool, [f64; 3])], name: &str| faces.iter().find(|(n, _, _)| n == name).map(|(_, _, c)| *c);
-    // The pieces are numbered differently by place, and the older design keeps its own numbers.
-    let (old1, new1) = (at(&kept, "F1:top#1").unwrap(), at(&by_place, "F1:top#1").unwrap());
-    assert!((0..3).any(|k| (old1[k] - new1[k]).abs() > 1.0), "{kept:?} {by_place:?}");
+    assert_eq!(kept.len(), by_place.len());
     let mut legacy = solidcraft_doc::Document::clone(&s.doc);
     legacy.features.iter_mut().for_each(|f| f.kernel_piece_order = true);
     let mut saved_with = Session::new(legacy);
@@ -630,9 +641,9 @@ fn one_fillet_over_two_bodies_of_one_extrude_rounds_each_body_s_own_edges() {
 /// One fillet over a vertical edge of each of two stacked boxes. A build before blends were split
 /// by body named the upper box's edge after the lower box's nearest edge (its top front edge),
 /// which was rounded instead. The pick (outside the box the name was recorded on) shows that name
-/// is not the upper box's: the edge is found at its point, on the upper box.
+/// is not the upper box's edge: the fillet fails, asking for that edge again, and rounds nothing.
 #[test]
-fn one_fillet_over_stacked_boxes_rounds_the_upper_box_s_edge_even_when_saved_named_on_the_lower() {
+fn one_fillet_over_stacked_boxes_saved_named_on_the_lower_asks_for_the_upper_edge_again() {
     let mut s = Session::default();
     stacked_boxes(&mut s);
     run(&mut s, "solid.fillet", json!({"edges": [[25, -25, 20], [-25, -25, 45]], "radius": 2, "name": "Rounds"}));
@@ -655,10 +666,11 @@ fn one_fillet_over_stacked_boxes_rounds_the_upper_box_s_edge_even_when_saved_nam
     let old_refs =
         solidcraft_doc::edge_refs(&before, &Some(lower.name.clone().into()), &[Vec3::new(25.0, -25.0, 20.0), Vec3::new(-25.0, -25.0, 45.0)]);
     let feature = s.doc_mut().feature_mut(f).unwrap();
-    feature.edge_names = old_names;
+    feature.edge_names = old_names.clone();
     feature.edge_refs = old_refs;
     s.refresh();
-    check(&s, "saved by an older build");
+    assert_eq!(reselect(&s, "Rounds").as_ref(), old_names.get(1));
+    assert!(solid_at(&s, [24.8, -24.8, 20.0]) && solid_at(&s, [-24.8, -24.8, 45.0]), "nothing is rounded");
 }
 
 /// A shell opened by a point pick on a bar's end face keeps opening that face when a parameter
@@ -690,4 +702,26 @@ fn a_shell_point_pick_moved_off_its_face_reopens_only_that_face() {
     assert_eq!(bar.body.face_count(), 11);
     assert!(solid_at(&s, [100.0, 16.0, 10.0]), "the bottom face stays closed");
     assert!(!solid_at(&s, [149.0, 25.0, 10.0]), "the end at x = 150 is open");
+}
+
+/// A two-distance chamfer of a plate's bottom front edge running 220 up the front face, past the
+/// 85 mm where the plate's sides start to taper (rig fillets/5181): the chamfer takes up the front
+/// face's straight side edges too, and lies between their faces, but it is made from the picked
+/// edge alone. Its one face has the picked edge's name everywhere on it (it was named after the
+/// left side's edge, l6, the first edge it took up).
+#[test]
+fn a_chamfer_running_past_the_side_edges_it_takes_up_is_named_by_its_edge() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 0], "x_dir": [1, 0, 0], "y_dir": [0, 0, 1]}, "name": "Bracket"}));
+    let taper = 30.675635228421154;
+    run(&mut s, "sketch.line", json!({"points": [[-50, 0], [50, 0], [50, 85], [taper, 222.5], [-taper, 222.5], [-50, 85]], "closed": true}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch": "Bracket", "distance": 23, "body_name": "Bracket"}));
+    run(&mut s, "solid.chamfer", json!({"edges": [[0, 0, 0]], "distance": 220, "distance2": 11}));
+    let blends: Vec<String> = names(&s, "Bracket").into_iter().map(|(n, _)| n).filter(|n| n.starts_with("F3:blend:")).collect();
+    assert_eq!(blends, vec!["F3:blend:F2:side:l1|F2:start".to_string()]);
+    // On the chamfer's plane, through (x, -11, 0) and (x, 0, 220): below and above z = 85.
+    let on = |z: f64| Vec3::new(0.0, -11.0 * (1.0 - z / 220.0), z);
+    let at = solidcraft_doc::naming::face_names_at(&s.model.state(), &[on(40.0), on(150.0)]);
+    assert_eq!(at, vec![blends[0].clone(), blends[0].clone()]);
 }

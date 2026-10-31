@@ -32,6 +32,7 @@ mod continuity_order;
 #[cfg(test)]
 mod coplanar_tests;
 mod corner_g2;
+mod curvature_comb;
 mod delete_face;
 mod distance;
 mod draft_corners;
@@ -61,8 +62,6 @@ mod issue_1080_tests;
 mod issue_1510_tests;
 #[cfg(test)]
 mod issue_2005_tests;
-#[cfg(test)]
-mod issue_324_tests;
 #[cfg(test)]
 mod issue_616_tests;
 #[cfg(test)]
@@ -140,6 +139,7 @@ mod surfaces;
 mod sweep_path;
 #[cfg(test)]
 mod sweep_rails_tests;
+mod tangent_edge;
 mod tess;
 #[cfg(test)]
 mod thin_face_tests;
@@ -151,17 +151,19 @@ mod topo;
 mod tspline;
 #[cfg(test)]
 mod untouched_faces_tests;
+mod validation;
 mod validity;
 pub mod watch;
 
 pub use blend::{
-    ChamferSide, blend_edges, chamfer, chamfer_sides, fillet, fillet_each, fillet_g2, fillet_g2_corners, fillet_least_setback, fillet_max,
-    fillet_max_each, fillet_setback, tangent_chain,
+    ChamferSide, blend_edges, chamfer, chamfer_max, chamfer_sides, fillet, fillet_each, fillet_g2, fillet_g2_corners, fillet_g2_with_g2_corners,
+    fillet_least_setback, fillet_max, fillet_max_each, fillet_removing, fillet_setback, tangent_chain,
 };
 pub use blend_corner::fillet_radii;
 pub use blend_variable::{RadiusSpline, Taper, fillet_chord, fillet_tapered, fillet_variable, fillet_variable_points, fillet_variable_spline, taper};
 pub use body::{
-    Body, CapSignature, DISPLAY_ANGLE, DisplayShare, EdgeInfo, FaceInfo, FacePaint, FaceSource, MeshTolerance, Paint, Refusal, SurfaceKind,
+    Body, CapSignature, DISPLAY_ANGLE, DisplayShare, EdgeInfo, FaceInfo, FacePaint, FaceSource, MeshTolerance, Paint, PointClass, Refusal,
+    SurfaceKind,
 };
 pub use boundary::{Boundary, boundary_patch};
 pub use boundary_network::{BoundaryCurve, CurveSource, MAX_CHAIN_CURVES, MAX_EDGE_PICKS, boundary_join, boundary_surface};
@@ -176,6 +178,7 @@ pub use continuity::{
 };
 pub use continuity_order::{Construction, Continuity};
 pub use corner_g2::{CURVATURE_SHARE, DEFAULT_SETBACK_FACTOR};
+pub use curvature_comb::{CombTooth, MAX_COMB_TEETH, MIN_COMB_TEETH, comb_edge_near, edge_comb, iso_comb};
 pub use delete_face::delete_faces;
 pub use distance::{BodyDistance, DistanceShape, body_distance};
 pub use draft_corners::{CornerFill, CornerOption, CornerRefusal, CornerReport, DraftCorner, draft_corners};
@@ -201,12 +204,13 @@ pub use native::{brep_record, decode_native_body, encode_native_body, native_pre
 pub use offset::with_same_surface;
 pub use ops::{BoolOp, boolean, half_space, join_apart, place_matrix, split_by_plane, transform, transform_matrix, union_all, union_apart};
 pub use point_path::{
-    PathPiece, PointPath, SpaceBezier, curve_path, edge_path, face_section_along, project_onto_face, sketch_record_curve, sweep_point_path_with,
+    PathPiece, PointPath, SpaceBezier, along_path, curve_path, edge_path, face_section_along, project_onto_face, sketch_record_curve,
+    sweep_point_path_with,
 };
 pub use polybool::faceted_boolean;
 pub use polyhedron::{HalfSpace, convex_polyhedron, draft, offset_faces, shell};
 pub use prism::{PLANAR_FIT_TOL, extrude_planar_regions, planar_regions_boolean};
-pub use prism_measure::certified_prism_equivalent;
+pub use prism_measure::{PrismSection, certified_prism_equivalent, certified_prism_section};
 pub use repair::{Hole, RebuiltFace, RefusedFace, RepairOptions, RepairReport, SewnGap, repair};
 pub use sew::{EdgeSpec, FaceSpec, SurfSpec, sew, sew_touching};
 pub use splitface::{SplitTool, split_body, split_faces, split_faces_with_map};
@@ -230,6 +234,7 @@ pub use sweep_path::{RailFit, SweepControl, SweepOrientation, sweep_path, sweep_
 pub use topo::{CylinderFace, cylinder_end_at, cylinder_face, cylinder_face_at, material_in_ring};
 pub use topo::{TopoCounts, merged_topology, seam_flags};
 pub use tspline::tspline_sheet;
+pub use validation::{Validation, check_kept, validating};
 pub use validity::{SmlibCheck, Validity, smlib_built, smlib_dump_dir, validity};
 
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]

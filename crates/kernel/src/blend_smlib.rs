@@ -29,6 +29,12 @@ pub(crate) fn fillet(body: &Body, edges: &[Vec3], radius: f64) -> Result<Body> {
     imp::blend(body, "fillet", Kind::Round, edges, &vec![radius; edges.len()])
 }
 
+/// [`fillet`], with the picks whose edges a larger, overflowing round removed whole.
+pub(crate) fn fillet_removing(body: &Body, edges: &[Vec3], radius: f64) -> Result<(Body, Vec<Vec3>)> {
+    let (b, dropped) = imp::blend_dropping(body, "fillet", Kind::Round, edges, &vec![radius; edges.len()])?;
+    Ok((b, edges.iter().zip(dropped).filter(|(_, d)| *d).map(|(p, _)| *p).collect()))
+}
+
 /// Each edge rounded at its own radius ([`crate::fillet_each`]).
 pub(crate) fn fillet_each(body: &Body, edges: &[Vec3], radii: &[f64]) -> Result<Body> {
     if radii.len() != edges.len() {
@@ -55,8 +61,10 @@ pub(crate) struct OpenCorners {
 /// [`fillet_setback`] with each set-back corner left open: SMLib builds the rounds up to the
 /// corners' setback sections and the curves on the faces between them, and leaves out the patch
 /// that would fill each corner, for the caller to fill.
-pub(crate) fn fillet_setback_open(body: &Body, edges: &[Vec3], radius: f64, setbacks: &[(Vec3, f64)]) -> Result<OpenCorners> {
-    imp::blend_setback_open(body, edges, &vec![radius; edges.len()], setbacks)
+/// `curvature`: the rounds' sections are curvature-continuous ([`fillet_g2`]), else circular.
+pub(crate) fn fillet_setback_open(body: &Body, edges: &[Vec3], radius: f64, setbacks: &[(Vec3, f64)], curvature: bool) -> Result<OpenCorners> {
+    let kind = if curvature { Kind::Curvature } else { Kind::Round };
+    imp::blend_setback_open(body, kind, edges, &vec![radius; edges.len()], setbacks)
 }
 
 /// Curvature-continuous rounds with the setback of a round of `radius` ([`crate::fillet_g2`]).
@@ -187,19 +195,80 @@ mod imp {
         Ok(())
     }
 
-    pub(super) fn blend(body: &Body, what: &str, kind: Kind, edges: &[Vec3], sizes: &[f64]) -> Result<Body> {
-        body.require_brep(what)?;
-        sizes_ok(what, sizes)?;
-        let picked = resolve(body, edges)?;
-        let next = crate::blend::unfinished_chain(body, edges, &picked.edges, &picked.hidden)?;
-        let kind = match kind {
+    /// SMLib's blend of each kind.
+    fn blend_kind(kind: Kind) -> Blend {
+        match kind {
             Kind::Round => Blend::Round,
             Kind::Curvature => Blend::Curvature,
             Kind::Chord => Blend::Chord,
             Kind::Chamfer => Blend::Chamfer,
-        };
+        }
+    }
+
+    pub(super) fn blend(body: &Body, what: &str, kind: Kind, edges: &[Vec3], sizes: &[f64]) -> Result<Body> {
+        blend_dropping(body, what, kind, edges, sizes).map(|(b, _)| b)
+    }
+
+    /// [`blend`], with whether each of `edges` picked an edge a larger round removed whole: a
+    /// round overflowing its faces is built first, and an edge it takes away is gone.
+    pub(super) fn blend_dropping(body: &Body, what: &str, kind: Kind, edges: &[Vec3], sizes: &[f64]) -> Result<(Body, Vec<bool>)> {
+        body.require_brep(what)?;
+        sizes_ok(what, sizes)?;
+        let picked = resolve(body, edges)?;
+        let next = crate::blend::unfinished_chain(body, edges, &picked.edges, &picked.hidden)?;
+        if matches!(kind, Kind::Round) {
+            crate::blend::rounds_too_small(body, edges, &picked.edges, sizes)?;
+            crate::blend::rounds_into_hollow(body, edges, &picked.edges, sizes)?;
+        }
         let tol = pick_tolerance(body);
-        run(body, what, &picked.edges, |b| b.blend(kind, &picked.points, sizes, tol)).map_err(|e| crate::blend::with_continuation(e, next))
+        let Kind::Round = kind else {
+            let kind = blend_kind(kind);
+            return run_with(body, what, &picked.edges, &[], |b| b.blend_dropping(kind, &picked.points, sizes, tol))
+                .map(|(out, dropped, _)| (out, dropped))
+                .map_err(|e| crate::blend::with_continuation(e, next));
+        };
+        // Constant-radius rounds: the body keeps what they were made on, and a later round at a
+        // corner where they meet blends them again with it (crate::blend_corner).
+        let out = match crate::blend_corner::later_corners(body, &picked.edges, sizes)? {
+            Some((later, new)) => reblend(body, what, &later).map(|(b, dropped_new)| {
+                // A picked seam has no round of its own: only the new edges can be removed.
+                let dropped = picked
+                    .edges
+                    .iter()
+                    .map(|e| new.iter().position(|(n, _)| n == e).is_some_and(|j| dropped_new.get(j).copied().unwrap_or(false)))
+                    .collect();
+                (b.with_rounds(body, new), dropped)
+            }),
+            None => run_with(body, what, &picked.edges, &[], |b| b.blend_dropping(Blend::Round, &picked.points, sizes, tol))
+                .map(|(out, dropped, _)| (out.with_rounds(body, picked.edges.iter().copied().zip(sizes.iter().copied()).collect()), dropped)),
+        };
+        out.map_err(|e| crate::blend::with_continuation(e, next))
+    }
+
+    /// The blend `later` makes of its base, every round from the earliest meeting the new edges'
+    /// corners on and the new edges in one, with its history over `body`, the body the later
+    /// round was given ([`crate::blend_corner::rebase`]), and whether each new edge (in
+    /// `later`'s order) was removed whole by a larger, overflowing round.
+    fn reblend(body: &Body, what: &str, later: &crate::blend_corner::Later) -> Result<(Body, Vec<bool>)> {
+        let base = &later.base;
+        let mesh = base.mesh(&crate::MeshTolerance::chord((base.size() * 2e-3).max(1e-3)))?;
+        let mut indices = Vec::with_capacity(later.edges.len());
+        let mut points = Vec::with_capacity(later.edges.len());
+        let mut radii = Vec::with_capacity(later.edges.len());
+        for (e, r) in &later.edges {
+            let line = mesh.edges.get(*e).ok_or_else(|| failed(what, "corner", "an earlier round's edge is not in the body it was made on"))?;
+            let (mid, _) = crate::body::polyline_mid(line);
+            indices.push(*e);
+            points.push([mid.x, mid.y, mid.z]);
+            radii.push(*r);
+        }
+        sizes_ok(what, &radii)?;
+        let tol = pick_tolerance(base);
+        let (out, dropped, _) = run_with(base, what, &indices, &[], |b| b.blend_dropping(Blend::Round, &points, &radii, tol))?;
+        // The new edges are the last of `later.edges`.
+        let dropped_new = dropped.get(dropped.len().saturating_sub(later.new_count())..).map(<[bool]>::to_vec).unwrap_or_default();
+        let history = out.history().and_then(|h| crate::blend_corner::rebase(h, later, body));
+        Ok((out.with_checked_history(history, &record::counts(&[body])).inherit_regularization_protection(body), dropped_new))
     }
 
     /// Rounds with corner setbacks: each corner point picks the body's nearest vertex (within
@@ -216,6 +285,8 @@ mod imp {
         }
         let picked = resolve(body, edges)?;
         let next = crate::blend::unfinished_chain(body, edges, &picked.edges, &picked.hidden)?;
+        crate::blend::rounds_too_small(body, edges, &picked.edges, sizes)?;
+        crate::blend::rounds_into_hollow(body, edges, &picked.edges, sizes)?;
         let corners = corner_vertices(body, setbacks.iter().map(|(p, _)| *p))?;
         let distances: Vec<f64> = setbacks.iter().map(|(_, d)| *d).collect();
         let tol = pick_tolerance(body);
@@ -226,7 +297,7 @@ mod imp {
     }
 
     /// [`blend_setback`] with the set-back corners left open (`super::OpenCorners`).
-    pub(super) fn blend_setback_open(body: &Body, edges: &[Vec3], sizes: &[f64], setbacks: &[(Vec3, f64)]) -> Result<super::OpenCorners> {
+    pub(super) fn blend_setback_open(body: &Body, kind: Kind, edges: &[Vec3], sizes: &[f64], setbacks: &[(Vec3, f64)]) -> Result<super::OpenCorners> {
         let what = "fillet with open setback corners";
         body.require_brep(what)?;
         sizes_ok(what, sizes)?;
@@ -243,7 +314,7 @@ mod imp {
         let at: Vec<Vec3> = setbacks.iter().map(|(p, _)| *p).collect();
         let tol = pick_tolerance(body);
         let (sheet, holes, order) =
-            run_with(body, what, &picked.edges, &at, |b| b.blend_setback_open(Blend::Round, &picked.points, sizes, &corners, &distances, tol))
+            run_with(body, what, &picked.edges, &at, |b| b.blend_setback_open(blend_kind(kind), &picked.points, sizes, &corners, &distances, tol))
                 .map_err(|e| crate::blend::with_continuation(e, next))?;
         // SMLib's indices in the sheet's own orders.
         let place = |list: &[usize], i: usize| if list.is_empty() { Some(i) } else { list.get(i).copied() };
@@ -350,20 +421,28 @@ mod imp {
                 SmError::NoRoom => KernelError::TooLarge(format!("the {what} is larger than the faces beside its edges allow")),
                 e => failed(what, "operation", e),
             })?;
-            let check = r.check(CheckLevel::All).map_err(|e| failed(what, "check", e))?;
-            if !check.is_valid() {
-                let input_fails = sb.check(CheckLevel::All).is_ok_and(|c| !c.is_valid());
-                let step =
-                    if input_fails { "SMLib's check refuses the result (the input already fails it)" } else { "SMLib's check refuses the result" };
-                return Err(failed(what, step, check));
+            // Checked here unless the evaluation's validation mode leaves it to the feature's end
+            // (`crate::validation`).
+            let step = crate::validation::step();
+            if step == crate::validation::Step::Check {
+                let check = r.check(CheckLevel::All).map_err(|e| failed(what, "check", e))?;
+                if !check.is_valid() {
+                    let input_fails = sb.check(CheckLevel::All).is_ok_and(|c| !c.is_valid());
+                    let step = if input_fails {
+                        "SMLib's check refuses the result (the input already fails it)"
+                    } else {
+                        "SMLib's check refuses the result"
+                    };
+                    return Err(failed(what, step, check));
+                }
             }
             let (out, result_order) = body_from_smlib_ordered(&r)?;
             let history = match (order, &result_order) {
                 (Some(o), Some(ro)) => match r.history().map_err(|e| failed(what, "history", e))?.history(&[o], ro) {
                     Ok(mut h) => {
                         let operand = History::identity(body).edges;
-                        let replaced = blended(body, edges, &h);
-                        solidcraft_smlib::history::blends(&mut h, &operand, &replaced);
+                        let taken_up = taken_up(body, edges, &h);
+                        solidcraft_smlib::history::blends(&mut h, &operand, edges, &taken_up);
                         Some(with_corners(h))
                     }
                     Err(e) => {
@@ -373,7 +452,13 @@ mod imp {
                 },
                 _ => None,
             };
-            Ok((out.with_checked_history(history, &record::counts(&[body])).inherit_regularization_protection(body), extra, result_order))
+            let out = out.with_checked_history(history, &record::counts(&[body])).inherit_regularization_protection(body);
+            let out = if step == crate::validation::Step::Defer {
+                out.left_unchecked(&format!("SMLib {what}"), crate::validation::Checked::AsIs, r)
+            } else {
+                out
+            };
+            Ok((out, extra, result_order))
         })
     }
 
@@ -414,10 +499,10 @@ mod imp {
         h
     }
 
-    /// The operand's edges the blend replaced: each picked edge, and every edge no result edge
-    /// comes from (one the blend's corners took up), in the operand's edge order.
-    fn blended(body: &Body, picked: &[usize], h: &History) -> Vec<usize> {
-        let mut out: BTreeSet<usize> = picked.iter().copied().collect();
+    /// The operand's edges the blend took up besides the picked ones: every edge no result edge
+    /// comes from (one the blend's corners took up, or one it ran over), in the operand's edge
+    /// order.
+    fn taken_up(body: &Body, picked: &[usize], h: &History) -> Vec<usize> {
         let kept: BTreeSet<usize> = h
             .edges
             .iter()
@@ -427,8 +512,7 @@ mod imp {
                 _ => None,
             })
             .collect();
-        out.extend((0..body.edge_count()).filter(|e| !kept.contains(e)));
-        out.into_iter().collect()
+        (0..body.edge_count()).filter(|e| !kept.contains(e) && !picked.contains(e)).collect()
     }
 }
 

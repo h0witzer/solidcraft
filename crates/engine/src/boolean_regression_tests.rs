@@ -682,7 +682,7 @@ fn ring_notch() -> f64 {
 }
 
 /// The wedge of #1617: a side profile in (y, z) extruded 138 mm along x, its back face leaning
-/// by `lean` (the tangent of its angle), with the issue's rounds. The last one runs along the
+/// by `lean` (the tangent of its angle), with the issue's rounds, each on the edges it picked. The last one runs along the
 /// outline of both ends. The issue asked for R1 with `fit: reduce`, which reduces it to 0.854 mm;
 /// that radius is asked for here directly, which builds the same body without the fit's search
 /// (about a minute).
@@ -700,7 +700,14 @@ fn raked_wedge(lean: f64) -> Session {
         ("solid.fillet", json!({"body": "Wedge", "radius": 1.2, "edges": [[0, -60, 22]]})),
         ("solid.fillet", json!({"body": "Wedge", "radius": 1.5, "edges": [[0, -22, 22]]})),
         ("solid.fillet", json!({"body": "Wedge", "radius": 1.5, "edges": [[0, 38, 60]]})),
-        ("solid.fillet", json!({"body": "Wedge", "radius": 4, "edges": [[-69, -60, 12], [69, -60, 12], [-69, back, 30], [69, back, 30]]})),
+        // The issue's R4 rounds these four end edges alone: carried on round the end outline
+        // (tangent propagation, the feature's default since 84bd2daad, after this test), it would
+        // run onto the R1.2 round's end arc, where its rail on the end face would be an arc of
+        // radius 1.2 - 4 < 0.
+        (
+            "solid.fillet",
+            json!({"body": "Wedge", "radius": 4, "tangent_chain": false, "edges": [[-69, -60, 12], [69, -60, 12], [-69, back, 30], [69, back, 30]]}),
+        ),
         ("solid.fillet", json!({"body": "Wedge", "radius": 0.854, "edges": ends})),
     ];
     for (command, params) in steps {
@@ -1060,8 +1067,15 @@ fn cut_keeps_posts_joined_while_apart_in_one_body() {
     // A cut through the middle of the case still leaves two bodies, and says it made the second.
     s.execute("solid.box", &json!({"length": 2, "width": 80, "height": 80, "center": [0, 0, 20], "operation": "new", "body_name": "Saw"})).unwrap();
     let saw = s.execute("solid.combine", &json!({"target": "Case", "tools": ["Saw"], "operation": "cut"})).unwrap();
-    assert_eq!(saw["bodies"], json!(["Case", "Case (1)"]), "{saw}");
+    // `bodies` lists them in the kernel's order. The piece whose least face name sorts first keeps
+    // the name (`lineage::order_lumps`): the +x half, whose `F1:+x` sorts before the -x half's
+    // least, its piece of the case's `F1:+y`.
+    let mut bodies: Vec<&str> = saw["bodies"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    bodies.sort_unstable();
+    assert_eq!(bodies, ["Case", "Case (1)"], "{saw}");
     assert_eq!(saw["created_bodies"], json!(["Case (1)"]), "{saw}");
+    let low_x = |name: &str| s.model.state().body(name).unwrap().mesh().bounds().min.x;
+    assert!((low_x("Case") - 1.0).abs() < 1e-9 && (low_x("Case (1)") + 30.0).abs() < 1e-9);
     let half = (60.0 - 2.0) / 2.0 * 40.0 * 10.0 + posts / 2.0;
     for name in ["Case", "Case (1)"] {
         assert!((volume(&s, name) - half).abs() < 1e-6 * half, "{name}: {} vs {half}", volume(&s, name));
@@ -1154,12 +1168,17 @@ fn prism_edge_in_a_round_cornered_slab_end_face_joins() {
 /// of the bodies as they lie left the hole closed by a skin of no thickness (the plate's top face
 /// whole over the hole, the tool's end face under it), which no volume shows and which was kept.
 /// The hole is open, and the cut takes the whole tool: the circle of radius 3.04 the two
-/// profiles make, from the barrel cut's floor at z 1.6 up to the plate's top at z 2.8.
+/// profiles make, from the barrel cut's floor at z 1.6 up to the plate's top at z 2.8. The design
+/// was saved by an older build: Extrude13 starts from a piece of a face that is no longer that
+/// piece, so it fails, asking for its face again; the rest builds.
 #[test]
 fn cut_up_to_the_plate_top_face_opens_the_hole() {
     let mut script: Value = serde_json::from_str(include_str!("../../../examples/regressions/cut_up_to_face_leaves_skin.json")).unwrap();
     let s = replay_value(&script);
-    assert!(s.model.results.iter().all(|r| r.error.is_none()), "{:?}", s.model.results);
+    let failed =
+        |r: &solidcraft_doc::FeatureResult| r.error.as_deref().and_then(solidcraft_doc::reselect_parts).map(|(feature, _)| feature.to_string());
+    assert!(s.model.results.iter().all(|r| r.error.is_none() || failed(r).as_deref() == Some("Extrude13")), "{:?}", s.model.results);
+    assert!(s.model.results.iter().any(|r| failed(r).as_deref() == Some("Extrude13")));
     let state = s.model.state();
     let body = &state.body("Body7").unwrap().body;
     assert!(body.validity().is_empty(), "{:?}", body.validity());
