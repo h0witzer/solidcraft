@@ -199,7 +199,7 @@ impl Writer {
         let r = json!({
             "bodies": runs(&bodies), "sketches": runs(&sketches), "body_counter": st.body_counter,
             "reserved_body_names": st.reserved_body_names.iter().collect::<Vec<_>>(),
-            "sheets": sheets, "surface_flats": serde_json::to_value(&st.surface_flats).ok()?, "construct": serde_json::to_value(&st.construct).ok()?,
+            "sheets": sheets, "surface_sheets": serde_json::to_value(&st.surface_sheets).ok()?, "construct": serde_json::to_value(&st.construct).ok()?,
             "threads": serde_json::to_value(&st.threads).ok()?,
             "sketch_keys": st.sketch_keys.iter().map(|(f, k)| json!([f, hex(*k)])).collect::<Vec<_>>(),
             "blend_edges": serde_json::to_value(&st.blend_edges).ok()?, "fitted": serde_json::to_value(&st.fitted).ok()?,
@@ -356,7 +356,7 @@ impl SavedModel {
                     .iter()
                     .map(|i| index(Some(i), sheets.len()).and_then(|i| sheets.get(i).cloned().ok_or_else(|| bad("saved model: sheet"))))
                     .collect::<Result<Vec<_>>>()?,
-                surface_flats: match s.get("surface_flats") {
+                surface_sheets: match s.get("surface_sheets") {
                     Some(v) => serde_json::from_value(v.clone()).map_err(invalid)?,
                     None => Vec::new(),
                 },

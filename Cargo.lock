@@ -4115,6 +4115,7 @@ dependencies = [
 name = "solidcraft-develop"
 version = "0.24.0"
 dependencies = [
+ "serde",
  "solidcraft-geom",
  "thiserror 2.0.21",
 ]
@@ -4148,6 +4149,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_path_to_error",
+ "solidcraft-develop",
  "solidcraft-doc",
  "solidcraft-geom",
  "solidcraft-io",

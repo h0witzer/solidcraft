@@ -141,6 +141,10 @@ impl<'a> Query<'a> {
         let s = self.surfaces.get(f)?.as_ref()?;
         let face = self.record.faces.get(f)?;
         let mut uv = s.project(p, None, accept)?;
+        // A plane's projection takes any point: this one must lie on the surface.
+        if !s.point(uv).is_some_and(|q| q.dist(p) <= accept) {
+            return None;
+        }
         let periods = s.domain().period;
         for (k, slot) in uv.iter_mut().enumerate() {
             if let (Some(period), Some([lo, hi])) = (periods.get(k).copied().flatten(), face.domain.get(k)) {

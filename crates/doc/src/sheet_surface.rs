@@ -105,6 +105,7 @@ impl BendFrame {
             radius: f.radius,
             toward_material: f.angle >= 0.0,
             datum,
+            length: f.len,
             ends: ZoneEnds { near: (0.0, 0.0), far: (0.0, 0.0) },
             tails: (Tail::Keep, Tail::Trim),
             relief: (Relief::None, Relief::None),

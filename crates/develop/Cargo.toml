@@ -9,5 +9,6 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+serde = { workspace = true }
 solidcraft-geom = { workspace = true }
 thiserror = { workspace = true }

@@ -89,7 +89,7 @@ impl Rigid2 {
 
 /// A rigid motion of space: a turn that puts the axes on `x`, `y` and `z` (unit vectors, square
 /// to each other and right-handed), then a shift. It never reflects.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Rigid3 {
     pub x: Vec3,
     pub y: Vec3,

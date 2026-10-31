@@ -807,10 +807,10 @@ fn flange_dialog_offers_material_outside_and_tangent_bend_positions() {
     assert_eq!(saved, "tangent");
 }
 
-/// Convert's Thicken mode takes a fixed face and, for a solid or shelled body, its bend edges;
-/// Edit Feature brings both back, still thickening.
+/// Convert's Thicken mode (#6748) takes the faces that make the sheet and the edges that bend
+/// more faces onto them; Edit Feature brings both back, still thickening.
 #[test]
-fn thicken_takes_the_fixed_face_and_the_bend_edges() {
+fn thicken_takes_the_faces_and_the_bend_edges() {
     let mut s = Session::default();
     s.execute("solid.box", &json!({"length": 100, "width": 60, "height": 30, "body_name": "Tray"})).unwrap();
     s.execute("solid.shell", &json!({"faces": [[50, 30, 30]], "thickness": 2})).unwrap();
@@ -821,11 +821,13 @@ fn thicken_takes_the_fixed_face_and_the_bend_edges() {
         *mode = THICKEN;
     }
     convert_switch(&mut d.inputs, true);
-    assert_eq!(d.inputs.iter().map(|i| i.label).collect::<Vec<_>>(), ["Fixed Face", "Bend Edges"]);
+    assert_eq!(d.inputs.iter().map(|i| i.label).collect::<Vec<_>>(), ["Faces", "Bend Edges"]);
     assert!(apply_commands(&app, &d).is_err(), "nothing to thicken without a face");
-    // The face alone is the plate conversion: no `bends`.
+    // The floor alone: one face and no `bends`.
     d.inputs[0].items = face_sel(&app.session, Vec3::new(50.0, 30.0, 0.0)).into_iter().collect();
-    assert!(apply_commands(&app, &d).unwrap()[0].1.get("bends").is_none());
+    let c = apply_commands(&app, &d).unwrap();
+    assert!(c[0].1.get("bends").is_none() && c[0].1["faces"] == json!([]), "{}", c[0].1);
+    assert_eq!(c[0].1["face"], json!([50.0, 30.0, 0.0]));
     let edges: Vec<Sel> = [[50.0, 0.0, 0.0], [100.0, 30.0, 0.0], [50.0, 60.0, 0.0], [0.0, 30.0, 0.0]]
         .iter()
         .filter_map(|p| edge_sel(&app.session, Vec3::new(p[0], p[1], p[2])))
@@ -894,10 +896,10 @@ fn convert_takes_the_body_its_bends_and_the_faces_it_skips() {
     let e = app.dialog.clone().unwrap();
     assert!(matches!(&e.kind, Kind::Sheet(Sm::Convert { mode: 0, side: 0, .. })));
     assert_eq!(e.inputs.iter().map(|i| i.items.len()).collect::<Vec<_>>(), [1, 4, 1]);
-    // Switched to Thicken, the fixed face is to pick and the bends stay.
+    // Switched to Thicken, the faces are to pick and the bends stay.
     let mut back = e.inputs.clone();
     convert_switch(&mut back, true);
-    assert_eq!(back.iter().map(|i| (i.label, i.items.len())).collect::<Vec<_>>(), [("Fixed Face", 0), ("Bend Edges", 4)]);
+    assert_eq!(back.iter().map(|i| (i.label, i.items.len())).collect::<Vec<_>>(), [("Faces", 0), ("Bend Edges", 4)]);
 }
 
 /// The Path Flange dialog takes the edge and the path's sketch lines: one feature, one body,

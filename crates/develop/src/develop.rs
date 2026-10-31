@@ -7,7 +7,7 @@ use solidcraft_geom::{Aabb2, Loop2, Region2, Seg2, Vec2, Vec3};
 
 use crate::chart::Flatten;
 use crate::fold::Wrap;
-use crate::{Anchor, Bend, Corner, Joint, JointKind, Lap, Panel, Relief, Rigid2, Rip, Sheet, Surface, Tail};
+use crate::{Anchor, Bend, Corner, CornerRelief, Joint, JointKind, Lap, Panel, Relief, Rigid2, Rip, Sheet, Surface, Tail};
 
 /// The most panels and joints one development takes: a work limit, never a truncation.
 const MAX_PANELS: usize = 10_000;
@@ -759,7 +759,7 @@ fn trim_start(b: &mut Stretch, ib: usize, v: f64) {
 /// Where the edges of `a` cross those of `b`: each crossing's edge and parameter on either, and
 /// its point. Each edge is looked at as chords ([`CROSSING_CHORDS`] of a curve, one of a line),
 /// and a crossing of chords followed onto the edges themselves.
-fn crossings(a: &[Seg2], b: &[Seg2]) -> Vec<(usize, f64, usize, f64, Vec2)> {
+pub fn crossings(a: &[Seg2], b: &[Seg2]) -> Vec<(usize, f64, usize, f64, Vec2)> {
     let chords = |s: &Seg2| if matches!(s, Seg2::Line { .. }) { 1 } else { CROSSING_CHORDS };
     let mut out: Vec<(usize, f64, usize, f64, Vec2)> = Vec::new();
     for (ia, sa) in a.iter().enumerate() {
@@ -886,8 +886,13 @@ fn add_zone(
             out.trims.push(Trim { panel, joint: j, region, line: [corners[0], corners[1]] });
         }
         // A bend relief where the panel runs on past an end: a slot past the end, from inside
-        // the panel's tangent line out through the band. `out_dir` runs past the end.
+        // the panel's tangent line out through the band, and on beside the zone and the other
+        // panel as far as that panel reaches across the joint, and the slot's width further,
+        // so that whatever of this panel lies beside them in the flat lets them go. `out_dir`
+        // runs past the end.
         let Some((lo, hi)) = extent else { continue };
+        let (other, beyond) = if depth > 0.0 { (joint.b.panel, far_line) } else { (joint.a.panel, near_line) };
+        let across = panel_across(sheet, other, if depth > 0.0 { &joint.b } else { &joint.a })?;
         for (relief, u, out_dir) in [(bend.relief.0, u0, -1.0), (bend.relief.1, u1, 1.0)] {
             let Relief::Slot { width: w, depth: d } = relief else { continue };
             let runs_on = if out_dir < 0.0 { lo < u - w - EDGE_TOL } else { hi > u + w + EDGE_TOL };
@@ -895,7 +900,10 @@ fn add_zone(
                 continue;
             }
             let (s0, s1) = if out_dir < 0.0 { (u - w, u) } else { (u, u + w) };
-            let (l0, l1) = (line - depth.signum() * d.max(0.0), line + depth);
+            // The other panel's anchor lies its setback back across the zone from its tangent line.
+            let past = beyond + depth.signum() * (across - setback + w);
+            let l1 = if depth > 0.0 { (line + depth).max(past) } else { (line + depth).min(past) };
+            let (l0, l1) = (line - depth.signum() * d.max(0.0), l1);
             let corners = [frame.at(s0, l0), frame.at(s1, l0), frame.at(s1, l1), frame.at(s0, l1)];
             let region = Region2 { outer: Loop2::polygon(&corners).ccw(), holes: Vec::new() };
             out.trims.push(Trim { panel, joint: j, region, line: [corners[0], corners[1]] });
@@ -1046,7 +1054,12 @@ fn corner_cut(dev: &Development, corner: &Corner) -> Option<Region2> {
         return None;
     }
     let c = p + u * ((q - p).cross(w) / cross);
-    let outer = if corner.round {
+    let round = match corner.relief {
+        CornerRelief::Round => true,
+        CornerRelief::Square => false,
+        CornerRelief::Notch | CornerRelief::Tear => return None,
+    };
+    let outer = if round {
         Loop2 { segs: vec![Seg2::Arc { center: c, radius: r, start: 0.0, sweep: PI }, Seg2::Arc { center: c, radius: r, start: PI, sweep: PI }] }
     } else {
         // Its sides run along the two bends, each `r` from the center.
@@ -1085,6 +1098,16 @@ fn band_extent(sheet: &Sheet, panel: usize, place: &Rigid2, frame: &JointFrame, 
         }
     }
     Ok(extent)
+}
+
+/// How far panel `panel`'s region reaches across a joint from its anchor `at` there: what a bend
+/// relief beside it runs on past. A curved panel's is not measured yet (none).
+fn panel_across(sheet: &Sheet, panel: usize, at: &Anchor) -> Result<f64, DevelopError> {
+    let p = sheet.panels.get(panel).ok_or(DevelopError::NoPanel(panel))?;
+    if p.surface != Surface::Plane || p.region.outer.segs.is_empty() {
+        return Ok(0.0);
+    }
+    Ok((&p.region.outer.polyline(REACH_TOL)).into_iter().map(|q| (*q - at.origin).cross(at.dir).abs()).fold(0.0, f64::max))
 }
 
 /// How far a panel's material reaches: the diagonal of its region's bounding box, which bounds

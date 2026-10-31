@@ -3,12 +3,14 @@
 
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 use solidcraft_geom::bspline::NurbsSurface;
 use solidcraft_geom::{Region2, Seg2, Vec2, Vec3};
 
 /// A sheet metal part's surfaces: the panels and the joints between them. The material lies on
 /// the side of the sheet that a chart's `u × v` points to, `thickness` deep.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Sheet {
     pub thickness: f64,
     /// Where the neutral surface lies through the thickness, as a fraction of it from the
@@ -20,23 +22,33 @@ pub struct Sheet {
     pub corners: Vec<Corner>,
 }
 
-/// A relief where two bends meet at a corner, cut from the flat pattern wherever it reaches:
-/// both bends' zones and every panel round the corner alike, none of them first. It is centered
-/// where the two zones' center lines cross, `size` across: a round, or else the four-sided
-/// relief whose sides run along the two bends, `size` apart.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// What is cut where two bends meet at a corner. A round or a square relief is cut from the flat
+/// pattern wherever it reaches: both bends' zones and every panel round the corner alike, none of
+/// them first. It is centered where the two zones' center lines cross, `size` across: a round,
+/// or the four-sided relief whose sides run along the two bends, `size` apart. A notch or a tear
+/// is the bends' own ends (see [`Relief`]), and cuts nothing more.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Corner {
     /// The two bend joints.
     pub joints: [usize; 2],
-    pub round: bool,
+    pub relief: CornerRelief,
     pub size: f64,
+}
+
+/// The shape of a corner's relief (see [`Corner`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CornerRelief {
+    Notch,
+    Tear,
+    Round,
+    Square,
 }
 
 /// A face of the sheet. Its region is drawn in its surface's own parameters, so whatever is drawn
 /// on the panel keeps its place on the surface, and the surface's flow (its parameter lines)
 /// carries to the flat exactly. An empty region is a panel with no material of its own, which
 /// still carries the joints on it.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Panel {
     pub name: String,
     pub surface: Surface,
@@ -47,7 +59,7 @@ pub struct Panel {
 /// radius is the panel's own geometry, where a bend's is a value of the joint. It flattens
 /// through its neutral surface, as a bend does, so a roll and a bend of one radius give the same
 /// flat. The parameters run so that the material lies on the side their `u x v` points to.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum Surface {
     /// A planar panel: its parameters are its plane's coordinates.
     #[default]
@@ -67,7 +79,7 @@ pub enum Surface {
 /// Where a joint lies on one of its panels: a straight line in the panel's parameters, through
 /// `origin` along the unit `dir`. The two anchors of a joint are the same line on the sheet,
 /// with the same origin and direction, and the `a` panel's material lies on the left of it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Anchor {
     pub panel: usize,
     pub origin: Vec2,
@@ -75,14 +87,14 @@ pub struct Anchor {
 }
 
 /// Two panels meeting along a line.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Joint {
     pub a: Anchor,
     pub b: Anchor,
     pub kind: JointKind,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum JointKind {
     /// The sheet runs on from one panel to the other round a bend.
     Bend(Bend),
@@ -98,7 +110,7 @@ pub enum JointKind {
 /// panels' surfaces. At every point of the edge each panel is cut back from it, square to it on
 /// its own surface, by as much as its lap asks there: so a rip between two planes, round a
 /// roll's rim or along a crease between two free-form panels is the one operation.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Rip {
     /// The edge on each panel `(a, b)`, in its parameters: the same points of it, in order from
     /// the joint's start (its anchors' origin) to its end. Two make a straight edge.
@@ -116,7 +128,7 @@ pub struct Rip {
 
 /// How a rip parts its panels: what each is cut back from the edge, given how far the sheet
 /// turns there and how thick it is.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Lap {
     /// Each panel's metal kept `gap / 2` off the surface halfway between the two, through its
     /// whole thickness: a mitered corner, or a slit `gap` wide through a flat panel.
@@ -155,7 +167,7 @@ impl Lap {
 }
 
 /// A bend between two panels.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Bend {
     /// How far the sheet turns, in radians, more than 0 and at most a half turn.
     pub angle: f64,
@@ -166,6 +178,9 @@ pub struct Bend {
     pub toward_material: bool,
     /// What the anchors mark on the panels.
     pub datum: Datum,
+    /// How long the edge is where the two panels meet, along the anchors from their origin: the
+    /// zone's ends lie within it, where the corners and rips at its ends leave them.
+    pub length: f64,
     /// The bend zone's ends along the joint.
     pub ends: ZoneEnds,
     /// What each panel keeps beyond the zone's ends, between its anchor and where the bend
@@ -177,7 +192,7 @@ pub struct Bend {
 
 /// What is cut at one end of a bend's zone, from both its panels alike. Reliefs are the bend's,
 /// never drawn on its panels: they move with its radius, its thickness and its ends.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum Relief {
     /// Nothing: past the end each panel keeps or trims its material as its tail says, so a kept
     /// tail is torn from the bend along the end.
@@ -203,7 +218,7 @@ pub enum Relief {
 }
 
 /// The line the anchors mark.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Datum {
     /// The virtual sharp, where the two panels' surfaces would meet if the bend had no radius.
     /// Changing the radius moves neither panel. A half turn has no sharp.
@@ -216,14 +231,14 @@ pub enum Datum {
 /// The bend zone along its joint, in lengths along the anchors from their origin: where its
 /// edge on the `a` side starts and ends (`near`), and where its edge on the `b` side does
 /// (`far`). A square end has the same length in both; a torn end does not.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ZoneEnds {
     pub near: (f64, f64),
     pub far: (f64, f64),
 }
 
 /// What a panel keeps beyond the bend zone's ends, between its anchor and its tangent line.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tail {
     /// The panel's own outline: a base that runs on beside a shorter flange keeps its edge.
     Keep,

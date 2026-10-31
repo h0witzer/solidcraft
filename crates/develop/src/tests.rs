@@ -3,8 +3,8 @@ use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 use solidcraft_geom::{Aabb2, Loop2, Region2, Seg2, Vec2, Vec3};
 
 use crate::{
-    Anchor, Bend, Corner, Datum, DevelopError, Development, EdgeFrom, Joint, JointKind, Lap, Panel, Relief, Rigid2, Rigid3, Rip, Sheet, Surface,
-    Tail, ZoneEnds, develop, fold,
+    Anchor, Bend, Corner, CornerRelief, Datum, DevelopError, Development, EdgeFrom, Joint, JointKind, Lap, Panel, Relief, Rigid2, Rigid3, Rip, Sheet,
+    Surface, Tail, ZoneEnds, develop, fold,
 };
 
 const T: f64 = 2.0;
@@ -47,6 +47,7 @@ fn bend(angle: f64, datum: Datum, span: (f64, f64)) -> Bend {
         radius: R,
         toward_material: true,
         datum,
+        length: span.1,
         ends: ZoneEnds { near: span, far: span },
         tails: (Tail::Keep, Tail::Trim),
         relief: (Relief::None, Relief::None),
@@ -701,7 +702,7 @@ fn corner(round: bool, flip: bool) -> Sheet {
             },
             second,
         ],
-        corners: vec![Corner { joints: [0, 1], round, size: 8.0 }],
+        corners: vec![Corner { joints: [0, 1], relief: if round { CornerRelief::Round } else { CornerRelief::Square }, size: 8.0 }],
     }
 }
 

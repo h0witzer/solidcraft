@@ -20,8 +20,11 @@
 //! stands.
 //!
 //! Everything is read from the body's B-rep record, exactly: each face's surface and loops, each
-//! edge's curve, rays for a shell's thickness. A roll that closes round its axis opens along its
-//! own seam.
+//! edge's curve. A shell's or a plate's other side is, of the faces level with each face and
+//! facing back at it, the one it meets first over the most of its area; what a hole of a face
+//! opens onto (a hole through, a recess, a boss) is found by following the faces round it. A roll's edges are read into its
+//! chart at points, as lines where they run straight there and splines through the points
+//! elsewhere. A roll that closes round its axis opens along its own seam.
 //!
 //! Not converted yet: a free-form face (not developed from its spline yet), a sphere or a torus
 //! (neither is developable), a bend on the edge of a roll, and a shell's face that meets the
@@ -30,8 +33,8 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use solidcraft_develop::{
-    Anchor, Bend, Corner, Datum, Development, Fold, Joint, JointKind, Lap, Panel, Relief, Rigid3, Rip, Sheet, Surface, Tail, ZoneEnds, curve_through,
-    develop, fold,
+    Anchor, Bend, Corner, CornerRelief, Datum, Development, Fold, Joint, JointKind, Lap, Panel, Relief, Rigid2, Rigid3, Rip, Sheet, Surface, Tail,
+    ZoneEnds, curve_through, develop, fold,
 };
 use solidcraft_geom::brep::Loop as Bounds;
 use solidcraft_geom::brep::query::Query;
@@ -64,6 +67,41 @@ pub struct ConvertRule {
     pub relief_depth: f64,
 }
 
+/// What a sheet's bends end with (see [`settle`]): the gap a rip leaves between its panels, the
+/// relief at a corner where two bends meet and its size, and the bend relief where a bend ends
+/// beside more of its panel (how wide along the bend, and how far inside the panel's tangent
+/// line it is cut from).
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Reliefs {
+    pub gap: f64,
+    pub corner: CornerRelief,
+    pub corner_size: f64,
+    pub width: f64,
+    pub depth: f64,
+}
+
+impl Reliefs {
+    pub fn of(rule: &ConvertRule) -> Reliefs {
+        Reliefs {
+            gap: rule.gap,
+            corner: corner_relief(rule.corner_relief),
+            corner_size: rule.corner_relief_size,
+            width: rule.relief_width,
+            depth: rule.relief_depth,
+        }
+    }
+}
+
+/// A rule's corner relief as a sheet's corner has it.
+pub fn corner_relief(shape: ReliefShape) -> CornerRelief {
+    match shape {
+        ReliefShape::Notch => CornerRelief::Notch,
+        ReliefShape::Tear => CornerRelief::Tear,
+        ReliefShape::Round => CornerRelief::Round,
+        ReliefShape::Rectangular => CornerRelief::Square,
+    }
+}
+
 /// A rip whose edge leaves a bend's end this near the bend's own way (the cosine between them)
 /// carries on along the bend: both ways are exact, to a rounding.
 const ALONGSIDE: f64 = 1.0 - 1e-9;
@@ -83,6 +121,10 @@ pub struct SurfaceConversion {
     pub edges: Vec<Vec3>,
     pub thickness: f64,
     pub notes: Vec<String>,
+    pub reliefs: Reliefs,
+    /// The sheet keeps the body's own thickness (a shell's or a plate's), so its faces' recesses
+    /// are the sheet's.
+    pub own_thickness: bool,
     /// The flat's pieces, cut once for both the flat and the folded solid.
     pieces: std::sync::OnceLock<Vec<(Piece, Region2)>>,
 }
@@ -165,19 +207,6 @@ impl Shape {
 
     fn angular(&self) -> bool {
         !matches!(self, Shape::Plane { .. })
-    }
-
-    /// The point of the face at parameters `c` ([`Shape::params`], the angle unwrapped or not).
-    fn point(&self, c: Vec2) -> Vec3 {
-        let radial = |e1: Vec3, e2: Vec3, inward: bool| {
-            let a = if inward { c.y } else { -c.y };
-            e1 * a.cos() + e2 * a.sin()
-        };
-        match *self {
-            Shape::Plane { plane, .. } => plane.to_world(c),
-            Shape::Cylinder { origin, axis, e1, e2, radius, inward } => origin + axis * c.x + radial(e1, e2, inward) * radius,
-            Shape::Cone { apex, axis, e1, e2, half, inward } => apex + (axis * half.cos() + radial(e1, e2, inward) * half.sin()) * c.x,
-        }
     }
 
     /// Where the face puts its panel's frame (see `solidcraft_develop::fold`): a plane's
@@ -360,10 +389,10 @@ fn bend_cut(v: Vec3, d: Vec3, m: Vec3, normals: (Vec3, Vec3), toward: bool, r: f
     Some(((gap / 2.0 - nearest) / away).max(0.0))
 }
 
-/// A bend as Convert works out its ends: its joint, its edge's ends (its `a` face's material on
-/// the left running from the first), its faces' normals `(a, b)` away from their material,
-/// whether it turns toward the material, its edge's length, its anchors, and how far each anchor
-/// lies from its tangent line.
+/// A bend as its ends are worked out: its joint, its edge's ends (its `a` panel's material on the
+/// left running from the first), its panels' normals `(a, b)` away from their material, whether
+/// it turns toward the material, its edge's length, its anchors, how far each anchor lies from
+/// its tangent line, and its inside radius.
 struct BendEdge {
     joint: usize,
     ends: [Vec3; 2],
@@ -373,6 +402,7 @@ struct BendEdge {
     a: Anchor,
     b: Anchor,
     setback: f64,
+    radius: f64,
 }
 
 impl BendEdge {
@@ -544,6 +574,60 @@ fn bend_section(v: Vec3, (na, nb): (Vec3, Vec3), toward: bool, r: f64, t: f64) -
     Some((axis, ua, across, cos.acos()))
 }
 
+/// Where face shape `g` lies against face shape `f` when it is level with it: a parallel plane,
+/// or a roll on the same axis (a cone opening the same way at the same angle). How deep behind
+/// `f` it lies, into `f`'s material (negative in front of it), and whether it faces the way `f`
+/// does.
+fn level_of(f: &Shape, g: &Shape, tol: f64) -> Option<(f64, bool)> {
+    let side = |inward: bool| if inward { 1.0 } else { -1.0 };
+    match (*f, *g) {
+        (Shape::Plane { plane: pf, out: of }, Shape::Plane { plane: pg, out: og }) => {
+            (of.cross(og).len() <= 1e-9).then(|| ((pf.origin - pg.origin).dot(of), of.dot(og) > 0.0))
+        }
+        (Shape::Cylinder { origin: a, axis: u, radius: r, inward: i, .. }, Shape::Cylinder { origin: c, axis: w, radius: k, inward: j, .. }) => {
+            let off = (c - a) - u * (c - a).dot(u);
+            (u.cross(w).len() <= 1e-9 && off.len() <= tol * 10.0).then(|| ((r - k) * side(i), i == j))
+        }
+        (Shape::Cone { apex: a, axis: u, half: h, inward: i, .. }, Shape::Cone { apex: c, axis: w, half: k, inward: j, .. }) => {
+            let off = (c - a) - u * (c - a).dot(u);
+            (u.dot(w) >= 1.0 - 1e-9 && (h - k).abs() <= 1e-9 && off.len() <= tol * 10.0).then(|| ((c - a).dot(u) * h.sin() * side(i), i == j))
+        }
+        _ => None,
+    }
+}
+
+/// How to chart a face on shape `g`, level with `f` (see [`level_of`]), in `f`'s parameters, each
+/// point where the normal through it meets `f`: the shape to chart it with, and the shift that
+/// then puts it in `f`'s chart.
+fn charted_on(f: &Shape, g: &Shape) -> Option<(Shape, Vec2)> {
+    match (*f, *g) {
+        (Shape::Plane { plane: pf, .. }, Shape::Plane { plane: pg, out }) => {
+            let n = pf.normal();
+            let plane = Plane::new(pf.origin + n * (pg.origin - pf.origin).dot(n), pf.x, pf.y)?;
+            Some((Shape::Plane { plane, out }, Vec2::ZERO))
+        }
+        (Shape::Cylinder { origin, axis, e1, e2, inward, .. }, Shape::Cylinder { radius, .. }) => {
+            Some((Shape::Cylinder { origin, axis, e1, e2, radius, inward }, Vec2::ZERO))
+        }
+        (Shape::Cone { apex: a, axis, e1, e2, half, inward }, Shape::Cone { apex: c, .. }) => {
+            Some((Shape::Cone { apex: c, axis, e1, e2, half, inward }, Vec2::new((c - a).dot(axis) * half.cos(), 0.0)))
+        }
+        _ => None,
+    }
+}
+
+/// What a loop of a shell's or a plate's face opens onto, followed across the faces round it to
+/// the first faces level with the face: material standing on the face (a boss, at that face); a
+/// floor facing the way the face does behind it (a recess: its walls and floors, a hole through
+/// its floor or not); the face's other side, or a floor facing away (a hole through); or none
+/// of these.
+enum Opening {
+    Raised(usize),
+    Recess(BTreeSet<usize>),
+    Through,
+    Open,
+}
+
 /// What an edge between two faces of the sheet is.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Role {
@@ -552,10 +636,32 @@ enum Role {
     Rip,
 }
 
-/// Converts `mb` to sheet metal from its faces, less the faces at the `skip` points, bending at the edges at
-/// the `bends` points and cutting every other sharp edge between two faces of the sheet open.
-/// A solid's material lies inside its faces, or outside them when `outward`.
-pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip: &[Vec3], outward: bool) -> Result<SurfaceConversion> {
+/// The faces of a body that become the sheet.
+#[derive(Clone, Copy, Debug)]
+pub enum SheetFaces<'a> {
+    /// Convert: every face of a solid, or of one side of a shell or a plate, less the faces at
+    /// these points.
+    AllBut(&'a [Vec3]),
+    /// Thicken: the faces at these points, and every face a bend joins to them.
+    Picked(&'a [Vec3]),
+}
+
+/// Converts `mb` to sheet metal from its `faces`, bending at the `bends` and cutting every other
+/// sharp edge between two faces of the sheet open. A bend is picked on its edge, or, where it is
+/// modelled with its radius, on its roll: the roll and the faces it runs smoothly into join the
+/// sheet. A solid's material lies inside its faces, or outside them when `outward`. The rule's
+/// values are read at the sheet's thickness: `rule(Some(t))` for a shell's or a plate's own,
+/// `rule(None)` for a solid, which takes the rule's. Points are the body's own; what it says
+/// gives them where `to_world` puts them.
+pub fn convert_surfaces(
+    mb: &ModelBody,
+    rule: &dyn Fn(Option<f64>) -> Result<ConvertRule>,
+    bends: &[Vec3],
+    faces: SheetFaces,
+    outward: bool,
+    to_world: &crate::Mat,
+) -> Result<SurfaceConversion> {
+    let at = |p: Vec3| at(crate::apply_point(to_world, p));
     let b = &mb.body;
     if b.is_mesh() {
         return err("a mesh body has no faces to convert: make it a solid first");
@@ -572,15 +678,31 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
     let middle_of = |e: usize| q.edge_interval(e).and_then(|[t0, t1]| q.edge_at(e, 0.5 * (t0 + t1))).map(|d| d.0);
     let on_edge = |p: Vec3, e: usize| q.edge_distance(e, p, sag).is_some_and(|d| d <= near);
     let picked = |picks: &[Vec3], e: usize| picks.iter().any(|p| on_edge(*p, e));
-    if let Some(p) = bends.iter().find(|p| !(0..edge_count).any(|e| on_edge(**p, e))) {
-        return err(format!("no edge of the body at the bend point {}", at(*p)));
+    let face_at = |p: Vec3, what: &str| -> Result<usize> {
+        match q.faces_at(p, near).first() {
+            Some(&(_, g)) => Ok(g),
+            None => err(format!("no face of the body at the {what} point {}", at(p))),
+        }
+    };
+    // A bend picked off every edge is one modelled with its radius, picked on its roll.
+    let is_roll = |g: usize| matches!(face_surface(b, g), Some(FaceSurface::Cylinder { .. } | FaceSurface::Cone { .. }));
+    let mut rolled = BTreeSet::new();
+    for p in bends.iter().filter(|p| !(0..edge_count).any(|e| on_edge(**p, e))) {
+        match q.faces_at(*p, near).first() {
+            Some(&(_, g)) if is_roll(g) => {
+                rolled.insert(g);
+            }
+            Some(_) => return err(format!("the bend at {} is on a face, not an edge: pick the edge it bends at", at(*p))),
+            None => return err(format!("no edge of the body at the bend point {}", at(*p))),
+        }
     }
+    let (skip, chosen) = match faces {
+        SheetFaces::AllBut(points) => (points, None),
+        SheetFaces::Picked(points) => (&[][..], Some(points.iter().map(|p| face_at(*p, "picked face")).collect::<Result<BTreeSet<usize>>>()?)),
+    };
     let mut skipped = BTreeSet::new();
     for p in skip {
-        let Some(&(_, g)) = q.faces_at(*p, near).first() else {
-            return err(format!("no face of the body at the skipped face point {}", at(*p)));
-        };
-        skipped.insert(g);
+        skipped.insert(face_at(*p, "skipped face")?);
     }
     // The two faces each edge is between (one face twice for a roll's own seam), and which faces
     // meet at an edge.
@@ -596,11 +718,6 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
     let modelled: Vec<Option<Shape>> = (0..count).map(|f| Shape::of(b, &q, f, false, tol).ok()).collect();
     let probe = |f: usize| modelled.get(f).copied().flatten();
     let charts: Vec<Option<(Region2, Vec<UseChart>)>> = (0..count).map(|f| probe(f).and_then(|s| face_chart(b, &q, &s, f, sag, tol).ok())).collect();
-    let inside = |f: usize| -> Option<(Vec3, Vec3)> {
-        let (shape, (region, _)) = (probe(f)?, charts.get(f)?.as_ref()?);
-        let p = shape.point(region.interior_point());
-        Some((p, shape.out(p)))
-    };
     let extent = |f: usize| -> f64 {
         let Some(Some((_, uses))) = charts.get(f) else { return 0.0 };
         let (big, small) =
@@ -608,29 +725,88 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
         let (lo, hi) = uses.iter().flat_map(|u| &u.points).fold((big, small), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
         if lo.x <= hi.x { lo.dist(hi) } else { 0.0 }
     };
-    // Behind face `f`: the first face a ray from inside it meets along its inward normal, how
-    // far it is, and whether it faces back at `f` (a sheet's other side).
-    let behind = |f: usize| -> Option<(f64, usize, bool)> {
-        let (p, out) = inside(f)?;
-        let (d, g, hit) = q.ray(p, -out, tol).into_iter().find(|h| h.1 != f)?;
-        let back = q.face_uv(g, hit, tol).and_then(|uv| q.face_normal(g, uv)).is_some_and(|n| n.dot(out) < -1.0 + 1e-9);
-        Some((d, g, back))
+    let cut = |a: &[Region2], b: &[Region2], op: solidcraft_kernel::BoolOp| solidcraft_kernel::planar_regions_boolean(a, b, op, tol).ok();
+    let area = |r: &[Region2]| r.iter().map(Region2::area).sum::<f64>();
+    // Face `g`, level with face `f` (see `level_of`), in `f`'s parameters: each of its points
+    // where the normal through it meets `f`. A roll's chart is laid a turn either way too, where
+    // that covers more of `f`.
+    let projected = |f: usize, g: usize| -> Option<Region2> {
+        let (sf, sg) = (probe(f)?, probe(g)?);
+        let rf = &charts.get(f)?.as_ref()?.0;
+        let (twin, shift) = charted_on(&sf, &sg)?;
+        let (rg, _) = face_chart(b, &q, &twin, g, sag, tol).ok()?;
+        let turns: &[f64] = if sf.angular() { &[0.0, -std::f64::consts::TAU, std::f64::consts::TAU] } else { &[0.0] };
+        turns
+            .iter()
+            .map(|k| Rigid2 { cos: 1.0, sin: 0.0, shift: shift + Vec2::new(0.0, *k) }.region(&rg))
+            .map(|r| {
+                let on = cut(std::slice::from_ref(rf), std::slice::from_ref(&r), solidcraft_kernel::BoolOp::Intersect).map_or(0.0, |x| area(&x));
+                (on, r)
+            })
+            .max_by(|x, y| x.0.total_cmp(&y.0))
+            .map(|(_, r)| r)
     };
+    // Behind face `f`: of the faces level with it that face back at it from inside its material,
+    // the one it meets first over the most of its area (a shell's or a plate's other side), and
+    // how far behind it lies; with `true`, that it faces back. Found from the faces' surfaces and
+    // loops: nearest first, each face takes what of `f` the nearer ones left, so a wall's inside
+    // face comes before the wall across the part, and a recess's floor in the other side takes
+    // only its own small part.
+    let behinds: Vec<Option<(f64, usize)>> = (0..count)
+        .map(|f| {
+            let sf = probe(f)?;
+            let mut found: Vec<(f64, usize)> = (0..count)
+                .filter(|g| *g != f)
+                .filter_map(|g| {
+                    let (depth, same) = level_of(&sf, &probe(g)?, tol)?;
+                    (!same && depth > tol).then_some((depth, g))
+                })
+                .collect();
+            found.sort_by(|x, y| x.0.total_cmp(&y.0).then(x.1.cmp(&y.1)));
+            let mut open = vec![charts.get(f)?.as_ref()?.0.clone()];
+            let mut best: Option<(f64, f64, usize)> = None;
+            for (depth, g) in found {
+                let Some(p) = projected(f, g) else { continue };
+                let p = std::slice::from_ref(&p);
+                let first = cut(&open, p, solidcraft_kernel::BoolOp::Intersect).map_or(0.0, |x| area(&x));
+                if first > tol * tol && best.is_none_or(|(a, ..)| first > a) {
+                    best = Some((first, depth, g));
+                }
+                open = cut(&open, p, solidcraft_kernel::BoolOp::Cut).unwrap_or_default();
+                if open.is_empty() {
+                    break;
+                }
+            }
+            best.map(|(_, depth, g)| (depth, g))
+        })
+        .collect();
+    let behind = |f: usize| behinds.get(f).copied().flatten().map(|(d, g)| (d, g, true));
 
     // The walk starts on the first face, in the body's own order, that another faces back at a
     // small distance behind, as a shell's or a plate's do: the sheet keeps that thickness and
     // its material. With none, the body is a solid, which takes the rule's thickness, and the
     // walk starts on its first face. Nothing about the sheet depends on where it starts.
     let thin = |f: usize| behind(f).filter(|(d, _, back)| *back && *d > 0.0 && d * 6.0 <= extent(f)).map(|(d, ..)| d);
-    let first_thin = (0..count).filter(|f| probe(*f).is_some()).find_map(|f| thin(f).map(|d| (f, d)));
-    let (start, sheet) = match first_thin {
-        Some((f, d)) => (f, Some(d)),
-        None => match (0..count).find(|f| probe(*f).is_some()) {
+    // Thickening, the walk starts on the first face picked, and the sheet is a shell's or a
+    // plate's where that face has another facing back at it a small distance behind.
+    let first_thin = match &chosen {
+        Some(set) => set.first().map(|f| (*f, thin(*f))).and_then(|(f, d)| d.map(|d| (f, d))),
+        None => (0..count).filter(|f| probe(*f).is_some()).find_map(|f| thin(f).map(|d| (f, d))),
+    };
+    let (start, sheet) = match (first_thin, &chosen) {
+        (Some((f, d)), _) => (f, Some(d)),
+        (None, Some(set)) => match set.first() {
+            Some(f) => (*f, None),
+            None => return err("Thicken starts from a face: pick one"),
+        },
+        (None, None) => match (0..count).find(|f| probe(*f).is_some()) {
             Some(f) => (f, None),
             None => return err("not supported yet: a body with no face that is a plane, a cylinder or a cone"),
         },
     };
-    let t = sheet.map_or(rule.thickness, |d| (d * 1e9).round() / 1e9);
+    let t = sheet.map(|d| (d * 1e9).round() / 1e9);
+    let rule = &rule(t)?;
+    let t = t.unwrap_or(rule.thickness);
     let shapes: Vec<std::result::Result<Shape, &'static str>> = (0..count).map(|f| Shape::of(b, &q, f, outward && sheet.is_none(), tol)).collect();
     let shape = |f: usize| shapes.get(f).copied().unwrap_or(Err("a face the body does not have"));
     let smooth = |e: usize, x: &Shape, y: &Shape| -> bool {
@@ -642,11 +818,81 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
     // side runs on smoothly, or across a sharp edge between two planes that is no rim: a face's
     // rims (its thickness faces) touch the face behind it. A wall's outside that runs on in one
     // plane with the base's edge touches it too, and is told from a rim by standing the sheet's
-    // thickness in front of the face behind it. A face whose face behind is the sheet's is the
-    // sheet's other side.
+    // thickness in front of the face behind it, unless the face crossed from meets that wall's
+    // inside as well: the inside is then the wall's face on its side, and the outside (one face
+    // with the base's edge strips beside the wall) a rim from there. A face whose face behind is
+    // the sheet's is the sheet's other side.
     let thick = |g: usize| sheet.is_some_and(|d| behind(g).is_some_and(|(e, _, back)| back && (e - d).abs() <= tol * 10.0));
+    let rim = |f: usize, g: usize| -> bool {
+        let Some((_, h, _)) = behind(f) else { return false };
+        touches(g, h) && (!thick(g) || behind(g).is_some_and(|(_, inside, _)| touches(f, inside)))
+    };
+    // What each loop of a shell's or a plate's face opens onto (see `Opening`), followed across
+    // the faces round it to the first faces level with it.
+    let mut around: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); count];
+    for (x, y) in (0..edge_count).filter_map(pair) {
+        if x != y {
+            around.get_mut(x).map(|a| a.insert(y));
+            around.get_mut(y).map(|a| a.insert(x));
+        }
+    }
+    let opening = |f: usize, edges: &[usize]| -> Opening {
+        let Some(sf) = probe(f) else { return Opening::Open };
+        let mut seen = BTreeSet::from([f]);
+        let mut queue: VecDeque<usize> = edges.iter().filter_map(|e| pair(*e)).flat_map(|(x, y)| [x, y]).filter(|g| *g != f).collect();
+        let (mut walls, mut levels) = (BTreeSet::new(), Vec::new());
+        while let Some(g) = queue.pop_front() {
+            if !seen.insert(g) {
+                continue;
+            }
+            match probe(g).and_then(|sg| level_of(&sf, &sg, tol)) {
+                Some((depth, same)) => levels.push((g, depth, same)),
+                None => {
+                    walls.insert(g);
+                    queue.extend(around.get(g).into_iter().flatten().copied());
+                }
+            }
+        }
+        let near = tol * 10.0;
+        if let Some((g, ..)) = levels.iter().find(|(_, depth, _)| *depth < -near) {
+            return Opening::Raised(*g);
+        }
+        let floors: Vec<usize> = levels.iter().filter(|(_, depth, same)| *same && *depth > near).map(|x| x.0).collect();
+        if !floors.is_empty() {
+            return Opening::Recess(walls.into_iter().chain(floors).collect());
+        }
+        if levels.iter().any(|(_, depth, same)| !*same && *depth > near) { Opening::Through } else { Opening::Open }
+    };
+    // Each face's inner loops (their edges: its holes, and the openings of recesses and bosses)
+    // and what they open onto, for a shell's or a plate's faces. Its outer loop is the panel's
+    // outline: the faces round it are the sheet's rims or its other panels.
+    let loops_of = |f: usize| -> Vec<(Vec<usize>, Opening)> {
+        let (Some(face), Some(Some((region, uses)))) = (q.record().faces.get(f), charts.get(f)) else { return Vec::new() };
+        let outer = |edges: &[usize]| {
+            let first = edges.first().and_then(|e| uses.iter().find(|u| u.edge == *e)).and_then(|u| u.chart.first().copied());
+            first.is_some_and(|c| region.outer.segs.iter().any(|s| s.point_at(s.closest_param(c).clamp(0.0, 1.0)).dist(c) <= tol * 100.0))
+        };
+        face.loops
+            .iter()
+            .filter_map(|l| match l {
+                Bounds::Edges { edges } => Some(edges.iter().map(|oe| oe.edge as usize).collect::<Vec<usize>>()),
+                Bounds::Vertex { .. } => None,
+            })
+            .filter(|edges| !outer(edges))
+            .map(|edges| {
+                let what = opening(f, &edges);
+                (edges, what)
+            })
+            .collect()
+    };
+    let openings: Vec<Vec<(Vec<usize>, Opening)>> = if sheet.is_some() { (0..count).map(loops_of).collect() } else { Vec::new() };
+    // A face of a recess in face `f` (its wall or its floor): no panel; the recess is read onto
+    // `f`'s panel once the sheet is built (see `sheet_surface_cuts`).
+    let recessed = |f: usize, g: usize| -> bool {
+        openings.get(f).is_some_and(|ls| ls.iter().any(|(_, what)| matches!(what, Opening::Recess(faces) if faces.contains(&g))))
+    };
     let mut behind_of: BTreeMap<usize, Option<usize>> = BTreeMap::new();
-    let mut sheet_faces = BTreeSet::from([start]);
+    let mut side = BTreeSet::from([start]);
     let mut queue = VecDeque::from([start]);
     while let Some(f) = queue.pop_front() {
         for e in 0..edge_count {
@@ -658,25 +904,103 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
             } else {
                 continue;
             };
-            if g == f || sheet_faces.contains(&g) {
+            if g == f || side.contains(&g) {
                 continue;
             }
             let crosses = sheet.is_none() || {
-                let rim = behind_of.entry(f).or_insert_with(|| behind(f).map(|h| h.1)).is_some_and(|h| touches(g, h)) && !thick(g);
-                let other_side = behind_of.entry(g).or_insert_with(|| behind(g).map(|h| h.1)).is_some_and(|h| sheet_faces.contains(&h));
+                let rim = rim(f, g);
+                let other_side = behind_of.entry(g).or_insert_with(|| behind(g).map(|h| h.1)).is_some_and(|h| side.contains(&h));
                 match (shape(f), shape(g)) {
                     (Ok(sf), Ok(sg)) => {
-                        !rim && !other_side && (smooth(e, &sf, &sg) || matches!((sf, sg), (Shape::Plane { .. }, Shape::Plane { .. })))
+                        !rim && !other_side
+                            && !recessed(f, g)
+                            && (smooth(e, &sf, &sg) || matches!((sf, sg), (Shape::Plane { .. }, Shape::Plane { .. })))
                     }
                     _ => false,
                 }
             };
             if crosses {
-                sheet_faces.insert(g);
+                side.insert(g);
                 queue.push_back(g);
             }
         }
     }
+
+    // A pick on the other side of a shell or a plate is the face, or the edge, across the
+    // thickness from it on the side the sheet is.
+    let across = |g: usize| behind(g).filter(|h| h.2).map(|h| h.1);
+    let on_side = |g: usize| if side.contains(&g) { Some(g) } else { across(g).filter(|h| side.contains(h)) };
+    let on_side_edge = |e: usize| -> Option<usize> {
+        let (x, y) = pair(e)?;
+        if side.contains(&x) && side.contains(&y) {
+            return Some(e);
+        }
+        let (hx, hy, m) = (on_side(x)?, on_side(y)?, middle_of(e)?);
+        (0..edge_count)
+            .filter(|f| pair(*f).is_some_and(|(u, v)| (u, v) == (hx, hy) || (u, v) == (hy, hx)))
+            .filter_map(|f| middle_of(f).map(|n| (f, n.dist(m))))
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(f, _)| f)
+    };
+    // The edges bent. A bend modelled with its radius may be picked on a tangent edge of its
+    // roll: that is a pick of the roll.
+    let mut bent: BTreeSet<usize> = BTreeSet::new();
+    let mut rolled: BTreeSet<usize> = rolled.iter().filter_map(|g| on_side(*g)).collect();
+    for e in (0..edge_count).filter(|e| picked(bends, *e)) {
+        let Some((x, y)) = pair(e) else { continue };
+        match (shape(x), shape(y)) {
+            (Ok(sx), Ok(sy)) if x != y && smooth(e, &sx, &sy) => rolled.extend([x, y].into_iter().filter(|g| is_roll(*g)).filter_map(on_side)),
+            _ => bent.extend(on_side_edge(e)),
+        }
+    }
+    let (bent, rolled) = (bent, rolled);
+
+    // Converting, the sheet is that whole side. Thickening, it is the faces picked, the rolls of
+    // modelled bends with the faces they run smoothly into, and every face a bend joins to them.
+    let mut sheet_faces = match &chosen {
+        None => side.clone(),
+        Some(set) => {
+            let mut faces = BTreeSet::new();
+            for &g in set {
+                let Some(h) = on_side(g) else {
+                    return err(format!("the face at {} is not a face of the sheet's side", at(face_point(&q, g).unwrap_or_default())));
+                };
+                faces.insert(h);
+            }
+            for &g in &rolled {
+                faces.insert(g);
+                for e in 0..edge_count {
+                    let Some((x, y)) = pair(e) else { continue };
+                    let h = if x == g {
+                        y
+                    } else if y == g {
+                        x
+                    } else {
+                        continue;
+                    };
+                    if let (Ok(sg), Ok(sh)) = (shape(g), shape(h))
+                        && side.contains(&h)
+                        && smooth(e, &sg, &sh)
+                    {
+                        faces.insert(h);
+                    }
+                }
+            }
+            loop {
+                let before = faces.len();
+                for &e in &bent {
+                    let Some((x, y)) = pair(e) else { continue };
+                    if faces.contains(&x) || faces.contains(&y) {
+                        faces.extend([x, y]);
+                    }
+                }
+                if faces.len() == before {
+                    break;
+                }
+            }
+            faces
+        }
+    };
     sheet_faces.retain(|f| !skipped.contains(f));
     let mut shaped: BTreeMap<usize, Shape> = BTreeMap::new();
     for &f in &sheet_faces {
@@ -698,15 +1022,30 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
             Role::Rip
         } else if smooth(e, sx, sy) {
             Role::Seam
-        } else if picked(bends, e) {
+        } else if bent.contains(&e) {
             Role::Bend
         } else {
             Role::Rip
         };
         roles.push((e, x, y, role));
     }
-    let between = |p: &Vec3| roles.iter().any(|(e, ..)| on_edge(*p, *e));
+    // A bend is between two faces of the sheet where its edge, or the edge across the thickness
+    // from it, is; or on a roll of the sheet.
+    let between = |p: &Vec3| {
+        let edge = (0..edge_count).filter(|e| on_edge(*p, *e)).filter_map(on_side_edge).any(|e| roles.iter().any(|(f, ..)| *f == e));
+        edge || q.faces_at(*p, near).first().and_then(|(_, g)| on_side(*g)).is_some_and(|g| rolled.contains(&g))
+    };
     if let Some(p) = bends.iter().find(|p| !between(p)) {
+        // A shell's or a plate's bend onto a wall of another thickness: no sheet of one thickness.
+        let other = sheet.and_then(|d| {
+            (0..edge_count).filter(|e| on_edge(*p, *e)).filter_map(pair).find_map(|(x, y)| {
+                let g = if side.contains(&x) { y } else { x };
+                behind(g).map(|(dg, ..)| (dg, d)).filter(|(dg, d)| (dg - d).abs() > tol * 10.0)
+            })
+        });
+        if let Some((dg, d)) = other {
+            return err(format!("the bend at {} joins a wall {dg:.3} mm thick to a sheet {d:.3} mm thick: not a sheet of even thickness", at(*p)));
+        }
         return err(format!("the bend at {} is not between two faces of the sheet", at(*p)));
     }
 
@@ -717,7 +1056,8 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
     // The edges the walk crossed, each to a face it had not reached.
     let mut crossed: BTreeSet<usize> = BTreeSet::new();
     let mut order = Vec::with_capacity(left.len());
-    while let Some(root) = left.first().copied() {
+    let mut first = chosen.as_ref().map(|_| start).filter(|f| left.contains(f));
+    while let Some(root) = first.take().or_else(|| left.first().copied()) {
         left.remove(&root);
         order.push(root);
         let mut queue = VecDeque::from([root]);
@@ -750,8 +1090,28 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
         let Some(shape) = shaped.get(&f) else { continue };
         let point = face_point(&q, f).unwrap_or_default();
         places.push(shape.frame().ok_or_else(|| DocError::Invalid(format!("the face at {} has no frame", at(point))))?);
-        let (region, uses) =
+        let (mut region, uses) =
             face_chart(b, &q, shape, f, sag, tol).map_err(|e| DocError::Invalid(format!("the face at {} can't be a panel: {e}", at(point))))?;
+        // A hole of a shell's or a plate's face opening onto a recess is no hole of the sheet:
+        // the panel keeps that material. Material standing on the face (a boss) is no sheet of
+        // even thickness.
+        if let Some(loops) = openings.get(f) {
+            // Which of the region's loops a loop of the face is: the one its first edge runs on.
+            let on = |l: &Loop2, edges: &[usize]| {
+                let first = edges.first().and_then(|e| uses.iter().find(|u| u.edge == *e)).and_then(|u| u.chart.first().copied());
+                first.is_some_and(|c| l.segs.iter().any(|s| s.point_at(s.closest_param(c).clamp(0.0, 1.0)).dist(c) <= tol * 100.0))
+            };
+            for (edges, what) in loops {
+                match what {
+                    Opening::Raised(g) => {
+                        let at_g = face_point(&q, *g).unwrap_or_default();
+                        return err(format!("the face at {} is raised at {}: not a plate of even thickness", at(point), at(at_g)));
+                    }
+                    Opening::Recess(_) => region.holes.retain(|h| !on(h, edges)),
+                    Opening::Through | Opening::Open => {}
+                }
+            }
+        }
         uses_of.insert(f, uses);
         panels.push(Panel { name: format!("face {f}"), surface: shape.surface(), region });
     }
@@ -761,8 +1121,6 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
     // rip's plane is kept, by its ends and toward its `a` panel, and each bend's edge, for the
     // bends' ends below.
     let (mut joints, mut edges) = (Vec::new(), Vec::new());
-    let mut rips: Vec<RipEnds> = Vec::new();
-    let mut bent: Vec<BendEdge> = Vec::new();
     for &(e, x, y, role) in &roles {
         // A ring of smooth seams (a tube) can't lie flat: it opens where the walk closed it, at a
         // seam the walk did not cross. (A ring of bends is the user's to open: where its seam
@@ -813,9 +1171,7 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
             pb.reverse();
             ts.reverse();
         }
-        let (Some(&from), Some(&to), Some(&a0), Some(&a1), Some(&b0), Some(&b1)) =
-            (points.first(), points.last(), pa.first(), pa.last(), pb.first(), pb.last())
-        else {
+        let (Some(&from), Some(&a0), Some(&a1), Some(&b0), Some(&b1)) = (points.first(), pa.first(), pa.last(), pb.first(), pb.last()) else {
             continue;
         };
         // An anchor runs along the edge from its start; a closed edge's ends are one point, and
@@ -840,6 +1196,7 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
                 radius: rule.bend_radius,
                 toward_material: lift < 0.0,
                 datum: Datum::Sharp,
+                length: len,
                 ends: ZoneEnds { near: (0.0, len), far: (0.0, len) },
                 tails: (Tail::Keep, Tail::Keep),
                 relief: (Relief::None, Relief::None),
@@ -852,7 +1209,7 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
             // triangle's, crosses the two lines in different places and bends its whole edge.
             // Past the wall's ends, what of its face lies in the bend's band is trimmed off it.
             let setback = bend.setback(t);
-            let (mut edge, mut len) = ([from, to], len);
+            let mut len = len;
             let stands = |r: &Region2, o: Vec2, d: Vec2, side: f64| {
                 let at = |h: f64| extent_across(r, (o + d.perp() * (side * h), d)).map(|(lo, hi): (f64, f64)| (lo.max(0.0), hi.min(len)));
                 let same = |x: (f64, f64), y: (f64, f64)| (x.0 - y.0).abs() <= tol && (x.1 - y.1).abs() <= tol;
@@ -864,16 +1221,14 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
             let (stand_a, stand_b) = (stands(&ra, a0, da, 1.0), stands(&rb, b0, db, -1.0));
             let (lo, hi) = (stand_a.0.max(stand_b.0), stand_a.1.min(stand_b.1));
             if hi - lo > tol && (lo > tol || hi < len - tol) {
-                let along = (to - from) * (1.0 / len);
-                edge = [from + along * lo, from + along * hi];
                 anchor_a.origin = a0 + da * lo;
                 anchor_b.origin = b0 + db * lo;
                 let tail = |s: (f64, f64)| if s.0 > tol || s.1 < len - tol { Tail::Trim } else { Tail::Keep };
                 bend.tails = (tail(stand_a), tail(stand_b));
                 len = hi - lo;
+                bend.length = len;
                 bend.ends = ZoneEnds { near: (0.0, len), far: (0.0, len) };
             }
-            bent.push(BendEdge { joint: joints.len(), ends: edge, normals: (*na, *nb), toward: lift < 0.0, len, a: anchor_a, b: anchor_b, setback });
             JointKind::Bend(bend)
         } else if role == Role::Seam {
             JointKind::Seam
@@ -892,10 +1247,6 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
                 let (y, into_b) = (-sa.out(*p), sb.out(*p).cross(*x));
                 into_b.dot(y).atan2(into_b.dot(x.cross(y)))
             });
-            let planes = [(points.first(), ways.first()), (points.last(), ways.last())]
-                .map(|(p, x)| p.zip(x).and_then(|(p, x)| rip_plane(sa.out(*p), sb.out(*p), -*x)));
-            let (Some(&first), Some(&last)) = (ways.first(), ways.last()) else { return err(format!("the edge at {} has no length", at(mid))) };
-            rips.push((joints.len(), [from, to], planes, [first, last]));
             JointKind::Rip(Rip {
                 curves: (exact_edge(b, sa, e, &pa, tol), exact_edge(b, sb, e, &pb, tol)),
                 edges: (pa, pb),
@@ -907,23 +1258,98 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
         edges.push(mid);
     }
 
+    let mut model = Sheet { thickness: t, k_factor: rule.k_factor, panels, joints, corners: Vec::new() };
+    let reliefs = Reliefs::of(rule);
+    let notes = settle(&mut model, &places, &reliefs, &|_| None, tol, &at)?;
+    // A hole reaching into the band a bend takes from its panel has no one place in the flat.
+    for joint in &model.joints {
+        let JointKind::Bend(bend) = &joint.kind else { continue };
+        let setback = bend.setback(t);
+        for (an, side) in [(joint.a, 1.0), (joint.b, -1.0)] {
+            let (Some(panel), Some(place)) = (model.panels.get(an.panel), places.get(an.panel)) else { continue };
+            if panel.surface != Surface::Plane {
+                continue;
+            }
+            let n = an.dir.perp() * side;
+            let band = Region2 {
+                outer: Loop2::polygon(&[
+                    an.origin,
+                    an.origin + an.dir * bend.length,
+                    an.origin + an.dir * bend.length + n * setback,
+                    an.origin + n * setback,
+                ])
+                .ccw(),
+                holes: Vec::new(),
+            };
+            for h in &panel.region.holes {
+                let hole = Region2 { outer: h.ccw(), holes: Vec::new() };
+                let met = solidcraft_kernel::planar_regions_boolean(
+                    std::slice::from_ref(&hole),
+                    std::slice::from_ref(&band),
+                    solidcraft_kernel::BoolOp::Intersect,
+                    1e-9,
+                )?;
+                if met.iter().map(Region2::area).sum::<f64>() > tol * setback.max(1.0) {
+                    let c = h.centroid();
+                    return err(format!("the hole at {} reaches into a bend: not supported yet", at(place.point(c.extend(0.0)))));
+                }
+            }
+        }
+    }
+    let development = develop(&model, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
+    if !development.loops.is_empty() {
+        let names: Vec<String> = development.loops.iter().filter_map(|m| edges.get(m.joint)).map(|p| at(*p)).collect();
+        return err(format!(
+            "the edge at {} closes a ring of bends and seams: leave one of the ring's edges out of the bends to cut it open",
+            names.join(" and the one at ")
+        ));
+    }
+    Ok(SurfaceConversion {
+        sheet: model,
+        development,
+        faces: order,
+        places,
+        edges,
+        thickness: t,
+        notes,
+        reliefs,
+        own_thickness: sheet.is_some(),
+        pieces: std::sync::OnceLock::new(),
+    })
+}
+
+/// Settles where each bend of `sheet` ends and what is cut there, from where `places` put its
+/// panels in space. Where two bends standing on one panel meet at a corner of it, both end where
+/// their tangent lines on it cross, with the corner's relief (`chosen` for the two bend joints,
+/// else the rule's): a notch, a round or a square relief belonging to the corner, or a tear tight
+/// against the rip that parts their other panels. Where a rip cuts a panel the bend joins, its
+/// metal ends at the rip's plane. Elsewhere the rule's bend relief is cut in whichever panel runs
+/// on past the end. A bend's edge is its anchors' first [`Bend::length`], so a sheet settled again
+/// ends its bends where it did; the corners are the sheet's again. Why any relief asked for was
+/// not cut comes back; `at` names a point in what is said.
+pub(crate) fn settle(
+    sheet: &mut Sheet,
+    places: &[Rigid3],
+    reliefs: &Reliefs,
+    chosen: &dyn Fn([usize; 2]) -> Option<(CornerRelief, f64)>,
+    tol: f64,
+    at: &dyn Fn(Vec3) -> String,
+) -> Result<Vec<String>> {
+    let t = sheet.thickness;
+    let (bent, rips) = in_space(sheet, places);
     // Where each bend ends, and what is cut there: (along its `a` anchor, along its `b` anchor,
-    // the relief), at its start and at its end. Where two bends standing on one panel meet at a
-    // corner of it, both end where their tangent lines on it cross, with the rule's corner
-    // relief: a notch, a round or a square relief belonging to the corner, or a tear tight
-    // against the rip that parts their other panels. Where a rip cuts a panel the bend joins,
-    // its metal ends at the rip's plane. Elsewhere the rule's bend relief is cut in whichever
-    // panel runs on past the end.
+    // the relief), at its start and at its end.
     let near = |p: Vec3, q: Vec3| p.dist(q) <= tol * 10.0;
-    let slot = Relief::Slot { width: rule.relief_width, depth: rule.relief_depth };
+    let slot = Relief::Slot { width: reliefs.width, depth: reliefs.depth };
     let mut ends: Vec<[(f64, f64, Relief); 2]> = bent.iter().map(|e| [(0.0, 0.0, slot), (e.len, e.len, slot)]).collect();
     let (mut notes, mut corners) = (Vec::new(), Vec::new());
     let found = bend_corners(&bent, near);
-    let size = rule.corner_relief_size;
     for k in &found {
         let notched = || k.at.map(|a| (a, a, Relief::Notch));
-        let values = match rule.corner_relief {
-            ReliefShape::Tear => match tear(&bent, &joints, &rips, &places, k, t, near) {
+        let joints = k.ends.map(|(i, _)| bent.get(i).map_or(usize::MAX, |b| b.joint));
+        let (relief, size) = chosen(joints).unwrap_or((reliefs.corner, reliefs.corner_size));
+        let values = match relief {
+            CornerRelief::Tear => match tear(&bent, &sheet.joints, &rips, places, k, t, near) {
                 Ok(Some(torn)) => torn,
                 Ok(None) => notched(),
                 Err(why) => {
@@ -931,7 +1357,7 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
                     notched()
                 }
             },
-            ReliefShape::Round | ReliefShape::Rectangular => {
+            CornerRelief::Round | CornerRelief::Square => {
                 // How much of each bend runs on from the corner.
                 let left = k.ends.iter().zip(k.at).map(|((i, e), a)| bent.get(*i).map_or(0.0, |b| if *e == 0 { b.len - a } else { a }));
                 if !(size >= MIN_RELIEF) {
@@ -939,13 +1365,15 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
                 } else if left.fold(f64::INFINITY, f64::min) <= size / 2.0 + 1e-6 {
                     notes.push(format!("no corner relief at {}: a relief {size:.3} mm across would take a whole bend away", at(k.v)));
                 } else {
-                    let joints = k.ends.map(|(i, _)| bent.get(i).map_or(usize::MAX, |b| b.joint));
-                    corners.push(Corner { joints, round: rule.corner_relief == ReliefShape::Round, size });
+                    corners.push(Corner { joints, relief, size });
                 }
                 notched()
             }
-            ReliefShape::Notch => notched(),
+            CornerRelief::Notch => notched(),
         };
+        if matches!(relief, CornerRelief::Notch | CornerRelief::Tear) {
+            corners.push(Corner { joints, relief, size });
+        }
         for ((i, e), value) in k.ends.iter().zip(values) {
             if let Some(slot) = ends.get_mut(*i).and_then(|x| x.get_mut(*e)) {
                 *slot = value;
@@ -967,7 +1395,7 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
                     return None;
                 }
                 let m = planes.get(end).copied().flatten()?;
-                let rip = joints.get(*r)?;
+                let rip = sheet.joints.get(*r)?;
                 let mine = |p: usize| p == b.a.panel || p == b.b.panel;
                 if mine(rip.a.panel) {
                     Some(m)
@@ -977,7 +1405,7 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
                     None
                 }
             });
-            if let Some(s) = planes.filter_map(|m| bend_cut(v, into, m, b.normals, b.toward, rule.bend_radius, t, 0.0)).reduce(f64::max) {
+            if let Some(s) = planes.filter_map(|m| bend_cut(v, into, m, b.normals, b.toward, b.radius, t, 0.0)).reduce(f64::max) {
                 let a = if e == 0 { s } else { b.len - s };
                 if let Some(slot) = ends.get_mut(i).and_then(|x| x.get_mut(e)) {
                     *slot = (a, a, Relief::Notch);
@@ -989,21 +1417,169 @@ pub fn convert_surfaces(mb: &ModelBody, rule: &ConvertRule, bends: &[Vec3], skip
         if n0 >= n1 && f0 >= f1 {
             return err(format!("the bend at {} is cut away by the rips at its ends", at(b.ends[0].lerp(b.ends[1], 0.5))));
         }
-        if let Some(Joint { kind: JointKind::Bend(bend), .. }) = joints.get_mut(b.joint) {
+        if let Some(Joint { kind: JointKind::Bend(bend), .. }) = sheet.joints.get_mut(b.joint) {
             bend.ends = ZoneEnds { near: (n0, n1), far: (f0, f1) };
             bend.relief = (r0, r1);
         }
     }
-    let model = Sheet { thickness: t, k_factor: rule.k_factor, panels, joints, corners };
-    let development = develop(&model, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
-    if !development.loops.is_empty() {
-        let names: Vec<String> = development.loops.iter().filter_map(|m| edges.get(m.joint)).map(|p| at(*p)).collect();
-        return err(format!(
-            "the edge at {} closes a ring of bends and seams: leave one of the ring's edges out of the bends to cut it open",
-            names.join(" and the one at ")
-        ));
+    sheet.corners = corners;
+    Ok(notes)
+}
+
+/// The bends between two planar panels (anchored at their sharps) and the rips of `sheet`, as
+/// [`settle`] works with them: where `places` put their edges in space, and each rip's plane at
+/// either end. A rip on a free-form panel is left out.
+fn in_space(sheet: &Sheet, places: &[Rigid3]) -> (Vec<BendEdge>, Vec<RipEnds>) {
+    let t = sheet.thickness;
+    let surface = |p: usize| sheet.panels.get(p).map(|x| &x.surface);
+    let mut bent = Vec::new();
+    let mut rips: Vec<RipEnds> = Vec::new();
+    for (j, joint) in sheet.joints.iter().enumerate() {
+        let (Some(sa), Some(sb), Some(pa), Some(pb)) =
+            (surface(joint.a.panel), surface(joint.b.panel), places.get(joint.a.panel), places.get(joint.b.panel))
+        else {
+            continue;
+        };
+        match &joint.kind {
+            JointKind::Bend(bend) if bend.datum == Datum::Sharp && matches!((sa, sb), (Surface::Plane, Surface::Plane)) => {
+                let on_a = |s: f64| pa.point((joint.a.origin + joint.a.dir * s).extend(0.0));
+                bent.push(BendEdge {
+                    joint: j,
+                    ends: [on_a(0.0), on_a(bend.length)],
+                    normals: (-pa.z, -pb.z),
+                    toward: bend.toward_material,
+                    len: bend.length,
+                    a: joint.a,
+                    b: joint.b,
+                    setback: bend.setback(t),
+                    radius: bend.radius,
+                });
+            }
+            JointKind::Rip(rip) => {
+                let (Some(&s0), Some(&s1), Some(&q0), Some(&q1)) = (rip.edges.0.first(), rip.edges.0.last(), rip.edges.1.first(), rip.edges.1.last())
+                else {
+                    continue;
+                };
+                let (Some(from), Some(to)) = (chart_point(sa, pa, s0), chart_point(sa, pa, s1)) else { continue };
+                // The edge's way at each end: exactly, from either panel's curves where it has
+                // them, else from its points' run there.
+                let exact = |curves: &[Seg2], surface: &Surface, place: &Rigid3, end: usize| -> Option<Vec3> {
+                    let (c, d) = if end == 0 {
+                        curves.first().map(|g| (g.start(), g.start_tangent()))?
+                    } else {
+                        curves.last().map(|g| (g.end(), g.end_tangent()))?
+                    };
+                    chart_way(surface, place, c, d)?.normalized()
+                };
+                let run = |end: usize| -> Option<Vec3> {
+                    let pts = &rip.edges.0;
+                    let (c, d) = if end == 0 {
+                        (*pts.first()?, *pts.get(1)? - *pts.first()?)
+                    } else {
+                        (*pts.last()?, *pts.last()? - *pts.iter().rev().nth(1)?)
+                    };
+                    chart_way(sa, pa, c, d)?.normalized()
+                };
+                let way = |end: usize| exact(&rip.curves.0, sa, pa, end).or_else(|| exact(&rip.curves.1, sb, pb, end)).or_else(|| run(end));
+                let (Some(first), Some(last)) = (way(0), way(1)) else { continue };
+                let plane = |s: Vec2, q: Vec2, x: Vec3| rip_plane(chart_out(sa, pa, s)?, chart_out(sb, pb, q)?, -x);
+                rips.push((j, [from, to], [plane(s0, q0, first), plane(s1, q1, last)], [first, last]));
+            }
+            _ => {}
+        }
     }
-    Ok(SurfaceConversion { sheet: model, development, faces: order, places, edges, thickness: t, notes, pieces: std::sync::OnceLock::new() })
+    (bent, rips)
+}
+
+/// The angle round a roll's axis at the angle parameter `v` of its chart (see `Shape::params`).
+fn turned(v: f64, inward: bool) -> f64 {
+    if inward { v } else { -v }
+}
+
+/// The point of a panel on `surface` at parameters `c`, where `place` puts the panel's frame; none
+/// on a free-form panel.
+fn chart_point(surface: &Surface, place: &Rigid3, c: Vec2) -> Option<Vec3> {
+    let local = match *surface {
+        Surface::Plane => c.extend(0.0),
+        Surface::Cylinder { radius, material_inward } => {
+            let a = turned(c.y, material_inward);
+            Vec3::new(radius * a.cos(), radius * a.sin(), c.x)
+        }
+        Surface::Cone { half_angle, material_inward } => {
+            let a = turned(c.y, material_inward);
+            Vec3::new(half_angle.sin() * a.cos(), half_angle.sin() * a.sin(), half_angle.cos()) * c.x
+        }
+        Surface::Spline(_) => return None,
+    };
+    Some(place.point(local))
+}
+
+/// The unit normal away from the material at parameters `c` of a panel on `surface`.
+fn chart_out(surface: &Surface, place: &Rigid3, c: Vec2) -> Option<Vec3> {
+    let side = |inward: bool| if inward { 1.0 } else { -1.0 };
+    let local = match *surface {
+        Surface::Plane => Vec3::new(0.0, 0.0, -1.0),
+        Surface::Cylinder { material_inward, .. } => {
+            let a = turned(c.y, material_inward);
+            Vec3::new(a.cos(), a.sin(), 0.0) * side(material_inward)
+        }
+        Surface::Cone { half_angle, material_inward } => {
+            let a = turned(c.y, material_inward);
+            (Vec3::new(a.cos(), a.sin(), 0.0) * half_angle.cos() - Vec3::Z * half_angle.sin()) * side(material_inward)
+        }
+        Surface::Spline(_) => return None,
+    };
+    Some(place.vector(local))
+}
+
+/// The way in space a curve through parameters `c` of a panel on `surface` runs, running `d`
+/// there in the parameters.
+fn chart_way(surface: &Surface, place: &Rigid3, c: Vec2, d: Vec2) -> Option<Vec3> {
+    let local = match *surface {
+        Surface::Plane => d.extend(0.0),
+        Surface::Cylinder { radius, material_inward } => {
+            let a = turned(c.y, material_inward);
+            Vec3::Z * d.x + Vec3::new(-a.sin(), a.cos(), 0.0) * (radius * turned(d.y, material_inward))
+        }
+        Surface::Cone { half_angle, material_inward } => {
+            let a = turned(c.y, material_inward);
+            let (sin, cos) = half_angle.sin_cos();
+            Vec3::new(sin * a.cos(), sin * a.sin(), cos) * d.x + Vec3::new(-a.sin(), a.cos(), 0.0) * (c.x * sin * turned(d.y, material_inward))
+        }
+        Surface::Spline(_) => return None,
+    };
+    Some(place.vector(local))
+}
+
+/// Names of the edges of `body` at the bend points, to find them again after the body changes. A
+/// point on no edge gets none, and keeps its place: a bend picked on its roll, or a point the
+/// conversion then says is no bend.
+pub fn bend_edge_names(st: &crate::ModelState, body: &str, pts: &[Vec3]) -> Vec<String> {
+    let Some(b) = st.body(body) else { return Vec::new() };
+    if b.body.is_mesh() {
+        return vec![String::new(); pts.len()];
+    }
+    let q = Query::new(b.body.record());
+    let size = b.body.size();
+    let (near, sag) = ((size * 2e-3).max(1e-3), (size * 1e-4).max(1e-4));
+    let edges = q.record().edges.len();
+    let on = |p: &Vec3| (0..edges).any(|e| q.edge_distance(e, *p, sag).is_some_and(|d| d <= near));
+    pts.iter().zip(crate::naming::edge_names_at(b, pts)).map(|(p, name)| if on(p) { name } else { String::new() }).collect()
+}
+
+/// A planar face of `b`: its plane and its outward normal, as the record has its side.
+pub(crate) fn planar_face(b: &Body, q: &Query, f: usize, tol: f64) -> Option<(Plane, Vec3)> {
+    match Shape::of(b, q, f, false, tol) {
+        Ok(Shape::Plane { plane, out }) => Some((plane, out)),
+        _ => None,
+    }
+}
+
+/// Face `f` of `b`, a plane whose outward normal is `out`, exactly in the coordinates of `plane`
+/// (any plane parallel to it).
+pub(crate) fn face_region(b: &Body, q: &Query, plane: &Plane, out: Vec3, f: usize, tol: f64) -> Option<Region2> {
+    let sag = (b.size() * 1e-4).max(1e-4);
+    face_chart(b, q, &Shape::Plane { plane: *plane, out }, f, sag, tol).ok().map(|(r, _)| r)
 }
 
 /// A point of face `f`: halfway along the first edge of its outer loop.
@@ -1034,49 +1610,78 @@ impl SurfaceConversion {
         Ok(self.pieces.get_or_init(|| cut))
     }
 
-    /// The sheet folded, each piece of the flat where its first panel's face is. Every other
-    /// panel folds onto its own face through the bends and seams that reach it: anywhere else,
-    /// a joint was read wrong, and that is an error rather than a sheet in the wrong place.
-    pub fn fold(&self) -> Result<Fold> {
-        let roots = self.development.pieces.iter().map(|p| p.first().and_then(|i| self.places.get(*i)).copied());
-        let roots: Vec<Rigid3> = roots.collect::<Option<_>>().ok_or_else(|| DocError::Invalid("a piece of the sheet has no face".into()))?;
-        let folded = fold(&self.sheet, &self.development, &roots).map_err(|e| DocError::Invalid(e.to_string()))?;
-        let reach = self.development.panels.iter().flatten().map(|p| p.region.outer.polyline(1e-3).bounds().size().len()).fold(1.0, f64::max);
-        for (i, (got, own)) in folded.places.iter().zip(&self.places).enumerate() {
-            let Some(got) = got else { continue };
-            let off = got.shift.dist(own.shift) + reach * (got.x.dist(own.x) + got.y.dist(own.y) + got.z.dist(own.z));
-            if off > (reach * 1e-9).max(1e-9) {
-                let face = self.faces.get(i).copied().unwrap_or_default();
-                return err(format!("the sheet folds face {face} {off:.3e} mm from where the body has it"));
-            }
-        }
-        Ok(folded)
-    }
-
     /// The folded sheet: its solid, sewn from the flat's pieces carried into space.
     pub fn solid(&self) -> Result<Body> {
-        crate::sheet_surface_fold::solid(&self.development, &self.fold()?, self.thickness, self.pieces()?, &mut FlatWork::new())
+        let places: Vec<Option<Rigid3>> = self.places.iter().copied().map(Some).collect();
+        let folded = fold_onto(&self.sheet, &self.development, &places)?;
+        crate::sheet_surface_fold::solid(&self.development, &folded, self.thickness, self.pieces()?, &mut FlatWork::new())
     }
 }
 
-/// A body converted to sheet metal, as the model keeps it: its flat pattern, which
-/// `sheet.flat_pattern` shows. The body itself becomes the folded sheet.
+/// `sheet` folded, each piece of its flat where its first panel's place puts it. Every other
+/// panel with a place of its own (the face it was converted from) must fold onto it through the
+/// bends and seams that reach it: anywhere else, a joint was read wrong, and that is an error
+/// rather than a sheet in the wrong place.
+pub(crate) fn fold_onto(sheet: &Sheet, dev: &Development, places: &[Option<Rigid3>]) -> Result<Fold> {
+    let root = |p: &Vec<usize>| p.first().and_then(|i| places.get(*i)).copied().flatten();
+    let roots: Vec<Rigid3> =
+        dev.pieces.iter().map(root).collect::<Option<_>>().ok_or_else(|| DocError::Invalid("a piece of the sheet has no place".into()))?;
+    let folded = fold(sheet, dev, &roots).map_err(|e| DocError::Invalid(e.to_string()))?;
+    let reach = dev.panels.iter().flatten().map(|p| p.region.outer.polyline(1e-3).bounds().size().len()).fold(1.0, f64::max);
+    for (i, (got, own)) in folded.places.iter().zip(places).enumerate() {
+        let (Some(got), Some(own)) = (got, own) else { continue };
+        let off = got.shift.dist(own.shift) + reach * (got.x.dist(own.x) + got.y.dist(own.y) + got.z.dist(own.z));
+        if off > (reach * 1e-9).max(1e-9) {
+            let name = sheet.panels.get(i).map_or_else(|| format!("panel {i}"), |p| p.name.clone());
+            return err(format!("the sheet folds {name} {off:.3e} mm from where the body has it"));
+        }
+    }
+    Ok(folded)
+}
+
+/// A sheet metal body made from surfaces (#6748), as the model keeps it: its sheet of panels and
+/// joints, the master every later feature changes; where each panel lies in space, for the panels
+/// that the body's faces placed; and its flat pattern as last laid out, which
+/// `sheet.flat_pattern` shows. The body itself is the folded sheet, or its flat while unfolded.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct SurfaceFlat {
+pub struct SurfaceSheet {
     pub body: String,
     pub rule: String,
+    pub sheet: Sheet,
+    /// Each panel's frame in space where a face of the body put it; none for a panel a later
+    /// feature added, which lies where its joints fold it.
+    pub places: Vec<Option<Rigid3>>,
+    /// The body is the flat pattern, lying in the plane of the sheet's first panel.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unfolded: bool,
     pub thickness: f64,
     pub k_factor: f64,
-    /// The flat material, in the plane of the sheet's largest face.
+    /// The flat material, in the plane of the sheet's first panel.
     pub regions: Vec<Region2>,
     pub bends: Vec<SurfaceBendLine>,
     /// The largest strain any panel's flat leaves: none but on a free-form panel.
     pub stretch: f64,
     /// How many of the panels are rolls.
     pub rolls: usize,
+    /// What the sheet's bends end with, as its rule had it.
+    pub reliefs: Reliefs,
+    /// A feature's own corner relief, in place of the rule's, for a bend it made: the bend's
+    /// joint, the relief and its size. A corner takes the relief of the later of its two bends
+    /// that has one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub corner_reliefs: Vec<(usize, CornerRelief, f64)>,
+    /// Why a relief asked for was not cut, as the sheet was last built.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+    /// The recesses cut into its flat panels (see `sheet_surface_cuts`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recesses: Vec<crate::Recess>,
+    /// The recesses in the flat, as pockets measured from its face on the sheet's surface.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pockets: Vec<crate::sheet::SheetPocket>,
 }
 
-/// A bend in a converted body's flat: its zone, its center line, how far it turns (radians), its inside
+/// A bend in a sheet's flat: its zone, its center line, how far it turns (radians), its inside
 /// radius, whether it turns toward the material, and the zone's width.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SurfaceBendLine {
@@ -1089,11 +1694,136 @@ pub struct SurfaceBendLine {
     pub allowance: f64,
 }
 
-impl SurfaceConversion {
-    /// The flat pattern as the model keeps it, for the body `body` under the rule `rule`.
-    pub fn record(&self, body: &str, rule: &str) -> Result<SurfaceFlat> {
-        let bends = self
-            .development
+impl SurfaceSheet {
+    /// A converted body's sheet as the model keeps it, for the body `body` under the rule `rule`,
+    /// and its folded solid.
+    pub fn converted(body: &str, rule: &str, c: &SurfaceConversion) -> Result<(SurfaceSheet, Body)> {
+        let mut sheet = SurfaceSheet {
+            body: body.into(),
+            rule: rule.into(),
+            sheet: c.sheet.clone(),
+            places: c.places.iter().copied().map(Some).collect(),
+            unfolded: false,
+            thickness: c.thickness,
+            k_factor: c.sheet.k_factor,
+            regions: Vec::new(),
+            bends: Vec::new(),
+            stretch: 0.0,
+            rolls: 0,
+            reliefs: c.reliefs,
+            corner_reliefs: Vec::new(),
+            notes: c.notes.clone(),
+            recesses: Vec::new(),
+            pockets: Vec::new(),
+        };
+        sheet.laid_out(&c.development, c.flat()?);
+        Ok((sheet, c.solid()?))
+    }
+
+    /// Lays the sheet out again after a change to it, and builds its body: the folded sheet, or
+    /// its flat while it is unfolded.
+    pub fn build(&mut self) -> Result<Body> {
+        let dev = develop(&self.sheet, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
+        if let Some(m) = dev.loops.first() {
+            let panel = self.sheet.joints.get(m.joint).map_or(0, |j| j.a.panel);
+            let name = self.sheet.panels.get(panel).map_or("", |p| p.name.as_str());
+            return err(format!("the sheet closes a ring of bends and seams at {name}: cut one of the ring's joints open"));
+        }
+        self.settle(&dev)?;
+        let dev = develop(&self.sheet, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
+        let mut work = FlatWork::new();
+        let pieces = crate::sheet_surface::pieces(&dev, &mut work)?;
+        let regions = crate::sheet_surface::join_pieces(&pieces, &mut work)?;
+        self.laid_out(&dev, regions);
+        if self.unfolded {
+            let base = self.places.first().copied().flatten().ok_or_else(|| DocError::Invalid("the sheet's first panel has no place".into()))?;
+            let frames: Vec<Option<Rigid3>> = dev.placements.iter().map(|p| p.map(|r| crate::sheet_surface_cuts::lift(&base, &r))).collect();
+            return self.recessed(self.flat_solid()?, &frames);
+        }
+        let folded = fold_onto(&self.sheet, &dev, &self.places)?;
+        let body = crate::sheet_surface_fold::solid(&dev, &folded, self.thickness, &pieces, &mut work)?;
+        self.recessed(body, &folded.places)
+    }
+
+    /// `body` with the sheet's recesses cut from it, each from its panel where `frames` put it.
+    fn recessed(&self, mut body: Body, frames: &[Option<Rigid3>]) -> Result<Body> {
+        let t = self.sheet.thickness;
+        // Past the face it opens from, a hair, so that no face of the cut lies on the sheet's.
+        let margin = t * 1e-3;
+        for r in &self.recesses {
+            let frame = frames.get(r.panel).copied().flatten().ok_or_else(|| DocError::Invalid("a recessed panel has no place".into()))?;
+            let plane = Plane::new(frame.shift, frame.x, frame.y).ok_or_else(|| DocError::Invalid("a recessed panel has no plane".into()))?;
+            let (from, to) = if r.far { (t - r.depth, t + margin) } else { (-margin, r.depth) };
+            let tool = solidcraft_kernel::extrude_planar_regions(&plane, std::slice::from_ref(&r.region), from, to)?;
+            body = solidcraft_kernel::boolean(&body, &tool, solidcraft_kernel::BoolOp::Cut)?
+                .ok_or_else(|| DocError::Invalid("a recess takes the whole sheet".into()))?;
+        }
+        Ok(body)
+    }
+
+    /// Settles where the sheet's bends end (see [`settle`]), from where its development `dev`
+    /// folds its panels.
+    fn settle(&mut self, dev: &Development) -> Result<()> {
+        let folded = fold_onto(&self.sheet, dev, &self.places)?;
+        let places: Vec<Rigid3> =
+            folded.places.iter().copied().collect::<Option<_>>().ok_or_else(|| DocError::Invalid("a panel of the sheet has no place".into()))?;
+        let reach = dev.panels.iter().flatten().map(|p| p.region.outer.polyline(1e-3).bounds().size().len()).fold(1.0, f64::max);
+        let own = self.corner_reliefs.clone();
+        let chosen = move |[x, y]: [usize; 2]| {
+            let of = |j: usize| own.iter().find(|(k, ..)| *k == j).map(|(_, r, s)| (*r, *s));
+            of(x.max(y)).or_else(|| of(x.min(y)))
+        };
+        self.notes = settle(&mut self.sheet, &places, &self.reliefs, &chosen, (reach * 1e-6).max(1e-6), &at)?;
+        Ok(())
+    }
+
+    /// The flat as one extrusion, `thickness` deep into the material from the plane of the
+    /// sheet's first panel, where that panel's face put it.
+    fn flat_solid(&self) -> Result<Body> {
+        let place = self.places.first().copied().flatten().ok_or_else(|| DocError::Invalid("the sheet's first panel has no place".into()))?;
+        let plane = Plane::new(place.shift, place.x, place.y).ok_or_else(|| DocError::Invalid("the sheet's first panel has no plane".into()))?;
+        Ok(solidcraft_kernel::extrude_planar_regions(&plane, &self.regions, 0.0, self.thickness)?)
+    }
+
+    /// The bends of the flat as the sheet tools list them, numbered from 1. A bend is listed
+    /// where its center line has material: one entry for each stretch the reliefs and cut-outs
+    /// leave of it, all with the bend's number, and none for a bend they take whole.
+    pub fn bend_infos(&self) -> Vec<crate::sheet::BendInfo> {
+        let mut out = Vec::new();
+        for (i, b) in self.bends.iter().enumerate() {
+            let line = [Seg2::Line { a: b.start, b: b.end }];
+            let mut cuts: Vec<f64> = vec![0.0, 1.0];
+            for r in &self.regions {
+                for l in std::iter::once(&r.outer).chain(&r.holes) {
+                    cuts.extend(solidcraft_develop::crossings(&line, &l.segs).iter().map(|c| c.1));
+                }
+            }
+            cuts.sort_by(f64::total_cmp);
+            cuts.dedup_by(|x, y| (*x - *y).abs() <= 1e-12);
+            for w in cuts.windows(2) {
+                let (u0, u1) = (w[0], w[1]);
+                let (start, end) = (b.start.lerp(b.end, u0), b.start.lerp(b.end, u1));
+                if start.dist(end) <= 1e-9 || !self.regions.iter().any(|r| r.contains(start.lerp(end, 0.5))) {
+                    continue;
+                }
+                out.push(crate::sheet::BendInfo {
+                    index: i + 1,
+                    angle_deg: b.angle.to_degrees(),
+                    radius: b.radius,
+                    up: b.up,
+                    allowance: b.allowance,
+                    length: start.dist(end),
+                    start,
+                    end,
+                });
+            }
+        }
+        out
+    }
+
+    /// Keeps the flat `regions` of the development `dev`, with its bends, stretch and rolls.
+    fn laid_out(&mut self, dev: &Development, regions: Vec<Region2>) {
+        self.bends = dev
             .zones
             .iter()
             .filter_map(|z| {
@@ -1109,15 +1839,20 @@ impl SurfaceConversion {
                 })
             })
             .collect();
-        Ok(SurfaceFlat {
-            body: body.into(),
-            rule: rule.into(),
-            thickness: self.thickness,
-            k_factor: self.sheet.k_factor,
-            regions: self.flat()?,
-            bends,
-            stretch: self.development.panels.iter().flatten().map(|p| p.stretch).fold(0.0, f64::max),
-            rolls: self.sheet.panels.iter().filter(|p| p.surface != Surface::Plane).count(),
-        })
+        self.regions = regions;
+        self.stretch = dev.panels.iter().flatten().map(|p| p.stretch).fold(0.0, f64::max);
+        self.rolls = self.sheet.panels.iter().filter(|p| p.surface != Surface::Plane).count();
+        self.thickness = self.sheet.thickness;
+        self.k_factor = self.sheet.k_factor;
+        let t = self.thickness;
+        self.pockets = self
+            .recesses
+            .iter()
+            .filter_map(|r| {
+                let place = dev.placements.get(r.panel).copied().flatten()?;
+                let (z0, z1) = if r.far { (t - r.depth, t) } else { (0.0, r.depth) };
+                Some(crate::sheet::SheetPocket { region: place.region(&r.region), z0, z1 })
+            })
+            .collect();
     }
 }

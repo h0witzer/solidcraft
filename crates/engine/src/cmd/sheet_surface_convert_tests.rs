@@ -5,7 +5,7 @@
 use std::f64::consts::{FRAC_PI_2, PI, SQRT_2};
 
 use solidcraft_doc::sheet::ReliefShape;
-use solidcraft_doc::{ConvertRule, SurfaceConversion, convert_surfaces};
+use solidcraft_doc::{ConvertRule, SheetFaces, SurfaceConversion, convert_surfaces};
 use solidcraft_geom::{Aabb3, Region2, Seg2, Vec3};
 
 use super::*;
@@ -22,7 +22,13 @@ fn convert(
     let state = s.model.state();
     let Some(mb) = state.bodies.iter().find(|b| b.name == name) else { panic!("no body {name}") };
     let v = |p: &[f64; 3]| Vec3::new(p[0], p[1], p[2]);
-    convert_surfaces(mb, &rule, &bends.iter().map(v).collect::<Vec<_>>(), &skip.iter().map(v).collect::<Vec<_>>(), outward)
+    let skip: Vec<Vec3> = skip.iter().map(v).collect();
+    convert_surfaces(mb, &fixed(rule), &bends.iter().map(v).collect::<Vec<_>>(), SheetFaces::AllBut(&skip), outward, &solidcraft_doc::IDENTITY)
+}
+
+/// The rule's values whatever the sheet's thickness.
+fn fixed(rule: ConvertRule) -> impl Fn(Option<f64>) -> solidcraft_doc::Result<ConvertRule> {
+    move |_| Ok(rule)
 }
 
 /// The flat pattern's size, the shorter side last.
@@ -231,8 +237,8 @@ fn a_conversion_shows_in_the_flat_pattern() {
 }
 
 /// Through the commands: a ring of bends is refused, naming its edge, and with one corner left
-/// unpicked the flat lists the other three as bends. A fixed face is refused by Convert, and
-/// skipped faces or a material side by Thicken.
+/// unpicked the flat lists the other three as bends. A face is refused by Convert, and skipped
+/// faces by Thicken.
 #[test]
 fn a_ring_through_the_commands_is_refused_and_each_mode_takes_its_own_parameters() {
     let (t, k, r) = (2.0, 0.44, 2.0);
@@ -248,7 +254,8 @@ fn a_ring_through_the_commands_is_refused_and_each_mode_takes_its_own_parameters
     for bad in [
         json!({"body": "Tube", "face": [50, 0, 20]}),
         json!({"body": "Tube", "mode": "thicken", "face": [50, 0, 20], "skip": [[50, 0, 20]]}),
-        json!({"body": "Tube", "mode": "thicken", "face": [50, 0, 20], "direction": "outside"}),
+        json!({"body": "Tube", "mode": "thicken"}),
+        json!({"body": "Tube", "mode": "thicken", "face": [50, 0, 20], "direction": "both"}),
         json!({"body": "Tube", "direction": "both"}),
         json!({"body": "Tube", "mode": "fold"}),
     ] {
@@ -473,7 +480,15 @@ fn an_icosahedron_bends_whole_edges_to_its_corners() {
             }
         }
     }
-    let c = convert_surfaces(&mb, &ConvertRule { corner_relief: ReliefShape::Round, ..TEST }, &picks, &[], false).unwrap_or_else(|e| panic!("{e}"));
+    let c = convert_surfaces(
+        &mb,
+        &fixed(ConvertRule { corner_relief: ReliefShape::Round, ..TEST }),
+        &picks,
+        SheetFaces::AllBut(&[]),
+        false,
+        &solidcraft_doc::IDENTITY,
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
     assert!(c.notes.is_empty(), "{:?}", c.notes);
     assert_eq!((c.sheet.panels.len(), c.development.zones.len(), c.sheet.corners.len()), (20, 19, 10));
     let (v, _) = folded(&c);
@@ -545,8 +560,28 @@ fn a_tombstone_rips_along_its_round_as_along_its_sides() {
     let outside = tombstone_body("Outside", 27.5, -23.0, 0.0, 36.0);
     let inside = tombstone_body("Inside", 25.0, -20.5, 2.5, 33.5);
     let drawn = [
-        ("outside", convert_surfaces(&outside, &rule, &[Vec3::new(0.0, -23.0, 0.0), Vec3::new(27.5, 0.0, 0.0)], &[], false)),
-        ("inside", convert_surfaces(&inside, &rule, &[Vec3::new(0.0, -20.5, 2.5), Vec3::new(25.0, 0.0, 2.5)], &[], true)),
+        (
+            "outside",
+            convert_surfaces(
+                &outside,
+                &fixed(rule),
+                &[Vec3::new(0.0, -23.0, 0.0), Vec3::new(27.5, 0.0, 0.0)],
+                SheetFaces::AllBut(&[]),
+                false,
+                &solidcraft_doc::IDENTITY,
+            ),
+        ),
+        (
+            "inside",
+            convert_surfaces(
+                &inside,
+                &fixed(rule),
+                &[Vec3::new(0.0, -20.5, 2.5), Vec3::new(25.0, 0.0, 2.5)],
+                SheetFaces::AllBut(&[]),
+                true,
+                &solidcraft_doc::IDENTITY,
+            ),
+        ),
     ];
     let mut one: Option<(f64, f64)> = None;
     for (what, c) in drawn {
@@ -605,4 +640,250 @@ fn a_pipe_rolls_out_from_its_surface_alone() {
         let outer = 30.0 * width / neutral * 20.0;
         assert!(v > 0.9 * outer * TEST.thickness && v < outer * TEST.thickness, "{name}: folded {v}");
     }
+}
+
+/// The folded body's exact volume.
+fn body_volume(s: &Session, name: &str) -> f64 {
+    s.model.state().bodies.iter().find(|b| b.name == name).map_or(f64::NAN, |b| fine_volume(&b.body))
+}
+
+/// A plate 100 x 60 x `t` thickened from its top under the test rule.
+fn thickened_plate(t: f64) -> Session {
+    let mut s = Session::default();
+    rule(&mut s, "Test", t, TEST.k_factor, TEST.bend_radius, TEST.gap);
+    run(&mut s, "solid.box", json!({"length": 100, "width": 60, "height": t, "body_name": "Plate"}));
+    run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Plate", "face": [50, 30, t]}));
+    s
+}
+
+/// An edge flange on a sheet made from surfaces is a new panel bent from a free edge (#6748): on
+/// a plate 100 x 60 x 2 thickened from its top, a flange 20 high from its outer sharp at 90° on
+/// the front edge rises away from the material, up, its outside flush with the plate's front face.
+/// Flat: 60 + 20 less one deduction, 100 wide, one bend 100 long; folded, t (flat + θ t (1/2 − k)
+/// L) by the neutral surface's length through the bend.
+#[test]
+fn an_edge_flange_bends_from_a_free_edge_of_a_thickened_plate() {
+    let (t, k, r) = (TEST.thickness, TEST.k_factor, TEST.bend_radius);
+    let mut s = thickened_plate(t);
+    run(&mut s, "sheet.flange", json!({"edges": [[50, 0, t]], "height": 20}));
+    let rows = bend_rows(&mut s);
+    assert!(rows.len() == 1 && rows[0].0 == 90 && (rows[0].2 - 100.0).abs() < 1e-6, "{rows:?}");
+    let across = 60.0 + 20.0 - deduction(FRAC_PI_2, r, t, k);
+    assert!(same_size(flat_size(&mut s), (100.0, across), 1e-6), "{:?} vs {across}", flat_size(&mut s));
+    let (lo, hi) = bbox(&mut s);
+    // The outer sharp is the plate's bottom front edge: the flange's top is 20 above it.
+    let want = ([0.0, 0.0, 0.0], [100.0, 60.0, 20.0]);
+    assert!(lo.iter().zip(want.0).chain(hi.iter().zip(want.1)).all(|(a, b)| (a - b).abs() < 1e-6), "{lo:?} {hi:?}");
+    let expect = t * (100.0 * across + FRAC_PI_2 * t * (0.5 - k) * 100.0);
+    let v = body_volume(&s, "Plate");
+    assert!((v - expect).abs() < 1e-6 * expect, "{v} vs {expect}");
+    // Unfolded it is the flat, one sheet thick; refolded, the flange again.
+    run(&mut s, "sheet.unfold", json!({}));
+    assert!((body_volume(&s, "Plate") - t * 100.0 * across).abs() < 1e-6 * expect, "{}", body_volume(&s, "Plate"));
+    run(&mut s, "sheet.refold", json!({}));
+    assert!((body_volume(&s, "Plate") - v).abs() < 1e-9 * v);
+    // The bend line is no free edge.
+    assert!(s.execute("sheet.flange", &json!({"edges": [[50, 0, t]], "height": 20})).is_err());
+}
+
+/// A hem on a sheet made from surfaces (#6748): picked on the plate's top, it turns half a turn
+/// at the front edge back under the plate, its leg the gap 0.5 below it (so the bend's inside
+/// radius is 0.25), 10 to its outer face: its leg is 10 − (0.25 + t). Flat: 60 + π (0.25 + K T)
+/// + leg.
+#[test]
+fn a_hem_turns_back_under_a_thickened_plate() {
+    let (t, k, gap) = (TEST.thickness, TEST.k_factor, 0.5);
+    let mut s = thickened_plate(t);
+    run(&mut s, "sheet.hem", json!({"edges": [[50, 0, t]], "length": 10, "gap": gap}));
+    // The gap is the space under the leg: the bend's inside radius is half of it.
+    let r = gap / 2.0;
+    let leg = 10.0 - (r + t);
+    let across = 60.0 + PI * (r + k * t) + leg;
+    assert!(same_size(flat_size(&mut s), (100.0, across), 1e-6), "{:?} vs {across}", flat_size(&mut s));
+    let rows = bend_rows(&mut s);
+    assert!(rows.len() == 1 && rows[0].0 == 180 && (rows[0].2 - 100.0).abs() < 1e-6, "{rows:?}");
+    let (lo, hi) = bbox(&mut s);
+    // The bend's axis lies r + t below the top: its outside reaches r + t in front, and the leg
+    // lies gap under the plate, its underside gap + t below it.
+    let want = ([0.0, -(r + t), -(gap + t)], [100.0, 60.0, t]);
+    assert!(lo.iter().zip(want.0).chain(hi.iter().zip(want.1)).all(|(a, b)| (a - b).abs() < 1e-6), "{lo:?} {hi:?}");
+    let expect = t * (100.0 * across + PI * t * (0.5 - k) * 100.0);
+    let v = body_volume(&s, "Plate");
+    assert!((v - expect).abs() < 1e-6 * expect, "{v} vs {expect}");
+}
+
+/// Flanges meeting at a corner of the panel they stand on close it (#6748): their surfaces meet
+/// along the line where their planes cross, a rip parts them there, and their bends end with the
+/// corner's relief. Flanges 20 high on the front and right edges of a plate 100 x 60 thickened
+/// from its top are the same metal as a box 100 x 60 x 20 converted from its floor, front and
+/// right side with the two floor edges bent: they give the same flat, the same bends and the
+/// same folded body, whether the flanges come in one feature or two, and with a round corner
+/// relief the flanges ask for as with the rule's.
+#[test]
+fn flanges_meeting_at_a_corner_close_it_as_converting_the_same_metal_does() {
+    let t = TEST.thickness;
+    let round = json!({"corner_relief_shape": "round", "corner_relief": 6});
+    for (what, flanges, relief) in [
+        ("one feature", vec![json!({"edges": [[50, 0, t], [100, 30, t]], "height": 20})], None),
+        ("two features", vec![json!({"edges": [[50, 0, t]], "height": 20}), json!({"edges": [[100, 30, t]], "height": 20})], None),
+        (
+            "a round relief",
+            vec![json!({"edges": [[50, 0, t], [100, 30, t]], "height": 20, "corner_relief_shape": "round", "corner_relief": 6})],
+            Some(&round),
+        ),
+    ] {
+        let mut flanged = thickened_plate(t);
+        for f in flanges {
+            run(&mut flanged, "sheet.flange", f);
+        }
+        let mut boxed = Session::default();
+        rule(&mut boxed, "Test", t, TEST.k_factor, TEST.bend_radius, TEST.gap);
+        if relief.is_some() {
+            run(&mut boxed, "sheet.manage_rules", json!({"name": "Test", "corner_relief_shape": "round", "corner_relief": "6 mm"}));
+        }
+        run(&mut boxed, "solid.box", json!({"length": 100, "width": 60, "height": 20, "body_name": "Plate"}));
+        run(
+            &mut boxed,
+            "sheet.convert",
+            json!({"body": "Plate", "skip": [[50, 30, 20], [50, 60, 10], [0, 30, 10]], "bends": [[50, 0, 0], [100, 30, 0]]}),
+        );
+        let (got, want) = (flat_size(&mut flanged), flat_size(&mut boxed));
+        assert!(same_size(got, want, 1e-6), "{what}: {got:?} vs {want:?}");
+        let rows = |s: &mut Session| {
+            let mut r = bend_rows(s);
+            r.sort_by(|x, y| x.2.total_cmp(&y.2));
+            r
+        };
+        let (got, want) = (rows(&mut flanged), rows(&mut boxed));
+        assert!(got.len() == want.len() && got.iter().zip(&want).all(|(a, b)| a.0 == b.0 && (a.2 - b.2).abs() < 1e-6), "{what}: {got:?} vs {want:?}");
+        let (got, want) = (bbox(&mut flanged), bbox(&mut boxed));
+        assert!(got.0.iter().zip(want.0).chain(got.1.iter().zip(want.1)).all(|(a, b)| (a - b).abs() < 1e-6), "{what}: {got:?} vs {want:?}");
+        let (got, want) = (body_volume(&flanged, "Plate"), body_volume(&boxed, "Plate"));
+        assert!((got - want).abs() < 1e-6 * want, "{what}: {got} vs {want}");
+        assert_eq!(rips(&flanged), 1, "{what}");
+    }
+}
+
+/// How many rips the sheet made from surfaces has.
+fn rips(s: &Session) -> usize {
+    let st = s.model.state();
+    st.surface_sheets.first().map_or(0, |k| k.sheet.joints.iter().filter(|j| matches!(j.kind, solidcraft_develop::JointKind::Rip(_))).count())
+}
+
+/// Four flanges round a plate make a tray (#6748), each corner closed: the same as a box 100 x
+/// 60 x 20 converted with its top left off and its floor edges bent.
+#[test]
+fn four_flanges_round_a_plate_make_the_tray_converting_a_box_makes() {
+    let t = TEST.thickness;
+    let mut flanged = thickened_plate(t);
+    run(&mut flanged, "sheet.flange", json!({"edges": [[50, 0, t], [100, 30, t], [50, 60, t], [0, 30, t]], "height": 20}));
+    let mut boxed = Session::default();
+    rule(&mut boxed, "Test", t, TEST.k_factor, TEST.bend_radius, TEST.gap);
+    run(&mut boxed, "solid.box", json!({"length": 100, "width": 60, "height": 20, "body_name": "Plate"}));
+    run(&mut boxed, "sheet.convert", json!({"body": "Plate", "skip": [[50, 30, 20]], "bends": BOTTOM_EDGES}));
+    let (got, want) = (flat_size(&mut flanged), flat_size(&mut boxed));
+    assert!(same_size(got, want, 1e-6), "{got:?} vs {want:?}");
+    let (got, want) = (body_volume(&flanged, "Plate"), body_volume(&boxed, "Plate"));
+    assert!((got - want).abs() < 1e-6 * want, "{got} vs {want}");
+    let (got, want) = (flat(&mut flanged)["cutouts"].clone(), flat(&mut boxed)["cutouts"].clone());
+    assert_eq!(got, want);
+    assert_eq!(rips(&flanged), 4);
+}
+
+/// The flat, bends, place and volume of two sheets agree, and the first has `rips` rips.
+fn same_sheet(what: &str, flanged: &mut Session, boxed: &mut Session, rips_here: usize) {
+    let (got, want) = (flat_size(flanged), flat_size(boxed));
+    assert!(same_size(got, want, 1e-6), "{what}: {got:?} vs {want:?}");
+    let rows = |s: &mut Session| {
+        let mut r = bend_rows(s);
+        r.sort_by(|x, y| x.2.total_cmp(&y.2));
+        r
+    };
+    let (got, want) = (rows(flanged), rows(boxed));
+    assert!(got.len() == want.len() && got.iter().zip(&want).all(|(a, b)| a.0 == b.0 && (a.2 - b.2).abs() < 1e-6), "{what}: {got:?} vs {want:?}");
+    let (got, want) = (bbox(flanged), bbox(boxed));
+    assert!(got.0.iter().zip(want.0).chain(got.1.iter().zip(want.1)).all(|(a, b)| (a - b).abs() < 1e-6), "{what}: {got:?} vs {want:?}");
+    let (got, want) = (body_volume(flanged, "Plate"), body_volume(boxed, "Plate"));
+    assert!((got - want).abs() < 1e-6 * want, "{what}: {got} vs {want}");
+    assert_eq!(rips(flanged), rips_here, "{what}");
+}
+
+/// A flange meets a bend Thicken made as it meets another flange's (#6748): an L thickened from
+/// its outside (a floor 100 x 60 and a wall 20 high along its back), flanged 20 up its right edge
+/// toward the material, closes the corner with the wall, as converting a box 100 x 60 x 20 from
+/// its floor, back and right side does.
+#[test]
+fn a_flange_meets_a_bend_thicken_made_at_a_corner() {
+    let t = TEST.thickness;
+    let mut flanged = Session::default();
+    rule(&mut flanged, "Test", t, TEST.k_factor, TEST.bend_radius, TEST.gap);
+    run(&mut flanged, "solid.box", json!({"length": 100, "width": 60, "height": t, "body_name": "Plate"}));
+    run(&mut flanged, "solid.box", json!({"corner": [0, 60.0 - t, 0], "length": 100, "width": t, "height": 20, "operation": "join"}));
+    run(&mut flanged, "sheet.convert", json!({"mode": "thicken", "body": "Plate", "face": [50, 30, 0], "bends": [[50, 60, 0]]}));
+    run(&mut flanged, "sheet.flange", json!({"edges": [[100, 30, 0]], "height": 20, "flip": true}));
+    let mut boxed = Session::default();
+    rule(&mut boxed, "Test", t, TEST.k_factor, TEST.bend_radius, TEST.gap);
+    run(&mut boxed, "solid.box", json!({"length": 100, "width": 60, "height": 20, "body_name": "Plate"}));
+    run(
+        &mut boxed,
+        "sheet.convert",
+        json!({"body": "Plate", "skip": [[50, 30, 20], [50, 0, 10], [0, 30, 10]], "bends": [[50, 60, 0], [100, 30, 0]]}),
+    );
+    same_sheet("an L and a flange", &mut flanged, &mut boxed, 1);
+}
+
+/// Flanges at 45° close their corners along the slanted lines where their planes cross (#6748):
+/// four flanges 40 √2 along their outer faces round a plate 100 x 60 are the same metal as a box
+/// extruded 40 from a 100 x 60 rectangle with a 45° outward taper, converted with its top left
+/// off and its floor edges bent. (Extruded 20, Convert would take that box for a plate 20
+/// thick: its top, 140 x 100, is more than six times as wide.)
+#[test]
+fn flanges_at_45_degrees_close_their_corners_as_a_tapered_box_converts() {
+    let t = TEST.thickness;
+    let mut flanged = thickened_plate(t);
+    let edges = json!([[50, 0, t], [100, 30, t], [50, 60, t], [0, 30, t]]);
+    run(&mut flanged, "sheet.flange", json!({"edges": edges, "height": 40.0 * SQRT_2, "angle": "45 deg"}));
+    let mut boxed = Session::default();
+    rule(&mut boxed, "Test", t, TEST.k_factor, TEST.bend_radius, TEST.gap);
+    run(&mut boxed, "sketch.create", json!({"plane": "XY", "name": "Floor"}));
+    run(&mut boxed, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [100, 60]}));
+    run(&mut boxed, "sketch.finish", json!({}));
+    run(&mut boxed, "solid.extrude", json!({"sketch": "Floor", "distance": 40, "taper": "45 deg", "body_name": "Plate"}));
+    run(&mut boxed, "sheet.convert", json!({"body": "Plate", "skip": [[50, 30, 40]], "bends": BOTTOM_EDGES}));
+    same_sheet("45° flanges", &mut flanged, &mut boxed, 4);
+}
+
+/// A flange trims the side of a wall it meets to the line where the two cross (#6748), whatever
+/// the wall's side was: a box tapered 45° outward, 40 high on a 100 x 60 floor, converted from
+/// its floor and front wall (whose sides lean out with the taper), flanged 40 straight up its
+/// right edge, cuts the front wall back to the flange's plane. The same metal is that box cut
+/// square at its right and back, converted from its floor, front and right side.
+#[test]
+fn a_flange_trims_the_leaning_side_of_a_converted_wall_it_meets() {
+    let t = TEST.thickness;
+    let tapered = |s: &mut Session| {
+        rule(s, "Test", t, TEST.k_factor, TEST.bend_radius, TEST.gap);
+        run(s, "sketch.create", json!({"plane": "XY", "name": "Floor"}));
+        run(s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [100, 60]}));
+        run(s, "sketch.finish", json!({}));
+        run(s, "solid.extrude", json!({"sketch": "Floor", "distance": 40, "taper": "45 deg", "body_name": "Plate"}));
+    };
+    let mut flanged = Session::default();
+    tapered(&mut flanged);
+    run(
+        &mut flanged,
+        "sheet.convert",
+        json!({"body": "Plate", "skip": [[50, 30, 40], [50, 70, 10], [-10, 30, 10], [110, 30, 10]], "bends": [[50, 0, 0]]}),
+    );
+    run(&mut flanged, "sheet.flange", json!({"edges": [[100, 30, 0]], "height": 40, "flip": true}));
+    let mut boxed = Session::default();
+    tapered(&mut boxed);
+    run(&mut boxed, "solid.box", json!({"corner": [100, -100, -10], "length": 200, "width": 300, "height": 100, "operation": "cut"}));
+    run(&mut boxed, "solid.box", json!({"corner": [-100, 60, -10], "length": 300, "width": 200, "height": 100, "operation": "cut"}));
+    run(
+        &mut boxed,
+        "sheet.convert",
+        json!({"body": "Plate", "skip": [[30, 30, 40], [30, 60, 10], [-10, 30, 10]], "bends": [[50, 0, 0], [100, 30, 0]]}),
+    );
+    same_sheet("a leaning wall and a flange", &mut flanged, &mut boxed, 1);
 }
