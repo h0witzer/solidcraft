@@ -1680,8 +1680,11 @@ fn a_bend_ends_where_its_wall_ends_with_the_rules_bend_relief_beside_it() {
 /// x = 100 from y = 0 to 30 only, a round corner relief 8 across. The walls meet at the corner,
 /// closed with the gap (each ends g/√2 + T from the other's outside) and relieved there; the
 /// shorter one's bend ends at y = 30 with a bend relief beside it. In the flat from the plate's
-/// corner: the plate from y = 4 and up to x = 96 beside the short wall, 100 past it; bends 96 − 4
-/// and 26 − 4 long; the bend relief x 95 … 100, y 30 … 32.
+/// corner: the plate from y = 4 and up to x = 96 beside the short wall, 100 past it; the bend
+/// relief x 95 … 100, y 30 … 32. The corner's relief belongs to the corner (#6748): centered
+/// where the two bends' center lines cross, BA / 2 out from the plate's corner (96, 4) both ways,
+/// it takes 4 − BA / 2 off each bend's end there, and from every piece of the flat it reaches: a
+/// sliver of the plate, the bends' ends and the walls' ends.
 #[test]
 fn a_wall_on_part_of_an_edge_meets_a_wall_at_a_relieved_corner_and_is_relieved_at_its_end() {
     let (t, r, k, gap) = (2.0, 2.0, 0.44, 0.5);
@@ -1693,26 +1696,74 @@ fn a_wall_on_part_of_an_edge_meets_a_wall_at_a_relieved_corner_and_is_relieved_a
     run(&mut s, "solid.box", json!({"length": 2, "width": 30, "height": 30, "corner": [98, 0, 0], "operation": "join", "targets": ["Part"]}));
     let out = run(&mut s, "sheet.convert", json!({"mode": "thicken", "body": "Part", "face": [50, 30, 0], "bends": [[50, 0, 0], [100, 15, 0]]}));
     assert!(out["warning"].is_null(), "{out}");
+    // The bends run from the plate's end, and from the short wall's end, to the corner where their
+    // tangent lines cross (x 96, y 4), less what the relief takes there.
+    let (h, size) = (ba / 2.0, 4.0);
     let mut lengths: Vec<f64> = bend_rows(&mut s).iter().map(|row| row.2).collect();
     lengths.sort_by(f64::total_cmp);
-    assert!(lengths.len() == 2 && (lengths[0] - 22.0).abs() < 1e-6 && (lengths[1] - 92.0).abs() < 1e-6, "{lengths:?}");
-    // The plate less the setbacks, the round relief and the bend relief; the walls 26 high, each
-    // from the corner's closed end to its own end.
+    let want = [26.0 - (size - h), 96.0 - (size - h)];
+    assert!(lengths.len() == 2 && lengths.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-6), "{lengths:?} vs {want:?}");
+    // What the relief takes, about its center: of the plate, the corner beyond both tangent
+    // lines; of each bend, its zone up to the corner; of each wall, its end, cut back from the
+    // other wall's outside, past its tangent line. The two bends and the two walls alike.
     let cut = t + gap / SQRT_2;
-    let base = 100.0 * 56.0 - 4.0 * 26.0 - 4.0 * PI - 10.0;
-    let walls = 26.0 * ((100.0 - cut) + (30.0 - cut));
-    let folded = t * (base + walls) + FRAC_PI_2 * t * (r + t / 2.0) * 114.0;
+    let far = 1e3;
+    let plate = disc_in_box(size, (-far, -h), (h, far));
+    let zone = disc_in_box(size, (-far, -h), (-h, h));
+    let wall = disc_in_box(size, (-far, size - h - cut), (-far, -h));
+    // The plate less the setbacks, the relief and the bend relief; the walls 26 high, each from
+    // the corner's closed end to its own end; the bends' zones 96 and 26 long to the corner.
+    let base = 100.0 * 56.0 - 4.0 * 26.0 - plate - 10.0;
+    let walls = 26.0 * ((100.0 - cut) + (30.0 - cut)) - 2.0 * wall;
+    let zones = ba * 122.0 - 2.0 * zone;
+    // Folded, a bend's metal is its flat zone's on its neutral arc, (R + T / 2) / (R + K T) as much.
+    let folded = t * (base + walls) + t * zones * (r + t / 2.0) / (r + k * t);
     let v = volume(&mut s);
-    assert!((v - folded).abs() < 1e-4 * folded, "{v} vs {folded}");
+    assert!((v - folded).abs() < 1e-6 * folded, "{v} vs {folded}");
     // From the flat's low corner (the long wall's far edge, 26 + BA − 4 past y = 0): the bend
     // relief's corners.
     let edge = 26.0 + ba - 4.0;
     assert!(outline_has(&mut s, &[[95.0, edge + 30.0], [95.0, edge + 32.0], [100.0, edge + 32.0]]), "{:?}", outline_corners(&mut s));
     run(&mut s, "sheet.unfold", json!({}));
-    let flat = t * (base + walls + ba * 114.0);
-    assert!((volume(&mut s) - flat).abs() < 0.1, "{} vs {flat}", volume(&mut s));
+    let flat = t * (base + walls + zones);
+    assert!((volume(&mut s) - flat).abs() < 1e-6 * flat, "{} vs {flat}", volume(&mut s));
     run(&mut s, "sheet.refold", json!({}));
     assert!((volume(&mut s) - v).abs() < 1e-6 * v);
+}
+
+/// The area of the disc of radius `r` about the origin within the box `[u0, u1] x [v0, v1]`.
+fn disc_in_box(r: f64, (u0, u1): (f64, f64), (v0, v1): (f64, f64)) -> f64 {
+    let (v0, v1) = (v0.max(-r), v1.min(r));
+    if v0 >= v1 {
+        return 0.0;
+    }
+    // At height `v` the disc spans |u| <= s(v) = √(r² − v²); `whole` integrates s.
+    let half = |v: f64| (r * r - v * v).max(0.0).sqrt();
+    let whole = |v: f64| 0.5 * (v * half(v) + r * r * (v / r).clamp(-1.0, 1.0).asin());
+    // Between the heights where s reaches either side of the box, each side is the disc's or the
+    // box's throughout.
+    let mut at = vec![v0, v1];
+    for u in [u0, u1] {
+        if u.abs() < r {
+            let w = half(u);
+            at.extend([-w, w]);
+        }
+    }
+    at.retain(|v| *v >= v0 && *v <= v1);
+    at.sort_by(f64::total_cmp);
+    at.dedup();
+    at.windows(2)
+        .map(|w| {
+            let (a, b) = (w[0], w[1]);
+            let s = half(0.5 * (a + b));
+            if u1.min(s) <= u0.max(-s) {
+                return 0.0;
+            }
+            let right = if u1 < s { u1 * (b - a) } else { whole(b) - whole(a) };
+            let left = if u0 > -s { u0 * (b - a) } else { whole(a) - whole(b) };
+            right - left
+        })
+        .sum()
 }
 
 #[path = "sheet_surface_cut_tests.rs"]
