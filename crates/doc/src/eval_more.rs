@@ -1216,7 +1216,12 @@ pub(super) fn sheet_eval(
             }
             if let Some(sk) = st.surface_sheets.get_mut(i) {
                 let n0 = sk.sheet.panels.len();
-                sk.add_jog(a, b, crate::sheet_surface_jog::JogStep { offset: off, measure, angle: ang, radius: rr, position, flip: *flip }, fixed.map(Vec3::from))?;
+                sk.add_jog(
+                    a,
+                    b,
+                    crate::sheet_surface_jog::JogStep { offset: off, measure, angle: ang, radius: rr, position, flip: *flip },
+                    fixed.map(Vec3::from),
+                )?;
                 tag_panels(sk, None, n0, f.id);
             }
             rebuild_surface_sheet(st, i)

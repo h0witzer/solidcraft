@@ -187,3 +187,43 @@ fn jog_on_an_unfolded_sheet_asks_to_refold_it() {
     let e = jog(&mut s, json!({"offset": 20})).unwrap_err().to_string();
     assert!(e.contains("refold"), "{e}");
 }
+
+/// The bend lines' lowest x in the flat pattern.
+fn low_bend_x(s: &mut Session) -> f64 {
+    let f = flat(s);
+    let xs: Vec<f64> = f["bends"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|b| [b["start"][0].as_f64().unwrap_or(f64::NAN), b["end"][0].as_f64().unwrap_or(f64::NAN)])
+        .collect();
+    xs.iter().cloned().fold(f64::MAX, f64::min)
+}
+
+#[test]
+fn jog_along_a_sketch_line_keeps_the_larger_side_and_takes_the_rules_radius() {
+    let ba = FRAC_PI_2 * (2.0 + 0.4 * 2.0);
+    let mut s = Session::default();
+    jog_plate(&mut s);
+    run(&mut s, "sketch.create", json!({"plane": "XY", "offset": 2, "name": "JogLine"}));
+    run(&mut s, "sketch.line", json!({"points": [[50, 0], [50, 60]], "ids": ["jl"]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "sheet.jog", json!({"sketch": "JogLine", "curve": "jl", "offset": 20}));
+    // No fixed point: the larger side (x > 50) stays, the smaller steps up 20 outside to outside.
+    let (lo, hi) = z_range(&mut s);
+    assert!(lo.abs() < 1e-6 && (hi - 20.0).abs() < 1e-6, "{lo} {hi}");
+    let b = bbox(&mut s);
+    assert!((b["max"][0].as_f64().unwrap_or(0.0) - 120.0).abs() < 1e-6, "{b}");
+    // Both bends at the rule's radius in the sheet's thickness, the same as the points give.
+    let f = flat(&mut s);
+    let bends = f["bends"].as_array().cloned().unwrap_or_default();
+    assert_eq!(bends.len(), 2, "{f}");
+    for b in &bends {
+        assert!((b["allowance"].as_f64().unwrap_or(0.0) - ba).abs() < 1e-9, "{f}");
+    }
+    let by_line = low_bend_x(&mut s);
+    let mut p = Session::default();
+    jog_plate(&mut p);
+    jog(&mut p, json!({"offset": 20})).unwrap();
+    assert!((by_line - low_bend_x(&mut p)).abs() < 1e-6, "{by_line} {}", low_bend_x(&mut p));
+}
