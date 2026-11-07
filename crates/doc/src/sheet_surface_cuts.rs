@@ -312,7 +312,7 @@ pub(crate) fn cut(sk: &SurfaceSheet, was: &Body, now: &Body, weigh: bool) -> std
 /// panel (a letter's counter lies in a hole of it): how many, their area and where they lie in
 /// the flat pattern, as it is read (see [`SurfaceSheet::shown`]). They stay. None when there are
 /// none, or their places can't be worked out: the note is no reason for a cut to fail.
-fn parted_note(sk: &SurfaceSheet, had: usize) -> Option<String> {
+pub(crate) fn parted_note(sk: &SurfaceSheet, had: usize) -> Option<String> {
     let dev = develop(&sk.sheet, 0).ok()?;
     let pieces: Vec<Region2> = sk
         .loose
@@ -530,6 +530,13 @@ fn left(region: &Region2, through: &[Region2], name: &str, holders: &[Vec2], tol
     };
     let kept = left.swap_remove(keep);
     Ok((kept, left))
+}
+
+/// What is left of panel `p` of `sk` without `through` (in the panel's chart): the piece that
+/// holds its joints, and the pieces parted from it, as [`left`] reads them.
+pub(crate) fn left_of_panel(sk: &SurfaceSheet, p: usize, through: &[Region2], tol: f64) -> std::result::Result<(Region2, Vec<Region2>), String> {
+    let panel = sk.sheet.panels.get(p).ok_or_else(|| format!("the sheet has no panel {p}"))?;
+    left(&panel.region, through, &panel.name, &holders(sk, p), tol)
 }
 
 /// The points where the joints of `sk`'s panel `p` hold it: the middle of each bend's zone along
