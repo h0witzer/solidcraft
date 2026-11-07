@@ -1,0 +1,15 @@
+{
+ "sources": [
+  "tangency-labs/solidcraft#10356",
+  "tangency-labs/solidcraft#8707"
+ ],
+ "what": "a 1200 x 600 x 1.5 channel with two 40 mm walls and 800 round holes of 3 mm cut through its base in one cut: the cut builds instead of running out of the flat budget",
+ "source": "analytic",
+ "method": "T = 1.5, R = 1.5, K = 0.5, inside flanges: base 1200 x (600 - 2(R + T)), bends 2 x 1200 x BA (BA = (pi/2)(R + K T) = 3.534292), walls 2 x 1200 x (40 - (R + T)), less 800 holes of pi 1.5^2 (a 40 x 20 grid at a 28 mm pitch from (40, 30), all in the base clear of the bends): 804427.4334 mm2; with K = 0.5 the folded volume is the flat area times T",
+ "body_count": 1,
+ "volume_mm3": 1206641.1500823463,
+ "flat_pattern": {
+  "area_mm2": 804427.4333882309
+ },
+ "timeout_s": 900
+}

@@ -1,0 +1,115 @@
+{
+ "commands": [
+  {
+   "command": "sheet.manage_rules",
+   "params": {
+    "name": "T",
+    "thickness": "1.0 mm",
+    "active": true,
+    "bend_radius": "1.0 mm",
+    "k_factor": 0.5
+   }
+  },
+  {
+   "command": "sketch.create",
+   "params": {
+    "plane": "XY",
+    "name": "Base"
+   }
+  },
+  {
+   "command": "sketch.rectangle.two_point",
+   "params": {
+    "p0": [
+     0,
+     0
+    ],
+    "p1": [
+     120,
+     90
+    ]
+   }
+  },
+  {
+   "command": "sketch.finish",
+   "params": {}
+  },
+  {
+   "command": "sheet.flange",
+   "params": {
+    "type": "base",
+    "sketch": "Base"
+   }
+  },
+  {
+   "command": "sheet.flange",
+   "params": {
+    "type": "edge",
+    "height": 30.0,
+    "angle": 90,
+    "position": "inside",
+    "edges": [
+     [
+      60,
+      0,
+      1.0
+     ],
+     [
+      60,
+      90,
+      1.0
+     ]
+    ]
+   }
+  },
+  {
+   "command": "file.export",
+   "params": {
+    "path": "$OUT/7582-channel.step"
+   }
+  },
+  {
+   "command": "file.new",
+   "params": {
+    "name": "Converted"
+   }
+  },
+  {
+   "command": "file.insert_step",
+   "params": {
+    "path": "$OUT/7582-channel.step"
+   }
+  },
+  {
+   "command": "component.activate",
+   "params": {
+    "component": "7582-channel"
+   }
+  },
+  {
+   "command": "sheet.manage_rules",
+   "params": {
+    "name": "T",
+    "thickness": "1.0 mm",
+    "active": true,
+    "bend_radius": "1.0 mm",
+    "k_factor": 0.5
+   }
+  },
+  {
+   "command": "sheet.convert",
+   "params": {
+    "body": "7582-channel",
+    "rule": "T"
+   }
+  },
+  {
+   "command": "inspect.measure",
+   "params": {}
+  },
+  {
+   "command": "sheet.flat_pattern",
+   "params": {}
+  }
+ ]
+}
