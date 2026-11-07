@@ -39,6 +39,24 @@ fn straight(e: &FreeEdge) -> Result<(Vec2, Vec2, Vec2)> {
     Ok((e.a, e.b, d))
 }
 
+/// A turn sharper than this (its sine) between two edges of an outline is a corner. Edges that
+/// meet smoothly, as a line running on into an arc, turn less.
+const CORNER_TURN: f64 = 0.17;
+
+/// Where two edges of an outline meet at a corner, read from the edges' own tangents.
+fn outline_corners(outline: &Loop2) -> Vec<Vec2> {
+    let segs = &outline.segs;
+    let mut corners = Vec::new();
+    for (i, next) in segs.iter().enumerate() {
+        let Some(prev) = segs.get((i + segs.len() - 1) % segs.len()) else { continue };
+        let (t0, t1) = (prev.end_tangent(), next.start_tangent());
+        if t0.cross(t1).abs() > CORNER_TURN || t0.dot(t1) < 0.0 {
+            corners.push(next.start());
+        }
+    }
+    corners
+}
+
 impl SurfaceSheet {
     /// The free edge of the sheet nearest the point `p` (the body's coordinates), on a face of a
     /// planar panel or its rim: one no joint runs along. `None` when no such edge is within twice
@@ -75,7 +93,7 @@ impl SurfaceSheet {
             }
         }
         if bent <= t * 2.0 + 1e-3 && best.as_ref().is_none_or(|(x, _)| bent < *x) {
-            return err("that is a bend line, not a free edge of the sheet: pick a free edge");
+            return err("that edge is the bend line of a flange; pick a free edge of the sheet");
         }
         Ok(best.map(|(_, e)| e))
     }
@@ -705,6 +723,27 @@ impl SurfaceSheet {
             "mould" | "mold" => l - (radius + t) * (angle / 2.0).tan(),
             o => return err(format!("unknown fold position `{o}` (centerline, start, end or mould)")),
         };
+        // A corner of the outline inside the bend zone (a fold right at a tab's root): the zone
+        // would not be a strip of the panel, and the material beside the tab would be lost. Name
+        // the corner nearest the middle of the line, and how far the line has to move to clear
+        // them all.
+        let corners: Vec<(Vec2, f64)> =
+            outline_corners(&region.outer).into_iter().map(|c| (c, c.dot(n) - s0)).filter(|(_, s)| *s > 1e-6 && *s < ba - 1e-6).collect();
+        let mid = {
+            let (p, q) = (back.point(a), back.point(b));
+            Vec2::new((p.x + q.x) / 2.0, (p.y + q.y) / 2.0)
+        };
+        if let Some(&(c, _)) = corners.iter().min_by(|x, y| x.0.dist(mid).total_cmp(&y.0.dist(mid))) {
+            let to_fold = corners.iter().fold(0.0_f64, |m, (_, s)| m.max(*s));
+            let to_stay = corners.iter().fold(0.0_f64, |m, (_, s)| m.max(ba - *s));
+            // On the face the line was drawn on.
+            let w = back.inverse().point(Vec3::new(c.x, c.y, back.point(a).z));
+            return err(format!(
+                "the bend zone ({ba:.3} mm wide) reaches a corner of the sheet's outline at ({:.3}, {:.3}, {:.3}): \
+                 move the fold line at least {to_fold:.3} mm toward the side that folds or {to_stay:.3} mm toward the side that stays",
+                w.x, w.y, w.z
+            ));
+        }
         // The panel up to the zone stays; past it, it moves.
         let one = |r: Vec<Region2>, what: &str| -> Result<Region2> {
             match <[Region2; 1]>::try_from(r) {

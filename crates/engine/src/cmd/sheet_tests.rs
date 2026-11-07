@@ -3338,20 +3338,26 @@ fn fold_fixed_point_off_the_sheet_is_not_silently_ignored() {
 }
 
 /// A tab whose fold line sits exactly at its root: the bend zone reaches the blank outline beside
-/// the tab. Every edge is straight, so the error must not blame a slanted or curved edge (#262).
+/// the tab and would take the base's material there, so the fold is refused, naming a corner at
+/// the tab's root, and the sheet stays as it was. Every edge is straight, so the error must not
+/// blame a slanted or curved edge (#262). With its zone starting at the root, or 1 mm into the
+/// tab, the same fold works.
 #[test]
 fn fold_at_a_tab_root_names_the_real_cause() {
+    let blank = json!([[0, 0], [100, 0], [100, 50], [60, 50], [60, 70], [40, 70], [40, 50], [0, 50]]);
     let mut s = Session::default();
-    outline_blank(&mut s, json!([[0, 0], [100, 0], [100, 50], [60, 50], [60, 70], [40, 70], [40, 50], [0, 50]]));
-    if let Err(e) = s.execute("sheet.fold", &json!({"points": [[40, 50, 0.8], [60, 50, 0.8]], "fixed": [50, 25, 0.8]})) {
-        let e = e.to_string();
-        assert!(!e.contains("slanted or curved"), "all edges are straight: {e}");
-        assert!(e.contains("bend zone"), "name the bend zone reaching the outline: {e}");
+    outline_blank(&mut s, blank.clone());
+    let before = s.doc.to_json();
+    let e = s.execute("sheet.fold", &json!({"points": [[40, 50, 0.8], [60, 50, 0.8]], "fixed": [50, 25, 0.8]})).unwrap_err().to_string();
+    assert!(!e.contains("slanted or curved"), "all edges are straight: {e}");
+    assert!(e.contains("bend zone") && e.contains("reaches a corner of the sheet's outline"), "name the bend zone reaching the outline: {e}");
+    assert!(e.contains("at (40.000, 50.000,") || e.contains("at (60.000, 50.000,"), "name a corner at the tab's root: {e}");
+    assert_eq!(s.doc.to_json(), before);
+    for (y, position) in [(50, "start"), (51, "centerline")] {
+        let mut ok = Session::default();
+        outline_blank(&mut ok, blank.clone());
+        run(&mut ok, "sheet.fold", json!({"points": [[40, y, 0.8], [60, y, 0.8]], "fixed": [50, 25, 0.8], "position": position}));
     }
-    // 1 mm into the tab the same fold works.
-    let mut ok = Session::default();
-    outline_blank(&mut ok, json!([[0, 0], [100, 0], [100, 50], [60, 50], [60, 70], [40, 70], [40, 50], [0, 50]]));
-    run(&mut ok, "sheet.fold", json!({"points": [[40, 51, 0.8], [60, 51, 0.8]], "fixed": [50, 25, 0.8]}));
 }
 
 /// The sheet of the folds across slanted edges below: 2 mm thick, R 1, K 0.4.
@@ -6367,19 +6373,38 @@ fn a_mirror_or_a_join_into_a_sheet_refuses_its_flat_pattern_naming_the_feature()
     assert!((flat(&mut s)["flat_size_mm"][1].as_f64().unwrap_or(0.0) - 75.0).abs() < 1e-9);
 }
 
-/// A fillet on a sheet's corner is refused in the flat pattern until a sheet metal feature
-/// rebuilds the body from its sheet features; that feature says the round is not kept, and the
-/// flat pattern describes the body again.
+/// A fillet on a sheet's corner, a round through the thickness, is an arc of its outline, as
+/// `a_corner_rounded_through_the_sheet_is_an_arc_of_its_outline` has it: the flat pattern draws
+/// the round the body has, and a flange made after it keeps it.
 #[test]
-fn a_fillet_on_a_sheet_corner_is_refused_until_a_sheet_feature_rebuilds_the_body() {
+fn a_fillet_on_a_sheet_corner_is_an_arc_of_its_outline_kept_by_a_later_flange() {
+    // The lines and arcs on the DXF's OUTLINE layer.
+    let outline = |s: &mut Session| {
+        let dxf = run(s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap_or("").replace("\r\n", "\n");
+        let codes: Vec<&str> = dxf.lines().map(str::trim).collect();
+        let (mut kind, mut lines, mut arcs) = ("", 0, 0);
+        for pair in codes.chunks(2) {
+            match pair {
+                ["0", k] => kind = *k,
+                ["8", "OUTLINE"] if kind == "LINE" => lines += 1,
+                ["8", "OUTLINE"] if kind == "ARC" => arcs += 1,
+                _ => {}
+            }
+        }
+        (lines, arcs)
+    };
     let mut s = Session::default();
     base(&mut s, 100.0, 60.0);
     let out = run(&mut s, "solid.fillet", json!({"edges": [[100, 60, 1.25]], "radius": 10}));
-    assert!(out["warning"].as_str().is_some_and(|w| w.contains("is sheet metal")), "{out}");
-    let error = s.execute("sheet.export_dxf", &json!({})).unwrap_err().to_string();
-    assert!(error.contains("can't include Fillet1"), "{error}");
-    let out = run(&mut s, "sheet.flange", json!({"edges": [[50, 0, 2.5]], "height": 20}));
-    assert!(out["warning"].as_str().is_some_and(|w| w.contains("what Fillet1 changed is not kept")), "{out}");
+    assert!(out["warning"].as_str().is_none_or(str::is_empty), "{out}");
+    assert_eq!(outline(&mut s), (4, 1));
+    // The plate less the corner's 10 x 10 square, but for its quarter circle, through 2.5.
+    let want = (100.0 * 60.0 - (100.0 - 25.0 * PI)) * 2.5;
+    assert!(rel(volume(&mut s), want) < 1e-9, "{} vs {want}", volume(&mut s));
+    // Along the front edge, the flange adds a side split at most where the zone meets the panels.
+    run(&mut s, "sheet.flange", json!({"edges": [[50, 0, 2.5]], "height": 20}));
+    let (lines, arcs) = outline(&mut s);
+    assert!((4..=8).contains(&lines) && arcs == 1, "{lines} lines, {arcs} arcs");
     assert!(flat_exports(&mut s).into_iter().all(|r| r.is_ok()));
 }
 
@@ -6611,13 +6636,14 @@ fn a_primitive_cut_passes_over_a_sheet_clear_of_it_by_its_exact_box() {
     assert!((right_volume - body_volume(&mut s, "Right") - PI * 6.25 * 2.5).abs() < 1e-3);
 }
 
-/// A cut that only grazes a bend's curved faces near the edge where the bend meets the base is
-/// checked against the bend and refused (the sheet is unchanged); one clear of the bend's exact
-/// box cuts the base.
+/// A cut that grazes a bend near the edge where the bend meets the base is a boolean on the
+/// folded body read back: as well as the base, it takes every fiber of the bend it meets, as
+/// `a_hole_through_a_plate_that_runs_into_its_bend_is_cut_from_both` has it for a drill. One clear
+/// of the bend's exact box cuts the base.
 #[test]
-fn a_cut_grazing_a_bend_near_its_edge_is_refused_and_one_clear_of_its_exact_box_cuts() {
+fn a_cut_grazing_a_bend_near_its_edge_takes_every_fiber_it_meets_and_one_clear_of_it_cuts_the_base() {
     // `plate_with_flange`: the bend (R 2.5, T 2.5) runs from y = 0 to y = 5, where the base
-    // panel starts.
+    // panel starts; its axis runs along x over y = 5.
     for (y0, grazes) in [(4.9, true), (5.1, false)] {
         let mut s = Session::default();
         plate_with_flange(&mut s);
@@ -6625,11 +6651,14 @@ fn a_cut_grazing_a_bend_near_its_edge_is_refused_and_one_clear_of_its_exact_box_
         rectangle_tool(&mut s, "Slot", [40.0, y0], [60.0, 15.0]);
         let cut = json!({"sketch": "Slot", "through_all": true, "direction": "symmetric", "operation": "cut"});
         if grazes {
-            let before = s.doc.to_json();
-            let e = s.execute("solid.extrude", &cut).unwrap_err().to_string();
-            assert!(e.contains("intersects a folded bend"), "{e}");
-            assert_eq!(s.doc.to_json(), before);
-            assert_eq!(volume(&mut s), v0);
+            run(&mut s, "solid.extrude", cut);
+            // From the base, 20 x (15 - 5) x 2.5. In the bend, the fiber turned phi from the base
+            // meets the slot where its inside end, on radius 2.5, comes within 5 - y0 of the plane
+            // through the axis square to y: 2.5 sin phi <= 5 - y0. So 20 along the bend of the
+            // sector up to that phi, between radii 2.5 and 5.
+            let phi = ((5.0 - y0) / 2.5).asin();
+            let want = 20.0 * 10.0 * 2.5 + 20.0 * phi / 2.0 * (5.0 * 5.0 - 2.5 * 2.5);
+            assert!((v0 - volume(&mut s) - want).abs() < 1e-6, "{} vs {want}", v0 - volume(&mut s));
         } else {
             run(&mut s, "solid.extrude", cut);
             assert!((v0 - volume(&mut s) - 20.0 * (15.0 - y0) * 2.5).abs() < 1e-3, "{}", v0 - volume(&mut s));
