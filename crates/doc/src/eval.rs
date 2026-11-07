@@ -7329,6 +7329,7 @@ fn eval_feature(
         | FeatureKind::SheetPerforate { .. }
         | FeatureKind::SheetFold { .. }
         | FeatureKind::SheetPath { .. }
+        | FeatureKind::SheetJog { .. }
         | FeatureKind::SheetUnfold { .. }
         | FeatureKind::SheetConvert { .. }
         | FeatureKind::SheetSurfaceConvert { .. } => more::sheet_eval(doc, vals, f, st, warning),

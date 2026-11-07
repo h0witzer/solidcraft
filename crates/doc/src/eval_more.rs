@@ -1171,6 +1171,61 @@ pub(super) fn sheet_eval(
             tag_flanges(sh, n0, f.id);
             rebuild_sheet(st, i)
         }
+        FeatureKind::SheetJog { sketch, curve, a, b, offset, measure, angle, radius, position, flip, fixed, body } => {
+            // The sketch line, where it is now.
+            let (a, b) = match (sketch, curve) {
+                (Some(sk), Some(c)) => {
+                    let ss = st.sketch(sk.0).ok_or_else(|| DocError::Unknown(format!("sketch {sk}")))?;
+                    let ci = ss.sketch.curve_index(c).ok_or_else(|| DocError::Unknown(format!("curve `{c}`")))?;
+                    match ss.sketch.segs(ci).as_slice() {
+                        [Seg2::Line { a, b }] => (ss.plane.to_world(*a), ss.plane.to_world(*b)),
+                        _ => return Err(DocError::Invalid("the jog line must be a sketch line".into())),
+                    }
+                }
+                _ => (a.0, b.0),
+            };
+            let i = match body {
+                Some(n) => st.surface_sheets.iter().position(|s| &s.body == n),
+                None => st.surface_sheets.iter().position(|s| s.fold_panel_at(a, b)),
+            }
+            .ok_or_else(|| DocError::Invalid("the jog line must lie on a flat face of a sheet metal body".into()))?;
+            let sk = st.surface_sheets.get(i).ok_or_else(|| DocError::Invalid("sheet".into()))?;
+            if sk.unfolded {
+                return Err(DocError::Invalid("refold the sheet before jogging it".into()));
+            }
+            let off = val(vals, offset, Kind::Length)?;
+            let ang = val(vals, angle, Kind::Angle)?;
+            // The rule's radius at the sheet's own thickness, as Fold takes it.
+            let rr = match radius {
+                Some(e) => val(vals, e, Kind::Length)?,
+                None => doc.rule_values_at(vals, &doc.sheet_rule(Some(&sk.rule)), Some(sk.thickness))?.bend_radius,
+            };
+            // A fixed point that touches no material at all (e.g. far above the sheet) still picks
+            // the side it lies on, so a stored jog keeps recomputing; it says so (#371).
+            let t = sk.thickness;
+            if let Some(p) = fixed
+                && !sk.touches(p.0, (t * 1e-3).max(1e-6))
+            {
+                *warning = Some(format!(
+                    "{} at ({:.3}, {:.3}, {:.3}); the side of the jog line it lies on stays",
+                    sheet::FOLD_FIXED_OFF_SHEET,
+                    p.x,
+                    p.y,
+                    p.z
+                ));
+            }
+            if let Some(sk) = st.surface_sheets.get_mut(i) {
+                let n0 = sk.sheet.panels.len();
+                sk.add_jog(
+                    a,
+                    b,
+                    crate::sheet_surface_jog::JogStep { offset: off, measure, angle: ang, radius: rr, position, flip: *flip },
+                    fixed.map(Vec3::from),
+                )?;
+                tag_panels(sk, None, n0, f.id);
+            }
+            rebuild_surface_sheet(st, i)
+        }
         FeatureKind::SheetUnfold { body, refold } => {
             if let Some(i) = surface_sheet_for(st, body, |s| s.unfolded == *refold) {
                 if let Some(sk) = st.surface_sheets.get_mut(i) {
