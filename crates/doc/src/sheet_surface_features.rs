@@ -821,7 +821,7 @@ impl SurfaceSheet {
             if s.iter().all(|x| *x >= ba - tol) {
                 r.panel = piece_at(r.region.outer.segs.first().map(|g| g.start()).unwrap_or_default());
             } else if !s.iter().all(|x| *x <= tol) {
-                return err("the fold's bend zone runs through a recess: not supported yet");
+                return err("the fold's bend zone runs through a pocket: not supported yet");
             }
         }
         for l in &mut self.loose {

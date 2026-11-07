@@ -2880,6 +2880,15 @@ fn absorb_sheet_cuts(
     for (i, absorbed) in crate::sheet_surface_cuts::absorb(before, after, f, weigh || !cuts, drawn.as_ref())? {
         let (mut sk, built, note) = match absorbed {
             crate::sheet_surface_cuts::Absorbed::Read(sk, built, note) => (sk, built, note),
+            // An intersect keeps what lies in its tool and takes the rest: refused, it says so in
+            // the words a flat-first sheet uses for machining it can't keep.
+            crate::sheet_surface_cuts::Absorbed::Refused(why)
+                if cuts && matches!(&f.kind, FeatureKind::Extrude { operation: Operation::Intersect, .. }) =>
+            {
+                return Err(DocError::Invalid(format!(
+                    "{why}; this sheet machining cannot be preserved in its flat material: use a parallel extrude, or unfold the sheet before intersecting"
+                )));
+            }
             crate::sheet_surface_cuts::Absorbed::Refused(why) if cuts => return Err(DocError::Invalid(why)),
             crate::sheet_surface_cuts::Absorbed::Refused(_) => {
                 if let Some(sk) = after.surface_sheets.get_mut(i).filter(|sk| sk.altered_by.is_none()) {
