@@ -14,12 +14,14 @@
 //! what the cut took, as a shop cuts it in the flat ([`crate::sheet_surface_shadow`]). A cut
 //! whose walls cross a joint (a bend, a seam) is read the same way across every piece it
 //! reaches at once, its outline in the flat, and kept as a cut of the sheet's: what it leaves
-//! of a bend bends, or is a tab of the one panel it still joins. Every face the cut made must be
-//! read; checking each step, the sheet built again must also weigh what the cut body does, or,
-//! where a shadow was cut, no more (a tab weighs flat). Refused: walls that don't run through the
-//! sheet from face to face (a countersink, a rounded or chamfered face edge, a cut that stops
-//! inside a bend), a recess in a roll, a cut through the sheet's outline at a slant, on a roll or
-//! at a bend (not supported yet), or one that splits a panel into pieces that each hold a joint.
+//! of a bend bends, or is a tab of the one panel it still joins. Laid out flat, such a cut with
+//! walls square to the sheet may run out through its outline: its shadow closes along the outline
+//! there. Every face the cut made must be read; checking each step, the sheet built again must
+//! also weigh what the cut body does, or, where a shadow was cut, no more (a tab weighs flat).
+//! Refused: walls that don't run through the sheet from face to face (a countersink, a rounded or
+//! chamfered face edge, a cut that stops inside a bend), a recess in a roll, a cut through the
+//! sheet's outline at a slant, on a roll or across a bend of the folded sheet (not supported
+//! yet), or one that splits a panel into pieces that each hold a joint.
 //! A piece a cut parts from a panel that holds none of its joints (a letter's counter, the end
 //! of a flange cut off beside its bend) stays where it was, a loose piece of the sheet: in the
 //! folded body, in the flat and in its DXF; the cut says so of each that lies outside the panel.
@@ -30,11 +32,11 @@ use std::collections::BTreeSet;
 use solidcore_record::{Loop2, Plane, Region2, Vec2};
 use solidcraft_develop::{Cut, Development, Fold, JointKind, Rigid2, Rigid3, Surface, develop};
 use solidcraft_geom::brep::query::Query;
-use solidcraft_kernel::{Body, BoolOp, FaceSurface, face_surface, planar_regions_boolean};
+use solidcraft_kernel::{Body, BoolOp, FaceSurface, face_surface};
 
 use crate::sheet::FlatWork;
-use crate::sheet_surface::{Piece, holds_clear};
-use crate::sheet_surface_shadow::{Carrier, Folded, Slab, around, components, reached, shadow, walls as made, within};
+use crate::sheet_surface::{Piece, boolean_as_drawn, holds_clear};
+use crate::sheet_surface_shadow::{Carrier, Folded, Rim, Slab, around, components, reached, shadow, walls as made, within};
 use crate::{DocError, Feature, FeatureKind, ModelState, Result, SurfaceSheet};
 
 fn err<T>(msg: impl Into<String>) -> Result<T> {
@@ -88,7 +90,7 @@ fn on_panel(b: &Body, q: &Query, frame: &Rigid3, t: f64, own: &Region2, tol: f64
         let mine = if inside_by_loops(std::slice::from_ref(&region), std::slice::from_ref(own), tol) {
             vec![region]
         } else {
-            planar_regions_boolean(&[region], std::slice::from_ref(own), BoolOp::Intersect, tol)?
+            boolean_as_drawn(&[region], std::slice::from_ref(own), BoolOp::Intersect, tol)?
         };
         if mine.is_empty() {
             continue;
@@ -123,7 +125,7 @@ fn union(regions: Vec<Region2>, tol: f64) -> Result<Vec<Region2>> {
     let mut it = kept.into_iter();
     let Some(first) = it.next() else { return Ok(Vec::new()) };
     let rest: Vec<Region2> = it.collect();
-    Ok(planar_regions_boolean(&[first], &rest, BoolOp::Union, tol)?)
+    Ok(boolean_as_drawn(&[first], &rest, BoolOp::Union, tol)?)
 }
 
 /// Whether no two of `regions` come within `tol` of each other by their boxes: each pair's
@@ -506,7 +508,7 @@ fn left(region: &Region2, through: &[Region2], name: &str, holders: &[Vec2], tol
             .collect();
         return Ok((out, parted));
     }
-    let mut left = planar_regions_boolean(std::slice::from_ref(region), through, BoolOp::Cut, tol).map_err(|e| e.to_string())?;
+    let mut left = boolean_as_drawn(std::slice::from_ref(region), through, BoolOp::Cut, tol).map_err(|e| e.to_string())?;
     if left.len() <= 1 {
         return left.pop().map(|one| (one, Vec::new())).ok_or_else(|| format!("takes the whole of {name}: not supported yet"));
     }
@@ -572,7 +574,10 @@ fn onto_panels(sk: &SurfaceSheet, was: &Body, now: &Body, walls: Option<&[usize]
     let mut recesses: Vec<Recess> = sk.recesses.clone();
     // A cut whose walls cross a joint is read once across every piece it reaches, its shadow in
     // the flat, and kept as a cut of the sheet's, drawn in the flat chart of a panel it reaches;
-    // the panels' own reading leaves it be.
+    // the panels' own reading leaves it be. Laid out flat, a shadow whose square walls run out
+    // through the sheet's edge closes along the flat's outline there, and the cuts across joints
+    // are read as one, so that walls apart from each other (a strip's two sides, from edge to
+    // edge) close together.
     let mut crossing: BTreeSet<usize> = BTreeSet::new();
     let mut across: Vec<Region2> = Vec::new();
     if let Some(walls) = walls.filter(|w| !w.is_empty()) {
@@ -580,6 +585,7 @@ fn onto_panels(sk: &SurfaceSheet, was: &Body, now: &Body, walls: Option<&[usize]
             if sk.unfolded { None } else { Some(crate::sheet_surface_convert::fold_onto(&sk.sheet, &dev, &sk.places).map_err(|e| e.to_string())?) };
         let pieces = crate::sheet_surface::pieces(&dev, &mut FlatWork::new()).map_err(|e| e.to_string())?;
         let folded = Folded::new(carriers(sk, &dev, fold.as_ref(), &pieces)?, fold.as_ref(), t);
+        let mut groups: Vec<(Vec<usize>, BTreeSet<usize>)> = Vec::new();
         for group in components(&qb, walls) {
             let reach = reached(&qb, &folded, &group, sag);
             let mut panels = reach.iter().map(|k| match pieces.get(*k).map(|p| p.0) {
@@ -590,7 +596,27 @@ fn onto_panels(sk: &SurfaceSheet, was: &Body, now: &Body, walls: Option<&[usize]
             if first.is_some() && panels.all(|i| i == first) {
                 continue;
             }
-            let through = shadow(now, &qb, &folded, &group, &names(sk, &pieces, &reach), 0.0, tol, sag)?;
+            groups.push((group, reach));
+        }
+        // Laid out flat, the groups are read as one shadow, so that a strip's two sides close
+        // along the edge together. That is not one hole only: `assemble` joins the pieces into a
+        // loop per closed outline, so two cuts of one feature that don't meet still come out as
+        // two loops.
+        if sk.unfolded && groups.len() > 1 {
+            let one = groups.drain(..).fold((Vec::new(), BTreeSet::new()), |(mut g, mut r), (group, reach)| {
+                g.extend(group);
+                r.extend(reach);
+                (g, r)
+            });
+            groups.push(one);
+        }
+        // The walls read apart from these, on the panels: a closing piece runs past none of their
+        // ends on the sheet's edge.
+        let read: BTreeSet<usize> = groups.iter().flat_map(|(g, _)| g.iter().copied()).collect();
+        let others: Vec<usize> = walls.iter().copied().filter(|f| !read.contains(f)).collect();
+        let rim = sk.unfolded.then(|| Rim { flat: &sk.regions, others: &others });
+        for (group, reach) in groups {
+            let through = shadow(now, &qb, &folded, &group, &names(sk, &pieces, &reach), 0.0, rim.as_ref(), tol, sag)?;
             let anchor = reach
                 .iter()
                 .find_map(|k| match pieces.get(*k)?.0 {
@@ -622,7 +648,7 @@ fn onto_panels(sk: &SurfaceSheet, was: &Body, now: &Body, walls: Option<&[usize]
             if here.is_empty() {
                 continue;
             }
-            let through = shadow(now, &qb, &slab, &here, &panel.name, around(&panel.region), tol, sag)?;
+            let through = shadow(now, &qb, &slab, &here, &panel.name, around(&panel.region), None, tol, sag)?;
             taken.shadowed = true;
             let (kept, parted) = left(&panel.region, &through, &panel.name, &holders(sk, p), tol)?;
             if !parted.is_empty() {
@@ -658,15 +684,15 @@ fn onto_panels(sk: &SurfaceSheet, was: &Body, now: &Body, walls: Option<&[usize]
             if inside_by_loops(&r, &footprint, tol) {
                 return Ok(r);
             }
-            planar_regions_boolean(&r, &footprint, BoolOp::Intersect, tol).map_err(|e| e.to_string())
+            boolean_as_drawn(&r, &footprint, BoolOp::Intersect, tol).map_err(|e| e.to_string())
         };
         let near = within(seen(&after.near, &after.near_floors).map_err(|e| e.to_string())?)?;
         let far = within(seen(&after.far, &after.far_floors).map_err(|e| e.to_string())?)?;
         // Square walls: each face sees material wherever the other does.
-        let apart = |a: &[Region2], b: &[Region2]| planar_regions_boolean(a, b, BoolOp::Cut, tol).map(|r| area(&r)).map_err(|e| e.to_string());
+        let apart = |a: &[Region2], b: &[Region2]| boolean_as_drawn(a, b, BoolOp::Cut, tol).map(|r| area(&r)).map_err(|e| e.to_string());
         let slack = tol * 10.0 * perimeter(&footprint).max(1.0);
         let off_outline = |a: &[Region2], b: &[Region2]| -> std::result::Result<f64, String> {
-            let gaps = planar_regions_boolean(a, b, BoolOp::Cut, tol).map_err(|e| e.to_string())?;
+            let gaps = boolean_as_drawn(a, b, BoolOp::Cut, tol).map_err(|e| e.to_string())?;
             Ok(gaps.iter().filter(|g| ours(g) && (strict || !touches(g, &footprint, tol * 100.0))).map(Region2::area).sum())
         };
         // A recess's floor lies in the flat material: one reaching into a bend has no one place.
@@ -688,12 +714,12 @@ fn onto_panels(sk: &SurfaceSheet, was: &Body, now: &Body, walls: Option<&[usize]
         let through = if square {
             let gone = match gone_by_loops(&footprint, &near, tol) {
                 Some(gone) => gone,
-                None => planar_regions_boolean(&footprint, &near, BoolOp::Cut, tol).map_err(|e| e.to_string())?,
+                None => boolean_as_drawn(&footprint, &near, BoolOp::Cut, tol).map_err(|e| e.to_string())?,
             };
             gone.into_iter().filter(|g| ours(g)).collect()
         } else if strict && !here.is_empty() {
             taken.shadowed = true;
-            shadow(now, &qb, &slab, &here, &panel.name, 0.0, tol, sag)?
+            shadow(now, &qb, &slab, &here, &panel.name, 0.0, None, tol, sag)?
         } else if strict {
             // Its walls here run on past the panel.
             return Err("can't be kept in the sheet yet: it reaches a bend or a seam".into());

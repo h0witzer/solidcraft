@@ -533,9 +533,8 @@ fn to_sharp(r: &Region2, (a, z): (Vec2, Vec2), by: f64, tol: f64) -> std::result
     let p_out = carried(before, p, before.start()).filter(|_| p_end).unwrap_or(p + out * by);
     let q_out = carried(after, q, after.end()).filter(|_| q_end).unwrap_or(q + out * by);
     let band = Region2 { outer: Loop2::polygon(&[p, q, q_out, p_out]).ccw(), holes: Vec::new() };
-    let joined =
-        solidcraft_kernel::planar_regions_boolean(std::slice::from_ref(r), std::slice::from_ref(&band), solidcraft_kernel::BoolOp::Union, tol)
-            .map_err(|e| e.to_string())?;
+    let joined = crate::sheet_surface::boolean_as_drawn(std::slice::from_ref(r), std::slice::from_ref(&band), solidcraft_kernel::BoolOp::Union, tol)
+        .map_err(|e| e.to_string())?;
     match <[Region2; 1]>::try_from(joined) {
         Ok([one]) => Ok(one),
         Err(_) => Err("run on to a modelled bend's sharp is not one piece".into()),
@@ -975,7 +974,7 @@ pub fn convert_surfaces(
         let (lo, hi) = uses.iter().flat_map(|u| &u.points).fold((big, small), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
         if lo.x <= hi.x { lo.dist(hi) } else { 0.0 }
     };
-    let cut = |a: &[Region2], b: &[Region2], op: solidcraft_kernel::BoolOp| solidcraft_kernel::planar_regions_boolean(a, b, op, tol).ok();
+    let cut = |a: &[Region2], b: &[Region2], op: solidcraft_kernel::BoolOp| crate::sheet_surface::boolean_as_drawn(a, b, op, tol).ok();
     let area = |r: &[Region2]| r.iter().map(Region2::area).sum::<f64>();
     // Face `g`, level with face `f` (see `level_of`), in `f`'s parameters: each of its points
     // where the normal through it meets `f`. A roll's chart is laid a turn either way too, where
@@ -1677,7 +1676,7 @@ pub fn convert_surfaces(
             };
             for h in &panel.region.holes {
                 let hole = Region2 { outer: h.ccw(), holes: Vec::new() };
-                let met = solidcraft_kernel::planar_regions_boolean(
+                let met = crate::sheet_surface::boolean_as_drawn(
                     std::slice::from_ref(&hole),
                     std::slice::from_ref(&band),
                     solidcraft_kernel::BoolOp::Intersect,
@@ -2430,7 +2429,10 @@ impl SurfaceSheet {
     /// The sheet with its flat as a flat pattern is read: seen from the sheet's surface, the side
     /// its up bends rise to. The panels' charts face the material, so the flat they lay out is
     /// that view mirrored; here its regions, bends, roll lines, pockets and perforation outlines
-    /// are mirrored back (a base flange's flat is its sketch's outline as drawn).
+    /// are mirrored back (a base flange's flat is its sketch's outline as drawn). A bend row runs
+    /// along the bend with the earlier panel's material on the left of its direction, as the flat
+    /// is read: the anchors keep that material on their left in the chart, and the mirror flips
+    /// handedness, so each bend's centre line is turned round here.
     pub fn shown(&self) -> SurfaceSheet {
         let f = |p: Vec2| Vec2::new(p.x, -p.y);
         let r = |g: &Region2| rigid_region(g, f);
@@ -2438,7 +2440,8 @@ impl SurfaceSheet {
         out.regions = self.regions.iter().map(r).collect();
         for b in &mut out.bends {
             b.zone = r(&b.zone);
-            (b.start, b.end) = (f(b.start), f(b.end));
+            // Turned round with the mirror: the earlier panel's material stays on its left.
+            (b.start, b.end) = (f(b.end), f(b.start));
             b.tabs = b.tabs.iter().map(r).collect();
         }
         for l in &mut out.roll_lines {
@@ -2508,7 +2511,7 @@ impl SurfaceSheet {
             // The panel's material in the flat, short of its bends.
             let own: Vec<Region2> =
                 pieces.iter().filter(|(p, _)| matches!(p, crate::sheet_surface::Piece::Panel(k) if *k == i)).map(|(_, r)| r.clone()).collect();
-            out.extend(solidcraft_kernel::planar_regions_boolean(&own, &mapped, solidcraft_kernel::BoolOp::Intersect, 1e-9)?);
+            out.extend(crate::sheet_surface::boolean_as_drawn(&own, &mapped, solidcraft_kernel::BoolOp::Intersect, 1e-9)?);
         }
         if !found {
             return err("the perforation's outline sketch must lie on a face of the sheet");

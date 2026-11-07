@@ -18,9 +18,11 @@
 //! A cut whose walls cross a joint is read the same way in the sheet as a whole ([`Folded`]):
 //! each point in whichever piece of the flat holds its fiber (a panel, a tab, or a bend's zone,
 //! unwrapped round its axis), its outline drawn in the flat, one curve across tangent lines and
-//! seams. Refused: walls that don't run through the thickness from face to face (a countersink, a
-//! rounded or chamfered face edge, a recess, a cut that stops inside a bend), walls that reach the
-//! sheet's outline, and walls whose shapes in the flat overlap.
+//! seams. Laid out flat, walls square to the sheet may run out through its outline: the shadow
+//! closes along the outline there, from each wall to the next. Refused: walls that don't run
+//! through the thickness from face to face (a countersink, a rounded or chamfered face edge, a
+//! recess, a cut that stops inside a bend), walls that otherwise reach the sheet's outline, and
+//! walls whose shapes in the flat overlap.
 
 use solidcraft_geom::prelude::*;
 use std::collections::BTreeSet;
@@ -704,8 +706,10 @@ struct Piece(Vec<Vec3>, Vec<Seg2>);
 
 /// The shadow on the panel `name` in `slab` of what a cut took through it, from the body `now`
 /// it left and the faces it made there (`walls`, faces of `now`), as regions of the panel's
-/// parameters within a half turn of `around` round a roll. `tol`: points this near are one;
-/// `sag`: edges are read within this of their chords.
+/// parameters within a half turn of `around` round a roll. Laid out flat, given its `rim`, walls
+/// square to the sheet may run out through its outline, and the shadow closes along the outline
+/// there (see [`close_along_rim`]). `tol`: points this near are one; `sag`: edges are read within
+/// this of their chords.
 pub(crate) fn shadow(
     now: &Body,
     q: &Query,
@@ -713,6 +717,7 @@ pub(crate) fn shadow(
     walls: &[usize],
     name: &str,
     around: f64,
+    rim: Option<&Rim>,
     tol: f64,
     sag: f64,
 ) -> Result<Vec<Region2>, String> {
@@ -738,8 +743,10 @@ pub(crate) fn shadow(
     let surfaces = (0..rec.faces.len()).map(|f| if mine.contains(&f) { wall(f) } else { None }).collect();
     let r = Reader { q, slab, surfaces, tol, sag, step: (now.size() * 0.01).clamp(sag * 10.0, 1.0), name };
     let unread = || format!("a wall of the cut on {name} can't be read");
-    // The walls' edges, each once, and what each is.
+    // The walls' edges, each once, and what each is; and the walls' edges on the sheet's edge,
+    // each with its wall.
     let mut edges: Vec<Edge> = Vec::new();
+    let mut exits: Vec<(usize, usize)> = Vec::new();
     let mut seen = BTreeSet::new();
     for &f in walls {
         let (mut near, mut far, mut edge, mut depths) = (false, false, false, Vec::new());
@@ -761,6 +768,7 @@ pub(crate) fn shadow(
                     Kind::Rim { far: true, wall: f }
                 } else {
                     edge = true;
+                    exits.push((f, e));
                     continue;
                 };
                 if seen.insert(e) {
@@ -780,8 +788,19 @@ pub(crate) fn shadow(
                 )
             });
         }
-        if edge {
+        if edge && rim.is_none() {
             return Err(format!("reaches the edge of {name}: not supported yet at a slant, on a roll or across a bend"));
+        }
+    }
+    // Laid out flat, the walls may run out through the sheet's edge where they are square to it.
+    if !exits.is_empty() {
+        let square = |f: usize, p: Vec3| r.onto(f, p, tol * 10.0).zip(slab.depth(p)).is_some_and(|((_, n), d)| n.dot(d.deeper).abs() <= PLAIN);
+        for e in &edges {
+            for f in e.kind.walls() {
+                if !q.edge_points(e.e, sag).ok_or_else(unread)?.iter().all(|(_, p)| square(f, *p)) {
+                    return Err(format!("reaches the edge of {name}: not supported yet at a slant, on a roll or across a bend"));
+                }
+            }
         }
     }
     for edge in &mut edges {
@@ -861,6 +880,10 @@ pub(crate) fn shadow(
             pieces.push(Piece(pts, segs));
         }
     }
+    if let Some(rim) = rim.filter(|_| !exits.is_empty()) {
+        let closing = close_along_rim(&r, &pieces, rim, walls, &exits)?;
+        pieces.extend(closing);
+    }
     let loops = assemble(&r, pieces, around)?;
     let regions = nest(loops);
     // The holes the walls leave in both faces lie within the shadow.
@@ -877,6 +900,175 @@ pub(crate) fn shadow(
         }
     }
     Ok(regions)
+}
+
+/// Laid out flat, what a cut's shadow may close along where its walls run out through the
+/// sheet's edge: the flat's material, and the cut's walls read apart from this shadow (on one
+/// panel), whose ends on the sheet's edge a closing piece must not run past.
+pub(crate) struct Rim<'a> {
+    pub(crate) flat: &'a [Region2],
+    pub(crate) others: &'a [usize],
+}
+
+/// An end of a cut's outline on the sheet's edge, laid out flat: the loop of the flat's outline
+/// it lies on (its region and loop), where along that loop (a segment's index plus a parameter
+/// along it), its point in the flat and in space, and whether the hole lies ahead of it along the
+/// loop or behind.
+struct Exit {
+    on: (usize, usize),
+    at: f64,
+    point: Vec2,
+    node: Vec3,
+    ahead: bool,
+}
+
+/// The pieces of the flat's outline (`rim.flat`, its material) that close a cut's outline where
+/// the square `walls` run out through the sheet's edge: from each end that `pieces` leave open,
+/// where a wall's edge lies on the sheet's edge (`exits`: each wall and that edge), along the
+/// outline the way the wall faces into the hole, to the next such end. Each is the outline's own
+/// segments. Refused where a wall runs out along the outline or through a corner of it, or where
+/// the outline meets one of the cut's other walls first (`rim.others`, read apart).
+fn close_along_rim(r: &Reader, pieces: &[Piece], rim: &Rim, walls: &[usize], exits: &[(usize, usize)]) -> Result<Vec<Piece>, String> {
+    let name = r.name;
+    let broken = || format!("the cut's outline on {name} can't be closed along the sheet's edge");
+    let join = r.tol.max(r.q.record().tolerance) * 10.0;
+    // The pieces' ends that no other end meets, as `assemble` joins them.
+    let ends: Vec<Vec3> = pieces
+        .iter()
+        .filter(|Piece(p, _)| p.first().is_some_and(|f| p.iter().any(|x| x.dist(*f) > join)))
+        .flat_map(|Piece(p, _)| p.first().copied().into_iter().chain(p.last().copied()))
+        .collect();
+    let open: Vec<Vec3> = ends.iter().copied().filter(|x| ends.iter().filter(|y| y.dist(*x) <= join).count() == 1).collect();
+    // Every wall's edge on the sheet's edge ends where the outline is open: a wall that touches
+    // the sheet's edge without running out through it (a corner on the edge) leaves no end there.
+    for &(_, e) in exits {
+        let Some(pts) = r.q.edge_points(e, r.sag) else { return Err(broken()) };
+        if !pts.iter().any(|(_, p)| open.iter().any(|x| x.dist(*p) <= join)) {
+            return Err(format!("touches the edge of {name} without running out through it: not supported yet"));
+        }
+    }
+    let loops: Vec<Vec<&Loop2>> = rim.flat.iter().map(|g| std::iter::once(&g.outer).chain(&g.holes).collect()).collect();
+    let loop_of = |on: (usize, usize)| loops.get(on.0).and_then(|ls| ls.get(on.1)).copied();
+    // Where a point of the flat lies on the outline: its loop, segment and parameter, if within
+    // reach of it.
+    let locate = |point: Vec2| -> Option<((usize, usize), usize, f64)> {
+        let mut best: Option<(f64, (usize, usize), usize, f64)> = None;
+        for (g, ls) in loops.iter().enumerate() {
+            for (k, l) in ls.iter().enumerate() {
+                for (i, s) in l.segs.iter().enumerate() {
+                    let u = s.closest_param(point).clamp(0.0, 1.0);
+                    let d = s.point_at(u).dist(point);
+                    if best.is_none_or(|b| d < b.0) {
+                        best = Some((d, (g, k), i, u));
+                    }
+                }
+            }
+        }
+        best.filter(|b| b.0 <= r.tol * 100.0).map(|(_, on, i, u)| (on, i, u))
+    };
+    // Where the cut's other walls run out through the sheet's edge, as `shadow` reads its own.
+    let cut: BTreeSet<usize> = walls.iter().chain(rim.others).copied().collect();
+    let mut stops: Vec<((usize, usize), f64)> = Vec::new();
+    for &f in rim.others {
+        for l in r.q.record().faces.get(f).map(|face| face.loops.as_slice()).unwrap_or_default() {
+            let Bounds::Edges { edges } = l else { continue };
+            for oe in edges {
+                let e = oe.edge as usize;
+                let Some(other) = r.q.edge_faces(e).into_iter().find(|g| *g != f) else { continue };
+                let Some(points) = r.q.edge_points(e, r.sag) else { continue };
+                let Some(depths) = points.iter().map(|(_, p)| r.slab.depth(*p)).collect::<Option<Vec<_>>>() else { continue };
+                let level = |w: f64| depths.iter().all(|d| (d.w - w).abs() <= r.tol * 10.0);
+                if cut.contains(&other) || level(0.0) || level(r.slab.thickness()) {
+                    continue;
+                }
+                stops.extend(depths.iter().filter_map(|d| locate(d.at)).map(|(on, i, u)| (on, i as f64 + u)));
+            }
+        }
+    }
+    let mut found: Vec<Exit> = Vec::new();
+    for node in open {
+        // The wall that runs out there: the one whose edge on the sheet's edge ends at it, and the
+        // way into the hole across it, in the flat.
+        let wall = exits.iter().find_map(|&(f, e)| {
+            let pts = r.q.edge_points(e, r.sag)?;
+            [pts.first()?.1, pts.last()?.1].iter().any(|p| p.dist(node) <= join).then_some(f)
+        });
+        let (_, n) = wall.and_then(|f| r.onto(f, node, r.tol * 10.0)).ok_or_else(broken)?;
+        let point = r.slab.depth(node).ok_or_else(broken)?.at;
+        let into = (r.slab.depth(node + n * r.step).ok_or_else(broken)?.at - point).normalized().ok_or_else(broken)?;
+        let (on, i, u) = locate(point).ok_or_else(broken)?;
+        let l = loop_of(on).filter(|l| !l.segs.is_empty()).ok_or_else(broken)?;
+        // The outline's way on and way back from there (a vertex's two sides).
+        let seg = |k: usize| l.segs.get(k % l.segs.len());
+        let on_way = if u >= 1.0 - 1e-9 { seg(i + 1).map(|s| s.derivative(0.0)) } else { seg(i).map(|s| s.derivative(u)) };
+        let back_way = if u <= 1e-9 { seg(i + l.segs.len() - 1).map(|s| s.derivative(1.0)) } else { seg(i).map(|s| s.derivative(u)) };
+        let (Some(on_way), Some(back_way)) = (on_way.and_then(|v| v.normalized()), back_way.and_then(|v| v.normalized())) else {
+            return Err(broken());
+        };
+        let ahead = match (on_way.dot(into) > 1e-9, back_way.dot(into) < -1e-9) {
+            (true, false) => true,
+            (false, true) => false,
+            _ => return Err(format!("its walls on {name} run out along the sheet's edge or through a corner of it: not supported yet")),
+        };
+        found.push(Exit { on, at: i as f64 + u, point, node, ahead });
+    }
+    // Each end with the hole ahead runs on round its loop to the next end there, which has the
+    // hole behind it; every end is one of a pair.
+    let mut used = vec![false; found.len()];
+    let mut out = Vec::new();
+    for (i, a) in found.iter().enumerate() {
+        if !a.ahead {
+            continue;
+        }
+        let l = loop_of(a.on).ok_or_else(broken)?;
+        let gap = |at: f64| (at - a.at).rem_euclid(l.segs.len() as f64);
+        let next = found.iter().enumerate().filter(|(j, b)| *j != i && b.on == a.on).min_by(|x, y| gap(x.1.at).total_cmp(&gap(y.1.at)));
+        let Some((j, b)) = next.filter(|(j, b)| !b.ahead && !used[*j]) else { return Err(broken()) };
+        if stops.iter().any(|(on, at)| *on == a.on && gap(*at) < gap(b.at)) {
+            return Err(format!("its walls on {name} run out through the sheet's edge beside the cut's other walls: not supported yet"));
+        }
+        used[i] = true;
+        used[j] = true;
+        let mut segs = round(l, a.at, b.at).filter(|s| !s.is_empty()).ok_or_else(broken)?;
+        // Ending exactly where the walls' pieces do.
+        let last = segs.len() - 1;
+        for (k, s) in segs.iter_mut().enumerate() {
+            let (p, q) = (if k == 0 { a.point } else { s.start() }, if k == last { b.point } else { s.end() });
+            *s = crate::sheet_surface::ending_at(*s, p, q);
+        }
+        out.push(Piece(vec![a.node, b.node], segs));
+    }
+    if used.iter().any(|u| !u) {
+        return Err(broken());
+    }
+    Ok(out)
+}
+
+/// The part of loop `l` from `from` round to `to`, the way the loop runs, each a segment's index
+/// plus a parameter along it: once round where `to` lies behind `from`.
+fn round(l: &Loop2, from: f64, to: f64) -> Option<Vec<Seg2>> {
+    let n = l.segs.len();
+    let at = |x: f64| {
+        let k = (x.max(0.0).floor() as usize).min(n.checked_sub(1)?);
+        Some((k, (x - k as f64).clamp(0.0, 1.0)))
+    };
+    let ((mut k, mut u), (end, v)) = (at(from)?, at(to)?);
+    let mut out = Vec::new();
+    for step in 0..=n {
+        let s = l.segs.get(k)?;
+        if k == end && (step > 0 || v > u) {
+            if v > u + 1e-12 {
+                out.push(crate::sheet_surface::part(s, u, v));
+            }
+            return Some(out);
+        }
+        if u < 1.0 - 1e-12 {
+            out.push(crate::sheet_surface::part(s, u, 1.0));
+        }
+        k = (k + 1) % n;
+        u = 0.0;
+    }
+    None
 }
 
 /// The middle of a region's turn round a roll: the mean angle of its outline's points.

@@ -196,7 +196,7 @@ pub(crate) fn material_boolean(a: &[Region2], b: &[Region2], op: kernel::BoolOp,
     let (be, bp) = region_complexity(b)?;
     let edges = ae.saturating_add(be);
     work.charge(edges.saturating_mul(edges).saturating_add(edges.saturating_mul(ap.saturating_add(bp))).saturating_mul(8))?;
-    let regions = kernel::planar_regions_boolean(a, b, op, 1e-7)?;
+    let regions = crate::sheet_surface::boolean_as_drawn(a, b, op, 1e-7)?;
     region_complexity(&regions)?;
     Ok(regions)
 }
@@ -834,7 +834,8 @@ pub struct BendInfo {
     pub up: bool,
     pub allowance: f64,
     pub length: f64,
-    /// Centre line in flat coordinates.
+    /// Centre line in flat coordinates, from `start` to `end`. A bend row runs along the bend with
+    /// the earlier panel's material on the left of its direction, as the flat is read.
     pub start: Vec2,
     pub end: Vec2,
 }
