@@ -86,6 +86,7 @@ pub(crate) fn evaluate(doc: &Document, st: &mut ModelState, bodies: &[String], f
             *b = body;
         }
     }
+    crate::body_transfer_sheet::remap_surface_sheets(st, bodies, &transform)?;
     crate::body_transfer_sheet::remap_sheet_metadata(st, bodies, &transform)
 }
 
