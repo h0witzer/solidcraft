@@ -30,10 +30,10 @@ use std::collections::BTreeSet;
 use solidcore_record::{Loop2, Plane, Region2, Vec2};
 use solidcraft_develop::{Cut, Development, Fold, JointKind, Rigid2, Rigid3, Surface, develop};
 use solidcraft_geom::brep::query::Query;
-use solidcraft_kernel::{Body, BoolOp, FaceSurface, face_surface, planar_regions_boolean};
+use solidcraft_kernel::{Body, BoolOp, FaceSurface, face_surface};
 
 use crate::sheet::FlatWork;
-use crate::sheet_surface::{Piece, holds_clear};
+use crate::sheet_surface::{Piece, boolean_as_drawn, holds_clear};
 use crate::sheet_surface_shadow::{Carrier, Folded, Slab, around, components, reached, shadow, walls as made, within};
 use crate::{DocError, Feature, FeatureKind, ModelState, Result, SurfaceSheet};
 
@@ -88,7 +88,7 @@ fn on_panel(b: &Body, q: &Query, frame: &Rigid3, t: f64, own: &Region2, tol: f64
         let mine = if inside_by_loops(std::slice::from_ref(&region), std::slice::from_ref(own), tol) {
             vec![region]
         } else {
-            planar_regions_boolean(&[region], std::slice::from_ref(own), BoolOp::Intersect, tol)?
+            boolean_as_drawn(&[region], std::slice::from_ref(own), BoolOp::Intersect, tol)?
         };
         if mine.is_empty() {
             continue;
@@ -123,7 +123,7 @@ fn union(regions: Vec<Region2>, tol: f64) -> Result<Vec<Region2>> {
     let mut it = kept.into_iter();
     let Some(first) = it.next() else { return Ok(Vec::new()) };
     let rest: Vec<Region2> = it.collect();
-    Ok(planar_regions_boolean(&[first], &rest, BoolOp::Union, tol)?)
+    Ok(boolean_as_drawn(&[first], &rest, BoolOp::Union, tol)?)
 }
 
 /// Whether no two of `regions` come within `tol` of each other by their boxes: each pair's
@@ -506,7 +506,7 @@ fn left(region: &Region2, through: &[Region2], name: &str, holders: &[Vec2], tol
             .collect();
         return Ok((out, parted));
     }
-    let mut left = planar_regions_boolean(std::slice::from_ref(region), through, BoolOp::Cut, tol).map_err(|e| e.to_string())?;
+    let mut left = boolean_as_drawn(std::slice::from_ref(region), through, BoolOp::Cut, tol).map_err(|e| e.to_string())?;
     if left.len() <= 1 {
         return left.pop().map(|one| (one, Vec::new())).ok_or_else(|| format!("takes the whole of {name}: not supported yet"));
     }
@@ -658,15 +658,15 @@ fn onto_panels(sk: &SurfaceSheet, was: &Body, now: &Body, walls: Option<&[usize]
             if inside_by_loops(&r, &footprint, tol) {
                 return Ok(r);
             }
-            planar_regions_boolean(&r, &footprint, BoolOp::Intersect, tol).map_err(|e| e.to_string())
+            boolean_as_drawn(&r, &footprint, BoolOp::Intersect, tol).map_err(|e| e.to_string())
         };
         let near = within(seen(&after.near, &after.near_floors).map_err(|e| e.to_string())?)?;
         let far = within(seen(&after.far, &after.far_floors).map_err(|e| e.to_string())?)?;
         // Square walls: each face sees material wherever the other does.
-        let apart = |a: &[Region2], b: &[Region2]| planar_regions_boolean(a, b, BoolOp::Cut, tol).map(|r| area(&r)).map_err(|e| e.to_string());
+        let apart = |a: &[Region2], b: &[Region2]| boolean_as_drawn(a, b, BoolOp::Cut, tol).map(|r| area(&r)).map_err(|e| e.to_string());
         let slack = tol * 10.0 * perimeter(&footprint).max(1.0);
         let off_outline = |a: &[Region2], b: &[Region2]| -> std::result::Result<f64, String> {
-            let gaps = planar_regions_boolean(a, b, BoolOp::Cut, tol).map_err(|e| e.to_string())?;
+            let gaps = boolean_as_drawn(a, b, BoolOp::Cut, tol).map_err(|e| e.to_string())?;
             Ok(gaps.iter().filter(|g| ours(g) && (strict || !touches(g, &footprint, tol * 100.0))).map(Region2::area).sum())
         };
         // A recess's floor lies in the flat material: one reaching into a bend has no one place.
@@ -688,7 +688,7 @@ fn onto_panels(sk: &SurfaceSheet, was: &Body, now: &Body, walls: Option<&[usize]
         let through = if square {
             let gone = match gone_by_loops(&footprint, &near, tol) {
                 Some(gone) => gone,
-                None => planar_regions_boolean(&footprint, &near, BoolOp::Cut, tol).map_err(|e| e.to_string())?,
+                None => boolean_as_drawn(&footprint, &near, BoolOp::Cut, tol).map_err(|e| e.to_string())?,
             };
             gone.into_iter().filter(|g| ours(g)).collect()
         } else if strict && !here.is_empty() {

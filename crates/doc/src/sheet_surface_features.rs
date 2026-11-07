@@ -752,7 +752,7 @@ impl SurfaceSheet {
                     Region2 { outer: Loop2::polygon(&corners).ccw(), holes: Vec::new() }
                 })
                 .collect();
-            let left = solidcraft_kernel::planar_regions_boolean(std::slice::from_ref(&region), &boxes, BoolOp::Cut, 1e-9)?;
+            let left = crate::sheet_surface::boolean_as_drawn(std::slice::from_ref(&region), &boxes, BoolOp::Cut, 1e-9)?;
             one(left, "fixed")?
         };
         let reach = |s: f64| crate::sheet_surface_convert::extent_across(&region, (n * s, u));
@@ -841,7 +841,7 @@ impl SurfaceSheet {
         for (bend, start, _, _) in &bends {
             let (lo, hi) = (*start, start + bend.length);
             let strip = Loop2::polygon(&[n * s0 + u * lo, n * s0 + u * hi, n * (s0 + ba) + u * hi, n * (s0 + ba) + u * lo]).ccw();
-            let lacks = solidcraft_kernel::planar_regions_boolean(
+            let lacks = crate::sheet_surface::boolean_as_drawn(
                 &[Region2 { outer: strip, holes: Vec::new() }],
                 std::slice::from_ref(&region),
                 BoolOp::Cut,
@@ -1361,7 +1361,7 @@ fn half(region: &Region2, n: Vec2, from: f64) -> Result<Vec<Region2>> {
     let box_ = [o - d * big, o + d * big, o + d * big + n * big, o - d * big + n * big];
     let half = Region2 { outer: Loop2::polygon(&box_).ccw(), holes: Vec::new() };
     let tol = (b.size().len() * 1e-9).max(1e-9);
-    Ok(solidcraft_kernel::planar_regions_boolean(std::slice::from_ref(region), std::slice::from_ref(&half), BoolOp::Intersect, tol)?)
+    Ok(crate::sheet_surface::boolean_as_drawn(std::slice::from_ref(region), std::slice::from_ref(&half), BoolOp::Intersect, tol)?)
 }
 
 fn area(r: &[Region2]) -> f64 {

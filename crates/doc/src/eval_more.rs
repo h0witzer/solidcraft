@@ -1672,8 +1672,12 @@ pub(super) fn surface_sheet_join(
             }
             let Some((p, mapped)) = found else { break };
             let Some(panel) = out.sheet.panels.get_mut(p) else { return Ok(Vec::new()) };
-            let grown =
-                kernel::planar_regions_boolean(std::slice::from_ref(&panel.region), std::slice::from_ref(&mapped), kernel::BoolOp::Union, 1e-7)?;
+            let grown = crate::sheet_surface::boolean_as_drawn(
+                std::slice::from_ref(&panel.region),
+                std::slice::from_ref(&mapped),
+                kernel::BoolOp::Union,
+                1e-7,
+            )?;
             let Ok([one]) = <[Region2; 1]>::try_from(grown) else { return Ok(Vec::new()) };
             panel.region = one;
             placed += 1;
