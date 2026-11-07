@@ -1,0 +1,194 @@
+{
+ "commands": [
+  {
+   "command": "sheet.manage_rules",
+   "params": {
+    "name": "Rule",
+    "thickness": "2.0 mm",
+    "active": true,
+    "bend_radius": "2.0 mm",
+    "k_factor": 0.44
+   }
+  },
+  {
+   "command": "sketch.create",
+   "params": {
+    "plane": "XY",
+    "name": "L"
+   }
+  },
+  {
+   "command": "sketch.line",
+   "params": {
+    "points": [
+     [
+      0,
+      40
+     ],
+     [
+      0,
+      4
+     ]
+    ]
+   }
+  },
+  {
+   "command": "sketch.arc.center_point",
+   "params": {
+    "center": [
+     4,
+     4
+    ],
+    "start": [
+     0,
+     4
+    ],
+    "end": [
+     4,
+     0
+    ]
+   }
+  },
+  {
+   "command": "sketch.line",
+   "params": {
+    "points": [
+     [
+      4,
+      0
+     ],
+     [
+      60,
+      0
+     ],
+     [
+      60,
+      2
+     ],
+     [
+      4,
+      2
+     ]
+    ]
+   }
+  },
+  {
+   "command": "sketch.arc.center_point",
+   "params": {
+    "center": [
+     4,
+     4
+    ],
+    "start": [
+     2,
+     4
+    ],
+    "end": [
+     4,
+     2
+    ]
+   }
+  },
+  {
+   "command": "sketch.line",
+   "params": {
+    "points": [
+     [
+      2,
+      4
+     ],
+     [
+      2,
+      40
+     ],
+     [
+      0,
+      40
+     ]
+    ]
+   }
+  },
+  {
+   "command": "sketch.finish",
+   "params": {}
+  },
+  {
+   "command": "solid.extrude",
+   "params": {
+    "sketch": "L",
+    "distance": 100,
+    "body_name": "Angle"
+   }
+  },
+  {
+   "command": "sketch.create",
+   "params": {
+    "plane": {
+     "origin": [
+      0,
+      0,
+      40
+     ],
+     "x_dir": [
+      1,
+      0,
+      0
+     ],
+     "y_dir": [
+      0,
+      1,
+      0
+     ]
+    },
+    "name": "Slot"
+   }
+  },
+  {
+   "command": "sketch.line",
+   "params": {
+    "points": [
+     [
+      4,
+      4
+     ],
+     [
+      -3.517541,
+      1.263839
+     ],
+     [
+      -2.128356,
+      -1.142301
+     ]
+    ],
+    "closed": true
+   }
+  },
+  {
+   "command": "sketch.finish",
+   "params": {}
+  },
+  {
+   "command": "solid.extrude",
+   "params": {
+    "sketch": "Slot",
+    "distance": 20,
+    "operation": "cut"
+   }
+  },
+  {
+   "command": "sheet.convert",
+   "params": {
+    "body": "Angle",
+    "rule": "Rule"
+   }
+  },
+  {
+   "command": "inspect.measure",
+   "params": {}
+  },
+  {
+   "command": "sheet.flat_pattern",
+   "params": {}
+  }
+ ]
+}

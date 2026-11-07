@@ -874,6 +874,7 @@ plastic/cov-rest-round-hollow-drafted
 plastic/cov-rest-wall-as-thick-as-half-its-width-refused
 plastic/cov-snap-fit-base-below-the-face-is-absorbed
 plastic/cov-snap-fit-catch-as-long-as-its-arm-refused
+sheet-metal/10356-eight-hundred-round-holes-through-a-channel
 sheet-metal/1040-convert-a-1200-mm-strip-1-mm-thick
 sheet-metal/1040-convert-a-990-mm-strip-keeps-its-1-mm-hole
 sheet-metal/1092-convert-a-channel-with-its-bends-modelled
@@ -928,9 +929,14 @@ sheet-metal/702-flange-along-what-a-cutout-leaves
 sheet-metal/723-tray-with-torn-corners-folded
 sheet-metal/723-unfold-a-tray-with-torn-corners
 sheet-metal/725-convert-a-shelled-tray-and-unfold-it
+sheet-metal/7278-inside-flange-along-the-slanted-edge-a-cut-left
+sheet-metal/7278-outside-flange-along-the-slanted-edge-a-cut-left
+sheet-metal/7582-convert-a-channel-read-from-step-finds-its-bends-by-itself
 sheet-metal/774-convert-a-plate-with-nine-round-holes
 sheet-metal/839-flange-on-a-plate-with-rounded-corners-unfolded
+sheet-metal/8512-convert-a-perforated-channel-read-from-step
 sheet-metal/955-hole-drilled-into-a-sheet-metal-rim
+sheet-metal/9682-convert-keeps-a-slot-through-a-modelled-bend
 sheet-metal/978-edge-flange-beside-a-ledge-as-tall-as-its-setback
 sheet-metal/cov-export-bend-table-csv-flange-and-hem
 sheet-metal/cov-export-bend-table-json-one-flange

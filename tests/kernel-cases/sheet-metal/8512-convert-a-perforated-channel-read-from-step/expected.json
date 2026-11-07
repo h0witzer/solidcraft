@@ -1,0 +1,19 @@
+{
+ "sources": [
+  "tangency-labs/solidcraft#8512",
+  "tangency-labs/solidcraft#7531"
+ ],
+ "what": "a 300 x 200 x 1.5 channel with two 40 mm walls and 459 holes of 5 mm cut through its base in the flat, refolded, written to STEP and converted back with its bends found by themselves: a body of many faces",
+ "source": "analytic",
+ "method": "T = 1.5, R = 1.5, K = 0.5, inside flanges: base 300 x (200 - 2(R + T)), bends 2 x 300 x BA (BA = (pi/2)(R + K T) = 3.534292), walls 2 x 300 x (40 - (R + T)), less 459 holes of pi 2.5^2 (a 27 x 17 grid at a 10 mm pitch from (20, 20), all in the base): 73508.1311 mm2, 300 x (194 + 2(BA + 37)) across; with K = 0.5 the folded volume is the flat area times T",
+ "body_count": 1,
+ "volume_mm3": 110262.19667428109,
+ "flat_pattern": {
+  "size_mm": [
+   300.0,
+   275.06858347057704
+  ],
+  "area_mm2": 73508.13111618739
+ },
+ "timeout_s": 900
+}

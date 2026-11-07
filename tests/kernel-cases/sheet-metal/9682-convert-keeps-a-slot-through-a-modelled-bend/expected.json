@@ -1,0 +1,27 @@
+{
+ "sources": [
+  "tangency-labs/solidcraft#9682",
+  "tangency-labs/solidcraft#9644"
+ ],
+ "what": "an L section 60 x 40 x 100 (T 2, inner R 2, outer R 4) with a slot 20 long cut through its modelled bend between 200 and 220 degrees round the bend's axis, converted with no bends given: the slot is a cut-out of the bend zone, not lost",
+ "source": "analytic",
+ "method": "T = 2, R = 2, K = 0.44, the rule's radius the modelled one, so the sheet keeps its shape and volume: the section (56 x 2 + 36 x 2 + (pi/4)(4^2 - 2^2)) x 100 = 19342.4778 less the slot, a 20 degree wedge of the bend between r 2 and 4, 20 long: 20 x pi(4^2 - 2^2) x 20/360 = 41.8879. Flat: BA = (pi/2)(R + K T) = 4.523893, legs 60 - 4 and 40 - 4, so 100 x (56 + 36 + BA) less the slot's 20/90 of the zone across, 20 long: 20 x BA x 20/90 = 20.106193, 9632.2831 mm2, 56 + 36 + BA by 100",
+ "body_count": 1,
+ "volume_mm3": 19300.589894029075,
+ "flat_pattern": {
+  "size_mm": [
+   96.5238934211693,
+   100.0
+  ],
+  "area_mm2": 9632.283149133957
+ },
+ "results": [
+  {
+   "step": 16,
+   "pointer": "/cutouts",
+   "json": [
+    {}
+   ]
+  }
+ ]
+}
