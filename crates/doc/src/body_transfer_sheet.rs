@@ -53,3 +53,29 @@ pub(crate) fn remap_sheet_metadata(st: &mut ModelState, names: &[String], transf
     }
     Ok(())
 }
+
+/// The sheets made from surfaces of the transferred bodies `names`, moved with them: each panel's
+/// place goes where `transform` takes its body's faces, so folding, unfolding and cuts read the
+/// sheet where its body now lies, in the frame of the component that owns it.
+pub(crate) fn remap_surface_sheets(st: &mut ModelState, names: &[String], transform: &Mat) -> Result<()> {
+    let names: std::collections::BTreeSet<&str> = names.iter().map(String::as_str).collect();
+    if !st.surface_sheets.iter().any(|s| names.contains(s.body.as_str())) {
+        return Ok(());
+    }
+    if !crate::valid_transfer_matrix(transform) {
+        return Err(DocError::Invalid("sheet transfer requires a rigid placement".into()));
+    }
+    let moved: Vec<_> = st
+        .surface_sheets
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| names.contains(s.body.as_str()))
+        .map(|(i, s)| s.copied(&s.body, transform).map(|s| (i, s)).ok_or_else(|| DocError::Invalid("invalid transferred sheet placement".into())))
+        .collect::<Result<_>>()?;
+    for (i, s) in moved {
+        if let Some(slot) = st.surface_sheets.get_mut(i) {
+            *slot = s;
+        }
+    }
+    Ok(())
+}
