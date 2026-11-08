@@ -8,7 +8,7 @@ use crate::sheet;
 use solidcore_record::{Loop2, Seg2};
 use solidcraft_geom::{Aabb3, Ring};
 
-pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st: &mut ModelState) -> Result<()> {
+pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st: &mut ModelState, warning: &mut Option<String>) -> Result<()> {
     match &f.kind {
         FeatureKind::Emboss { sketch, profiles, depth, deboss, targets, face } => {
             let ss = st.sketch(sketch.0).ok_or_else(|| DocError::Unknown(format!("sketch {sketch}")))?;
@@ -59,7 +59,20 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
             if st.bodies.is_empty() {
                 return Err(DocError::Invalid("there is no body to emboss".into()));
             }
-            apply_op(doc, st, f, tools, if *deboss { Operation::Cut } else { Operation::Join }, &crate::plain(targets))
+            // #10940: an emboss or deboss whose tool lies clear of the body (a sketch on the far
+            // side of the material, a depth that stops short) used to report success and change
+            // nothing. Say so: the body is compared before and after, as the command's reply does.
+            let before: Vec<Body> = st.bodies.iter().map(|b| b.body.clone()).collect();
+            apply_op(doc, st, f, tools, if *deboss { Operation::Cut } else { Operation::Join }, &crate::plain(targets))?;
+            let unchanged = st.bodies.len() == before.len() && st.bodies.iter().zip(&before).all(|(b, old)| old.same(&b.body));
+            if unchanged {
+                let what = if *deboss { "deboss" } else { "emboss" };
+                append_warning(
+                    warning,
+                    format!("the {what} changed nothing; check where its profile lies, which side of the face the sketch is on, and the depth"),
+                );
+            }
+            Ok(())
         }
         FeatureKind::Rib { .. } => {
             let tools = rib_tools(vals, st, f, None)?;
@@ -585,10 +598,10 @@ fn surface_sheet_at(st: &ModelState, body: &Option<crate::BodyName>, name: Optio
         return st.surface_sheets.iter().position(|s| &s.body == n);
     }
     let p = pick?;
-    if let Some(n) = name.filter(|n| !n.is_empty()) {
-        if let Some(i) = st.surface_sheets.iter().position(|s| s.free_edge_by_name(n, p).is_some()) {
-            return Some(i);
-        }
+    if let Some(n) = name.filter(|n| !n.is_empty())
+        && let Some(i) = st.surface_sheets.iter().position(|s| s.free_edge_by_name(n, p).is_some())
+    {
+        return Some(i);
     }
     // A sheet that refuses the pick (a bend line, not a free edge) is the pick's, so its reason
     // is the feature's.
@@ -821,17 +834,25 @@ pub(super) fn sheet_eval(
                 };
             let n0 = sk.sheet.panels.len();
             let several = picks.len() > 1;
-            let mut made = Vec::with_capacity(picks.len());
-            for (k, (edge, height, angle)) in picks.into_iter().enumerate() {
-                // Each edge's error names it, among several.
-                let joint = sk.add_flange_on(edge, height, angle, rr, position, from, *flip).map_err(|e| match e {
+            // Each edge's error names it, among several.
+            let named = |k: usize| {
+                move |e: DocError| match e {
                     DocError::Invalid(m) if several => DocError::Invalid(format!("edge {}: {m}", k + 1)),
                     e => e,
-                })?;
+                }
+            };
+            // Every flange is added before any corner is closed: a flange on a wall's end edge
+            // is there when the flange beside the wall closes the corner the three bends make.
+            let mut made = Vec::with_capacity(picks.len());
+            for (k, (edge, height, angle)) in picks.into_iter().enumerate() {
+                let joint = sk.flange_on(edge, height, angle, rr, position, from, *flip).map_err(named(k))?;
                 if let Some((relief, size)) = own {
                     sk.corner_reliefs.push((joint, relief, size));
                 }
                 made.push(joint);
+            }
+            for (k, joint) in made.iter().enumerate() {
+                sk.close_flange_corners(std::slice::from_ref(joint)).map_err(named(k))?;
             }
             sk.clear_of_neighbours(&made)?;
             tag_panels(&mut sk, Some(&before), n0, f.id);
@@ -1597,9 +1618,12 @@ pub(super) fn surface_hole_cut(st: &mut ModelState, tools: &[(Traced, Option<Pri
                     z0 <= tol && z1 >= t - tol && crate::sheet_surface::holds_clear(own, &circle)
                 } else if a.z.abs() <= 1e-9 {
                     // Along the panel: its line through the panel's material, inside its thickness.
+                    // A drill clear of the panel's slab meets nothing of it: one square across
+                    // the base, beside a flange standing on it, runs along the flange's plane.
                     let (b2, a2) = (Vec2::new(b.x, b.y), Vec2::new(a.x, a.y));
+                    let clear = b.z - radius > t + tol || b.z + radius < -tol;
                     let inside = crate::sheet_surface_convert::extent_across(own, (b2, a2)).map(|(s0, s1)| (s0.max(span.0), s1.min(span.1)));
-                    let through = inside.is_some_and(|(u0, u1)| u0 < u1);
+                    let through = !clear && inside.is_some_and(|(u0, u1)| u0 < u1);
                     if let Some(inside) = inside.filter(|_| through) {
                         span = inside;
                     }
@@ -2152,7 +2176,8 @@ const MAX_CONE_SIZE: f64 = 1e7;
 /// of `top_radius` `height` along `axis` (a negative height goes the other way). A top radius of
 /// 0 (or below a micrometre) makes a full cone ending in an apex. Built, as the torus is, by
 /// revolving its half section, a trapezoid (a triangle for a full cone) with an edge on the axis.
-pub(super) fn cone(base: Vec3, axis: Vec3, radius: f64, top_radius: f64, height: f64) -> Result<Body> {
+/// Its faces are named `bottom`, `side` and `top` ([`crate::lineage::cone_roles`]).
+pub(super) fn cone(base: Vec3, axis: Vec3, radius: f64, top_radius: f64, height: f64) -> Result<Traced> {
     let in_range = |v: f64| v.is_finite() && v.abs() <= MAX_CONE_SIZE;
     if !(in_range(base.x) && in_range(base.y) && in_range(base.z)) {
         return Err(DocError::Invalid("the cone's base is out of range".into()));
@@ -2186,14 +2211,16 @@ pub(super) fn cone(base: Vec3, axis: Vec3, radius: f64, top_radius: f64, height:
         (Some(b), true) => b,
         _ => return Err(DocError::Invalid("the cone could not be built".into())),
     };
+    // Read off the revolve's own history; moving the body keeps its faces' order.
+    let roles = crate::lineage::cone_roles(&body);
     if (dir - Vec3::Z).len() < 1e-12 && base.len() == 0.0 {
-        return Ok(body);
+        return Ok(Traced::made(body, roles));
     }
     // A rotation taking +Z onto the axis (x and y square to it, right-handed), then the base.
     let x = Plane::from_normal(base, dir).ok_or_else(|| DocError::Invalid("the cone's axis has no direction".into()))?.x;
     let y = dir.cross(x);
     let m = [[x.x, x.y, x.z, 0.0], [y.x, y.y, y.z, 0.0], [dir.x, dir.y, dir.z, 0.0], [base.x, base.y, base.z, 1.0]];
-    Ok(kernel::transform_matrix(&body, m)?)
+    Ok(Traced::made(kernel::transform_matrix(&body, m)?, roles))
 }
 
 /// A primitive tool's exact geometry, for [`sheet_primitive_cut`].
