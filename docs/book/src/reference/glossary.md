@@ -548,6 +548,8 @@ share a catalogue entry. Each meaning below gets its own term and, in time, its 
 | | a minimum distance field | clearance | the Interference and plastic rules dialogs |
 | Flat | a hole's flat bottom | flat bottom | the Hole dialog's tip |
 | | a hem that lies flat on the sheet | flat hem | the Hem dialog's type |
+| Tab | flat material a sheet metal Tab adds to a panel | tab (sheet metal) | `sheet.tab`, `cmd.sheet_tab` |
+| | a page of the ribbon or of a document strip | tab (ribbon, document) | the ribbon tabs, the document tabs |
 | Round | a round relief or corner shape | round (shape) | relief shapes, plastic rests, ruled surface corners |
 | | a fillet | *fillet* | `solid.fillet` |
 | Normal | a sketch entity that isn't a construction entity | normal (line type) | the sketch palette's line type |

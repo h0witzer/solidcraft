@@ -42,6 +42,16 @@ const TOUCH_AREA: f64 = 1e-6;
 /// Tabs folded on one line whose material beyond the bend joins again.
 const FOLD_TABS_REJOIN: &str = "not supported yet: folding tabs that join again beyond the bend";
 pub const FOLD_FIXED_OFF_SHEET: &str = "the fold's fixed point is not on the sheet";
+/// A tab's sketch is not on a flat face of the sheet.
+pub const TAB_OFF_SHEET: &str = "draw the tab on a flat face of a sheet metal body (either side), or in a plane level with one";
+/// A tab's profile does not meet the face it is drawn on.
+pub const TAB_APART: &str = "the tab must touch or overlap the outline of the face it is drawn on: draw it from an edge of that face out";
+/// A tab reaches into a bend.
+pub const TAB_IN_BEND: &str = "the tab reaches into a bend: keep it on the flat of its panel, clear of the bend zones";
+/// A tab lands on other material of the sheet.
+pub const TAB_OVERLAPS: &str = "the tab would overlap another panel of the sheet once folded or in the flat pattern";
+/// A tab lies inside the face already.
+pub const TAB_ADDS_NOTHING: &str = "the tab adds no material: it lies inside the face already; draw it out past an edge of the face";
 
 /// The most bores one sheet keeps.
 const MAX_BORES: usize = 1000;
