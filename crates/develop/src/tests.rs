@@ -5,13 +5,115 @@ use solidcore_record::{Loop2, Region2, Seg2, Vec2, Vec3};
 use solidcraft_geom::Aabb2;
 
 use crate::{
-    Anchor, Bend, Corner, CornerRelief, Datum, DevelopError, Development, EdgeFrom, Joint, JointKind, Lap, Panel, Relief, Rigid2, Rigid3, Rip, Sheet,
-    Surface, Tail, ZoneEnds, develop, fold,
+    Anchor, Bend, Corner, CornerJoinKind, CornerRelief, Datum, DevelopError, Development, EdgeFrom, Joint, JointKind, Lap, Panel, Relief, Rigid2,
+    Rigid3, Rip, Sheet, Surface, Tail, ZoneEnds, develop, fold,
 };
 
 const T: f64 = 2.0;
 const R: f64 = 2.0;
 const K: f64 = 0.5;
+
+#[test]
+fn corner_join_kind_defaults_to_butt() {
+    assert_eq!(CornerJoinKind::default(), CornerJoinKind::Butt);
+}
+
+#[test]
+fn corner_join_butt_keeps_the_mitered_rule_gap() {
+    let (a, b) = Lap::Miter { gap: 0.5 }.cuts(FRAC_PI_2, T);
+    let expected = T + 0.5 / 2.0_f64.sqrt();
+    assert!((a - expected).abs() < 1e-9, "{a} != {expected}");
+    assert!((b - expected).abs() < 1e-9, "{b} != {expected}");
+}
+
+#[test]
+fn corner_join_overlap_cuts_match_the_facing_surface_clearances() {
+    let angle = 72.0_f64.to_radians();
+    let (sin, cos) = angle.sin_cos();
+    for (turn, covering, covered) in [
+        (FRAC_PI_2, T - 1.0, T + 0.5),
+        (-FRAC_PI_2, -1.0, 0.5),
+        (angle, (T - 1.0) / sin, (T + 0.5) / sin),
+        (-angle, (T * cos - 1.0) / sin, (T * cos + 0.5) / sin),
+        (PI - angle, (T * (1.0 + cos) - 1.0) / sin, (T * (1.0 + cos) + 0.5) / sin),
+        (angle - PI, -1.0 / sin, 0.5 / sin),
+    ] {
+        for covering_a in [true, false] {
+            let actual = Lap::Overlap { covering_a, amount: Some(1.0), gap: 0.5 }.cuts(turn, T);
+            let expected = if covering_a { (covering, covered) } else { (covered, covering) };
+            assert!((actual.0 - expected.0).abs() < 1e-9, "{turn}: {actual:?} != {expected:?}");
+            assert!((actual.1 - expected.1).abs() < 1e-9, "{turn}: {actual:?} != {expected:?}");
+        }
+    }
+}
+
+#[test]
+fn corner_join_full_overlap_follows_the_sheet_thickness() {
+    for thickness in [1.0, 2.0, 4.0] {
+        for (turn, covering, covered) in [(FRAC_PI_2, 0.0, thickness + 0.5), (-FRAC_PI_2, -thickness, 0.5)] {
+            for covering_a in [true, false] {
+                let actual = Lap::Overlap { covering_a, amount: None, gap: 0.5 }.cuts(turn, thickness);
+                let expected = if covering_a { (covering, covered) } else { (covered, covering) };
+                assert!((actual.0 - expected.0).abs() < 1e-9, "{actual:?} != {expected:?}");
+                assert!((actual.1 - expected.1).abs() < 1e-9, "{actual:?} != {expected:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn corner_join_overlap_changes_the_surface_outline_not_a_flat_copy() {
+    for turn in [FRAC_PI_2, -FRAC_PI_2] {
+        for amount in [Some(1.0), None] {
+            for covering_a in [true, false] {
+                let mut sheet = bracket(bend(FRAC_PI_2, Datum::Sharp, (0.0, 100.0)));
+                let lap = Lap::Overlap { covering_a, amount, gap: 0.5 };
+                let kind = rip_along(&sheet.joints[0], 100.0, turn, lap);
+                sheet.joints[0].kind = kind;
+                if let JointKind::Rip(rip) = &mut sheet.joints[0].kind {
+                    rip.curves =
+                        (vec![Seg2::Line { a: rip.edges.0[0], b: rip.edges.0[1] }], vec![Seg2::Line { a: rip.edges.1[0], b: rip.edges.1[1] }]);
+                }
+                let dev = develop(&sheet, 0).unwrap();
+                let (a, b) = lap.cuts(turn, T);
+                let first = &dev.panels[0].as_ref().unwrap().region;
+                let second = &dev.panels[1].as_ref().unwrap().region;
+                assert!((first.area() - 100.0 * (60.0 - a)).abs() < 1e-9, "{turn}: {}", first.area());
+                assert!(
+                    (second.area() - 100.0 * (20.0 - b)).abs() < 1e-9,
+                    "turn={turn}, amount={amount:?}, covering_a={covering_a}, cuts=({a}, {b}), area={}, edges={:?}, source={:?}",
+                    second.area(),
+                    second.outer.segs,
+                    sheet.panels[1].region.outer.segs,
+                );
+                assert!((bounds(first).min.y - a).abs() < 1e-9, "{turn}: {:?}", bounds(first));
+            }
+        }
+    }
+}
+
+#[test]
+fn corner_join_overlap_refuses_invalid_lengths_and_degenerate_corners() {
+    let valid = Lap::Overlap { covering_a: true, amount: Some(1.0), gap: 0.5 };
+    let bad_lengths = [
+        Lap::Overlap { covering_a: true, amount: Some(0.0), gap: 0.5 },
+        Lap::Overlap { covering_a: true, amount: Some(-1.0), gap: 0.5 },
+        Lap::Overlap { covering_a: true, amount: Some(T + 1.0), gap: 0.5 },
+        Lap::Overlap { covering_a: true, amount: Some(f64::INFINITY), gap: 0.5 },
+        Lap::Overlap { covering_a: true, amount: Some(f64::NAN), gap: 0.5 },
+        Lap::Overlap { covering_a: true, amount: Some(1.0), gap: 0.0 },
+        Lap::Overlap { covering_a: true, amount: Some(1.0), gap: -0.5 },
+        Lap::Overlap { covering_a: true, amount: Some(1.0), gap: f64::NAN },
+    ];
+    for (turn, lap) in
+        bad_lengths.into_iter().map(|lap| (FRAC_PI_2, lap)).chain([0.0, PI, -PI, f64::NAN, f64::INFINITY].into_iter().map(|turn| (turn, valid)))
+    {
+        let mut sheet = bracket(bend(FRAC_PI_2, Datum::Sharp, (0.0, 100.0)));
+        let kind = rip_along(&sheet.joints[0], 100.0, turn, lap);
+        sheet.joints[0].kind = kind;
+        assert!(matches!(develop(&sheet, 0), Err(DevelopError::Joint(0, _))), "{turn}: {lap:?}");
+    }
+}
 
 fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Region2 {
     let pts = [Vec2::new(x0, y0), Vec2::new(x1, y0), Vec2::new(x1, y1), Vec2::new(x0, y1)];

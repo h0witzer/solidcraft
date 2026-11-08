@@ -101,6 +101,8 @@ pub use sheet_surface_convert::{
     measure_sheet_body,
 };
 pub use sheet_surface_cuts::{Loose, Recess};
+pub use sheet_surface_features::{CornerJoinParams, SheetEdgeName};
+pub use solidcraft_develop::CornerJoinKind;
 pub mod text_params;
 pub mod thread_forms;
 pub mod tolerance;

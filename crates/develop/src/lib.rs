@@ -40,7 +40,9 @@ pub use develop::{DevelopError, Development, EdgeFrom, FlatPanel, Mismatch, Trim
 pub use fold::{Bent, Fold, fold};
 pub use query::Query;
 pub use rigid::{Rigid2, Rigid3};
-pub use sheet::{Anchor, Bend, Corner, CornerRelief, Cut, Datum, Joint, JointKind, Lap, Panel, Relief, Rip, Sheet, Surface, Tail, ZoneEnds};
+pub use sheet::{
+    Anchor, Bend, Corner, CornerJoinKind, CornerRelief, Cut, Datum, Joint, JointKind, Lap, Panel, Relief, Rip, Sheet, Surface, Tail, ZoneEnds,
+};
 
 #[cfg(test)]
 mod tests;

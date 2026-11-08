@@ -560,6 +560,22 @@ fn check_joint(sheet: &Sheet, j: usize, joint: &Joint) -> Result<(), DevelopErro
             }
             let fine = match rip.lap {
                 Lap::Miter { gap } => gap >= 0.0 && gap.is_finite(),
+                Lap::Overlap { amount, gap, .. } => {
+                    let overlap = amount.unwrap_or(sheet.thickness);
+                    if !(gap > 0.0 && gap.is_finite() && overlap > 0.0 && overlap <= sheet.thickness && overlap.is_finite()) {
+                        return Err(DevelopError::Joint(j, "an overlap has a positive gap and covers more than 0 and at most the sheet's thickness"));
+                    }
+                    if !rip.turns.iter().all(|turn| turn.abs() > UNIT_TOL && turn.abs() < PI - UNIT_TOL) {
+                        return Err(DevelopError::Joint(j, "an overlap needs a corner between 0 and 180 degrees"));
+                    }
+                    if !rip.turns.iter().all(|turn| {
+                        let (a, b) = rip.lap.cuts(*turn, sheet.thickness);
+                        a.is_finite() && b.is_finite()
+                    }) {
+                        return Err(DevelopError::Joint(j, "the overlap's cuts are not finite"));
+                    }
+                    true
+                }
                 Lap::Cut(a, b) => a >= 0.0 && b >= 0.0 && a.is_finite() && b.is_finite(),
             };
             if !fine {
@@ -592,7 +608,7 @@ fn rip_bands(sheet: &Sheet, maps: &[Flatten], j: usize, joint: &Joint, rip: &Rip
     // The `a` panel's material lies on the left of the edge's way, the `b` panel's on the right.
     for (slot, (panel, edge, side)) in out.iter_mut().zip([(joint.a.panel, &rip.edges.0, 1.0), (joint.b.panel, &rip.edges.1, -1.0)]) {
         let depth: Vec<f64> = cuts.iter().map(|c| if side > 0.0 { c.0 } else { c.1 }).collect();
-        if !depth.iter().any(|d| *d > 0.0) {
+        if depth.iter().all(|d| *d == 0.0) {
             continue;
         }
         let (Some(surface), Some(map)) = (sheet.panels.get(panel).map(|p| &p.surface), maps.get(panel)) else {
@@ -918,6 +934,9 @@ fn portion(segs: &[Seg2], from: f64, to: f64) -> Vec<(Seg2, usize)> {
 
 /// The part of `s` from parameter `t0` to `t1`.
 fn part(s: &Seg2, t0: f64, t1: f64) -> Seg2 {
+    if let Seg2::Line { .. } = s {
+        return Seg2::Line { a: s.point_at(t0), b: s.point_at(t1) };
+    }
     let right = if t0 > 0.0 { s.split_at(t0).1 } else { *s };
     let t = if t0 < 1.0 { (t1 - t0) / (1.0 - t0) } else { 1.0 };
     if t >= 1.0 { right } else { right.split_at(t.max(0.0)).0 }
