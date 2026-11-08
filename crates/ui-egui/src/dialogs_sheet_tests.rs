@@ -1072,7 +1072,7 @@ fn cross_break_dialog_marks_the_picked_panel() {
     let ctx = crate::fonts::test_context();
     let rect = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 700.0));
     let output = crate::test_support::frame(&ctx, egui::RawInput { screen_rect: Some(rect), ..Default::default() }, |ui| {
-        let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("cross-break-test")));
+        let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::unique("cross-break-test")));
         assert!(overlay(&mut app, &painter, rect, &page));
     });
     let legend = crate::i18n::tr_label("ui.sheet_cross_break_legend");

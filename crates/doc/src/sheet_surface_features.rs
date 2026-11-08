@@ -907,7 +907,7 @@ impl SurfaceSheet {
                 return err("the fold's bend zone runs through a recess: not supported yet");
             }
         }
-        self.fold_cross_breaks(i, &side, ba, tol, &piece_at)?;
+        self.fold_cross_breaks(i, side, ba, tol, piece_at)?;
         for l in &mut self.loose {
             if l.panel != i {
                 continue;
