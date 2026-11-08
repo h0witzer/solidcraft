@@ -4334,6 +4334,7 @@ fn highlight_geometry_key(app: &SolveApp) -> u64 {
     crate::theme_files::color_key(&Tokens::base()).hash(&mut h);
     app.preview.effective_replaced().hash(&mut h);
     app.preview.rolled_back.hash(&mut h);
+    app.preview.corner_hover().map(|_| (app.preview.key, app.preview.hovered_corner)).hash(&mut h);
     app.viewport.refused_ring.hash(&mut h);
     // Where a Move dialog has moved its bodies; while its triad is dragged, only that it is.
     if crate::dialogs_move::dragging(app) {
@@ -4812,6 +4813,24 @@ pub(crate) fn build_highlight(app: &SolveApp) -> GpuScene {
         (EdgeColours::new(&mut feedback, t.hover_edge, t.hover_edge_halo), EdgeColours::new(&mut feedback, t.sel_edge, t.sel_edge_rim));
     let mut hover_instances = HighlightInstances::default();
     let mut selected_instances = HighlightInstances::default();
+    if app.dialog.as_ref().is_some_and(|dialog| matches!(dialog.kind, crate::dialogs::Kind::Sheet(crate::dialogs_sheet::Sm::Flange { ty: 1, .. })))
+        && let Some(corner) = app.preview.corner_hover()
+        && app.body_visible(&corner.body)
+    {
+        let faces: std::collections::BTreeSet<usize> = corner.faces.iter().flatten().copied().collect();
+        let lift = t.hover_face_lift;
+        let (r, g, b) = body_rgb(app, &corner.body);
+        mesh_tris(&mut feedback, &corner.mesh, [r.saturating_add(lift), g.saturating_add(lift), b.saturating_add(lift), 255], true, |face| {
+            faces.contains(&(face as usize))
+        });
+        for (index, edge) in corner.mesh.edges.iter().enumerate() {
+            if corner.mesh.edge_pickable(index)
+                && corner.mesh.edge_faces.get(index).is_some_and(|adjacent| adjacent.iter().any(|face| faces.contains(&(*face as usize))))
+            {
+                edge_lines(&mut feedback, edge, hover_edge, 1.5, &edge_normals(&corner.mesh, edge));
+            }
+        }
+    }
     // Print faces (#8429): tinted towards the colour section views give cut faces, and outlined,
     // so the face a slicer export lays its body on shows at a glance. Drawn before the selection,
     // which lights over it.
