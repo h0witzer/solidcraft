@@ -2,8 +2,8 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::{
-    ConvertParams, FixedPoint, FlangeEdges, FlangeParams, FlangePosition, FlangeTypeParam, FoldParams, FoldPoints, FoldPosition, HeightFromParam,
-    HemParams, PerforateParams, PerforationPattern, ReliefShapeParam, SheetPoints, ThenSteps, UnfoldParams,
+    ConvertParams, CrossBreakParams, FixedPoint, FlangeEdges, FlangeParams, FlangePosition, FlangeTypeParam, FoldParams, FoldPoints, FoldPosition,
+    HeightFromParam, HemParams, PerforateParams, PerforationPattern, ReliefShapeParam, SheetPoints, ThenSteps, UnfoldParams,
 };
 use crate::Session;
 use crate::schema::features::FeatureResult;
@@ -490,4 +490,45 @@ fn rule_warnings_match_the_output_schema_and_strict_does_not_mutate() {
         let schema = if id == "sheet.rules" { output_schema_for::<RulesResult>() } else { output_schema_for::<ManageRulesResult>() };
         assert!(conforms(schema.as_value(), schema.as_value(), &reply));
     }
+}
+
+// ---- Cross Break (#8345) ----
+
+#[test]
+fn cross_break_schema_and_the_key_check_agree() {
+    assert_keys(input_schema_for::<CrossBreakParams>(), &keys(&["body", "depth", "direction", "face", "inset"]));
+}
+
+#[test]
+fn cross_break_strict_keeps_todays_errors() {
+    assert_strict_keeps_todays_errors(&[
+        ("sheet.cross_break", json!({"face": [0, 0, 0], "direction": "sideways"})),
+        ("sheet.cross_break", json!({"face": [0, 0, 0], "direction": 3})),
+        ("sheet.cross_break", json!({"face": [0, 0, 0], "inset": "nowhere + 1"})),
+    ]);
+}
+
+/// Every form the command takes answers with a `FeatureResult` and, in Warn, no warnings.
+#[test]
+fn cross_break_replies_with_feature_result() {
+    let schema = output_schema_for::<FeatureResult>();
+    let schema = schema.as_value();
+    for p in [
+        json!({"face": [50, 30, 0]}),
+        json!({"face": {"x": 50, "y": 30, "z": 0}, "inset": 5, "depth": "1.5 mm", "direction": "up"}),
+        json!({"face": [50, 30, 2.5], "direction": "down", "body": "Body1", "name": "Lid stiffener"}),
+        json!({"face": [50, 30, 0], "inset": null, "depth": null, "direction": null}),
+    ] {
+        let mut s = sheet();
+        s.param_check = ParamCheck::Warn;
+        let r = s.execute("sheet.cross_break", &p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        assert!(conforms(schema, schema, &r), "{r} doesn't match {schema}");
+        assert!(r.get("param_warnings").is_none(), "{p}: {r}");
+        assert_eq!(r["created_bodies"], json!([]), "{p}: no new body");
+    }
+    let mut s = sheet();
+    s.param_check = ParamCheck::Strict;
+    let e = s.execute("sheet.cross_break", &json!({"face": [50, 30, 0], "angle": 5})).err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(e.contains("angle"), "{e}");
+    assert!(matches!(s.execute("sheet.cross_break", &json!({"face": [50, 30, 0]})), Ok(Value::Object(_))));
 }

@@ -703,6 +703,7 @@ form_case!(split_face, "solid.split_face", []);
 form_case!(flange, "sheet.flange", ["Type", "Rule"]);
 form_case!(path_flange, "sheet.path_flange", ["Bend Radius"]);
 form_case!(hem, "sheet.hem", ["Type", "Length", "ui.sheet_gap"]);
+form_case!(cross_break, "sheet.cross_break", ["ui.sheet_cross_break_inset", "ui.depth"]);
 form_case!(fold, "sheet.fold", ["Bend Line Position", "Angle", "Bend Radius"]);
 form_case!(unfold, "sheet.unfold", []);
 form_case!(refold, "sheet.refold", []);

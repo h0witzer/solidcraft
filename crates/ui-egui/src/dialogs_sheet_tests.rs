@@ -1038,6 +1038,56 @@ fn path_flange_dialog_follows_the_path() {
     }
 }
 
+/// The Cross Break dialog takes the panel's face and its values: the creases go on that panel,
+/// the flat pattern page draws them with their legend, and Edit Feature brings the face and the
+/// values back.
+#[test]
+fn cross_break_dialog_marks_the_picked_panel() {
+    let mut app = plate(crate::shell::LayoutMode::Floating);
+    app.run("sheet.flange", json!({"sketch": "Base"})).unwrap();
+    app.start("sheet.cross_break");
+    let mut d = app.dialog.clone().unwrap();
+    assert!(matches!(&d.kind, Kind::Sheet(Sm::CrossBreak { .. })));
+    assert!(apply_commands(&app, &d).is_err(), "no face picked yet");
+    d.inputs[0].items = face_sel(&app.session, Vec3::new(50.0, 30.0, 2.5)).into_iter().collect();
+    if let Kind::Sheet(Sm::CrossBreak { inset, direction, .. }) = &mut d.kind {
+        *inset = "4 mm".into();
+        *direction = 1;
+    }
+    let c = apply_commands(&app, &d).unwrap();
+    assert_eq!(c[0].0, "sheet.cross_break");
+    assert_eq!(
+        (&c[0].1["inset"], &c[0].1["depth"], &c[0].1["direction"], &c[0].1["body"]),
+        (&json!("4 mm"), &json!("1 mm"), &json!("up"), &json!("Body1"))
+    );
+    run_all(&mut app, c);
+    assert!(app.session.model.results.iter().all(|r| r.error.is_none()), "{:?}", app.session.model.results);
+    let flat = app.session.execute("sheet.flat_pattern", &json!({})).unwrap();
+    assert_eq!(flat["cross_breaks"][0]["direction"], "up", "{flat}");
+    // The flat pattern page names the creases in its legend.
+    app.start("sheet.flat_pattern");
+    let mut page = app.dialog.clone().unwrap();
+    let Kind::Sheet(Sm::FlatPattern { data, .. }) = &mut page.kind else { panic!("flat dialog") };
+    *data = Some(Ok(flat));
+    let ctx = crate::fonts::test_context();
+    let rect = Rect::from_min_size(Pos2::ZERO, vec2(1000.0, 700.0));
+    let output = crate::test_support::frame(&ctx, egui::RawInput { screen_rect: Some(rect), ..Default::default() }, |ui| {
+        let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Middle, egui::Id::new("cross-break-test")));
+        assert!(overlay(&mut app, &painter, rect, &page));
+    });
+    let legend = crate::i18n::tr_label("ui.sheet_cross_break_legend");
+    assert!(output.shapes.iter().any(|s| matches!(&s.shape, egui::Shape::Text(t) if t.galley.job.text == legend)), "the legend names the creases");
+    // Edit Feature: the face and the values are back, and OK keeps the cross break.
+    let f = app.session.doc.features.last().unwrap().clone();
+    let e = edit_dialog(&app, f.id, None).unwrap();
+    assert!(matches!(&e.kind, Kind::Sheet(Sm::CrossBreak { inset, direction: 1, .. }) if inset == "4 mm"), "{:?}", e.kind);
+    assert_eq!(e.inputs[0].items.len(), 1);
+    let c = apply_commands(&app, &e).unwrap();
+    assert_eq!(c[0].0, "timeline.redefine");
+    run_all(&mut app, c);
+    assert!(app.session.model.results.iter().all(|r| r.error.is_none()), "{:?}", app.session.model.results);
+}
+
 // ---- flat pattern navigation ----
 
 fn flat_app(preset: &str, mode: crate::shell::LayoutMode) -> SolveApp {
