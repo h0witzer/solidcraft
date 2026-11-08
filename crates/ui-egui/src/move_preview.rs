@@ -334,6 +334,7 @@ impl MovePreview {
             points: Vec::new(),
             placed: None,
             tapered: Vec::new(),
+            flange_corners: Vec::new(),
             replaced,
             outlines: Vec::new(),
             error: None,

@@ -136,6 +136,8 @@ pub struct Built {
     /// The reply of a previewed assembly constraint (`dof`, `conflicts`): the Constrain dialog says
     /// how free the part is with the constraint it shows.
     pub placed: Option<serde_json::Value>,
+    /// Source-rim pairs offered by the evaluated flange command.
+    pub flange_corners: Vec<[solidcraft_engine::doc::SheetEdgeName; 2]>,
     /// Bodies the preview only moves, drawn moved on the GPU instead of built where they land
     /// (a Move). `scene` is not read then.
     pub layer: Option<Layer>,
@@ -220,6 +222,8 @@ pub struct PreviewState {
     /// The bodies and plane ([`mirror_key`]) the Mirror dialog last set its operation for: an
     /// operation picked by hand afterwards stays until they change.
     pub mirror_decided: Option<u64>,
+    /// Flange corners from the successful preview of the current inputs only.
+    pub flange_corners: Vec<[solidcraft_engine::doc::SheetEdgeName; 2]>,
     straight: crate::extrude_preview::StraightPreview,
     moving: crate::move_preview::MovePreview,
     /// PreviewReselect: Primary held - hide the preview and restore replaced bodies for picks.
@@ -305,6 +309,7 @@ impl PreviewState {
     /// Stop drawing the preview scene and give the bodies it stood in for back to the model.
     fn hide_scene(&mut self) {
         self.drop_layer();
+        self.flange_corners.clear();
         if self.active || !self.replaced.is_empty() {
             self.active = false;
             self.bounds = Aabb3::EMPTY;
@@ -329,6 +334,7 @@ impl PreviewState {
         self.mirror_meets = None;
         self.mirror_decided = None;
         self.points.clear();
+        self.flange_corners.clear();
         self.sketches.clear();
         self.busy = false;
         self.rolled_back = false;
@@ -369,6 +375,7 @@ impl PreviewState {
                 self.tapered = b.tapered;
                 self.mirror_meets = b.mirror_meets;
                 self.points = b.points;
+                self.flange_corners = if self.error.is_none() { b.flange_corners } else { Vec::new() };
                 match b.layer {
                     // The scenes of this key are up: only the motion changes, nothing is uploaded.
                     Some(Layer { key, scenes: None, motion }) if self.layer_shown() == Some(key) => self.layer = Some((key, motion)),
@@ -423,6 +430,7 @@ impl PreviewState {
             // A constraint's reply says how free its part is with the inputs it was for: with other
             // picks it would describe the wrong rule, so the dialog falls back to the saved design.
             self.placed = None;
+            self.flange_corners.clear();
         }
         if let Some((k, rx)) = &self.running {
             let k = *k;
@@ -444,6 +452,9 @@ impl PreviewState {
                 // key.
                 if k == key || intermediate {
                     self.apply(k, job);
+                    if k != key {
+                        self.flange_corners.clear();
+                    }
                 }
             }
         }
@@ -734,6 +745,14 @@ pub fn compute(s: &Session, cmds: &[(String, Value)], colors: Colors) -> Job {
             let features = || p.replies.iter().filter_map(|r| r.get("feature").and_then(Value::as_u64));
             b.applied = features().find_map(|id| p.after.fitted_range(id));
             b.tapered = features().find_map(|id| p.after.tapered(id)).map(<[_]>::to_vec).unwrap_or_default();
+            if let Some((command, params)) = cmds.first() {
+                let editing = if command == "timeline.redefine" { params.get("feature").and_then(Value::as_u64) } else { None };
+                if command == "sheet.flange"
+                    || command == "timeline.redefine" && params.get("command").and_then(Value::as_str) == Some("sheet.flange")
+                {
+                    b.flange_corners = crate::dialogs_sheet::flange_corner_sources(&p.before, &p.after, editing);
+                }
+            }
             Ok(b)
         }
     }
@@ -975,6 +994,7 @@ fn build_tool(before: &ModelState, after: &ModelState, c: Colors, op: &str) -> B
         mirror_meets: None,
         points: Vec::new(),
         placed: None,
+        flange_corners: Vec::new(),
         layer: None,
     }
 }
@@ -1241,6 +1261,7 @@ fn build_as(before: &ModelState, after: &ModelState, c: Colors, combine: Option<
         mirror_meets: None,
         points,
         placed: None,
+        flange_corners: Vec::new(),
         layer: None,
     }
 }
@@ -1564,6 +1585,7 @@ mod tests {
             mirror_meets: None,
             points: Vec::new(),
             placed: None,
+            flange_corners: Vec::new(),
             layer: None,
         }
     }
@@ -1686,6 +1708,57 @@ mod tests {
             pv.apply(1, Ok(layered(7, true, 10.0)));
             assert!(seen.insert(pv.moving_layer().expect("a layer").key));
         }
+    }
+
+    #[test]
+    fn flange_corner_preview_metadata_is_current_only() {
+        let sources = vec![[
+            solidcraft_engine::doc::SheetEdgeName::parse("F7.base:rim.l1:top").unwrap(),
+            solidcraft_engine::doc::SheetEdgeName::parse("F7.base:rim.l2:top").unwrap(),
+        ]];
+        let built = || Built { flange_corners: sources.clone(), ..pose() };
+        let mut preview = PreviewState::default();
+        preview.apply(1, Ok(built()));
+        assert_eq!(preview.flange_corners, sources);
+        preview.poll(2, None);
+        assert!(preview.flange_corners.is_empty(), "changed inputs must not offer old corners");
+        assert!(preview.active, "the last good geometry can stay visible");
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        preview.running = Some((1, receiver));
+        sender.send(Ok(built())).unwrap();
+        preview.poll(2, None);
+        assert!(preview.flange_corners.is_empty(), "an obsolete result must be discarded");
+        assert_eq!(preview.shown_key, Some(1));
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        preview.running = Some((2, receiver));
+        sender.send(Ok(built())).unwrap();
+        preview.poll(2, None);
+        assert_eq!(preview.flange_corners, sources, "the current successful result offers its corners");
+
+        for (tool, stream) in [(true, None), (false, Some(42))] {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            preview.running = Some((1, receiver));
+            preview.running_tool = tool;
+            preview.running_stream_key = stream;
+            sender.send(Ok(built())).unwrap();
+            preview.poll(2, stream);
+            assert!(preview.active, "successful intermediate geometry may still be shown");
+            assert!(preview.flange_corners.is_empty(), "intermediate geometry cannot offer obsolete corners");
+        }
+
+        for failure in [Err("invalid expression".into()), Ok(Built { error: Some("invalid tool".into()), ..built() })] {
+            preview.apply(2, Ok(built()));
+            preview.apply(2, failure);
+            assert!(preview.flange_corners.is_empty(), "a failed preview offers no corners");
+        }
+        preview.apply(2, Ok(built()));
+        preview.clear();
+        assert!(preview.flange_corners.is_empty(), "closing the preview clears its corners");
+        preview.apply(2, Ok(built()));
+        preview.reset();
+        assert!(preview.flange_corners.is_empty(), "another design cannot inherit these corners");
     }
 
     /// The worker completes while the slider is still held or Play keeps advancing.

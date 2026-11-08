@@ -2236,6 +2236,7 @@ fn redefine(s: &mut Session, p: &Value) -> Result<Value> {
                 | "sheet.refold"
                 | "sheet.convert"
                 | "sheet.recognize"
+                | "sheet.corner_join"
                 | "plastic.boss"
                 | "plastic.lip"
                 | "plastic.snap_fit"
