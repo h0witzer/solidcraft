@@ -39,6 +39,16 @@ fn straight(e: &FreeEdge) -> Result<(Vec2, Vec2, Vec2)> {
     Ok((e.a, e.b, d))
 }
 
+/// Where a fold's line lies on the sheet ([`SurfaceSheet::fold_line`]): the flat `panel` it
+/// lies on, `back` from the body's coordinates into that panel's chart, a point `a` of the line
+/// and the unit `n` across it toward the side that moves, both in the panel's chart.
+pub(crate) struct FoldLine {
+    pub panel: usize,
+    pub back: Rigid3,
+    pub a: Vec2,
+    pub n: Vec2,
+}
+
 impl SurfaceSheet {
     /// The free edge of the sheet nearest the point `p` (the body's coordinates), on a face of a
     /// planar panel or its rim: one no joint runs along. `None` when no such edge is within twice
@@ -733,40 +743,9 @@ impl SurfaceSheet {
             return err("the bend radius must not be negative");
         }
         let t = self.sheet.thickness;
-        let dev = develop(&self.sheet, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
-        let folded = crate::sheet_surface_convert::fold_onto(&self.sheet, &dev, &self.places)?;
-        // The panel the line lies on: both its ends on one face of the panel, the line across it.
-        let on_face = |z: f64| z.abs() < 1e-4 || (z - t).abs() < 1e-4;
-        let mut found = None;
-        for (i, (panel, place)) in self.sheet.panels.iter().zip(&folded.places).enumerate() {
-            let (Surface::Plane, Some(place)) = (&panel.surface, place) else { continue };
-            let back = place.inverse();
-            let (qa, qb) = (back.point(a), back.point(b));
-            if !(on_face(qa.z) && on_face(qb.z) && (qa.z - qb.z).abs() < 1e-4) {
-                continue;
-            }
-            let (a2, b2) = (Vec2::new(qa.x, qa.y), Vec2::new(qb.x, qb.y));
-            let Some(d) = (b2 - a2).normalized() else { return err("the fold line has no length") };
-            if crate::sheet_surface_convert::extent_across(&panel.region, (a2, d)).is_some() {
-                found = Some((i, back, a2, d));
-                break;
-            }
-        }
-        let (i, back, a2, d) = found.ok_or_else(|| DocError::Invalid("the fold line must lie on a flat face of the sheet".into()))?;
+        let FoldLine { panel: i, back, a: a2, n } = self.fold_line(a, b, fixed)?;
         let region = self.sheet.panels[i].region.clone();
-        // The side that moves lies along `n` from the line.
-        let mut n = d.perp();
         let beside = |n: Vec2, from: f64| half(&region, n, from);
-        let moves_n = match fixed {
-            Some(p) => {
-                let q = back.point(p);
-                Vec2::new(q.x, q.y).dot(n) < a2.dot(n)
-            }
-            None => area(&beside(n, a2.dot(n))?) <= area(&beside(-n, -a2.dot(n))?),
-        };
-        if !moves_n {
-            n = -n;
-        }
         let l = a2.dot(n);
         let bend = Bend {
             angle,
@@ -978,6 +957,48 @@ impl SurfaceSheet {
             }
         }
         Ok(j)
+    }
+
+    /// Where a fold along the line from `a` to `b` (the body's coordinates) lies, as
+    /// [`Self::add_fold`] finds it: the flat panel whose face holds the line, and the side that
+    /// moves (the side away from `fixed`, or else the smaller).
+    pub(crate) fn fold_line(&self, a: Vec3, b: Vec3, fixed: Option<Vec3>) -> Result<FoldLine> {
+        let t = self.sheet.thickness;
+        let dev = develop(&self.sheet, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
+        let folded = crate::sheet_surface_convert::fold_onto(&self.sheet, &dev, &self.places)?;
+        // The panel the line lies on: both its ends on one face of the panel, the line across it.
+        let on_face = |z: f64| z.abs() < 1e-4 || (z - t).abs() < 1e-4;
+        let mut found = None;
+        for (i, (panel, place)) in self.sheet.panels.iter().zip(&folded.places).enumerate() {
+            let (Surface::Plane, Some(place)) = (&panel.surface, place) else { continue };
+            let back = place.inverse();
+            let (qa, qb) = (back.point(a), back.point(b));
+            if !(on_face(qa.z) && on_face(qb.z) && (qa.z - qb.z).abs() < 1e-4) {
+                continue;
+            }
+            let (a2, b2) = (Vec2::new(qa.x, qa.y), Vec2::new(qb.x, qb.y));
+            let Some(d) = (b2 - a2).normalized() else { return err("the fold line has no length") };
+            if crate::sheet_surface_convert::extent_across(&panel.region, (a2, d)).is_some() {
+                found = Some((i, back, a2, d));
+                break;
+            }
+        }
+        let (i, back, a2, d) = found.ok_or_else(|| DocError::Invalid("the fold line must lie on a flat face of the sheet".into()))?;
+        let region = self.sheet.panels[i].region.clone();
+        // The side that moves lies along `n` from the line.
+        let mut n = d.perp();
+        let beside = |n: Vec2, from: f64| half(&region, n, from);
+        let moves_n = match fixed {
+            Some(p) => {
+                let q = back.point(p);
+                Vec2::new(q.x, q.y).dot(n) < a2.dot(n)
+            }
+            None => area(&beside(n, a2.dot(n))?) <= area(&beside(-n, -a2.dot(n))?),
+        };
+        if !moves_n {
+            n = -n;
+        }
+        Ok(FoldLine { panel: i, back, a: a2, n })
     }
 
     /// The sheet of a copy of its body, named `body`, by `m`: moved, or mirrored into the opposite

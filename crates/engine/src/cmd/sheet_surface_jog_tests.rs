@@ -227,3 +227,83 @@ fn jog_along_a_sketch_line_keeps_the_larger_side_and_takes_the_rules_radius() {
     jog(&mut p, json!({"offset": 20})).unwrap();
     assert!((by_line - low_bend_x(&mut p)).abs() < 1e-6, "{by_line} {}", low_bend_x(&mut p));
 }
+
+#[test]
+fn jog_on_a_flanges_wall_steps_its_top_and_keeps_the_flat() {
+    let ba = FRAC_PI_2 * (2.0 + 0.4 * 2.0);
+    let mut s = Session::default();
+    jog_plate(&mut s);
+    run(&mut s, "sheet.flange", json!({"edges": [[60, 0, 2]], "height": "30 mm", "angle": "90 deg"}));
+    let (v0, f0, b0) = (volume(&mut s), flat(&mut s), bbox(&mut s));
+    let (y0, z_top) = (b0["min"][1].as_f64().unwrap_or(f64::NAN), b0["max"][2].as_f64().unwrap_or(f64::NAN));
+    // Across the wall's outer face, 20 below its top (the jog takes 2 x BA + 2 = 10.8 of it);
+    // the base stays.
+    let z = z_top - 20.0;
+    let q = json!({"points": [[0, y0, z], [120, y0, z]], "fixed": [60, 30, 2], "offset": 10});
+    run(&mut s, "sheet.jog", q);
+    assert!(s.model.results.iter().all(|r| r.error.is_none()), "{:?}", s.model.results);
+    assert_eq!(s.model.state().bodies.len(), 1);
+    let f = flat(&mut s);
+    for i in 0..2 {
+        let (got, want) = (f["flat_size_mm"][i].as_f64().unwrap_or(f64::NAN), f0["flat_size_mm"][i].as_f64().unwrap_or(0.0));
+        assert!((got - want).abs() < 1e-6, "{f}");
+    }
+    let bends = f["bends"].as_array().cloned().unwrap_or_default();
+    assert_eq!(bends.len(), 3, "the flange's bend and the jog's two: {f}");
+    for b in &bends {
+        assert!((b["length"].as_f64().unwrap_or(0.0) - 120.0).abs() < 1e-6, "{f}");
+    }
+    let want = v0 - 2.0 * ba * 2.0 * 120.0 + 2.0 * FRAC_PI_2 * 2.0 * (2.0 + 1.0) * 120.0;
+    assert!(rel(volume(&mut s), want) < 1e-4, "{} {want}", volume(&mut s));
+    // The wall's top 20 steps 10 outside to outside, H = 8 face to the same face, across y; the
+    // bends take 2R + T of the height, the wall between them 8 − 6 = 2 more.
+    let b = bbox(&mut s);
+    let dy = (b["max"][1].as_f64().unwrap_or(f64::NAN) - b["min"][1].as_f64().unwrap_or(f64::NAN))
+        - (b0["max"][1].as_f64().unwrap_or(0.0) - b0["min"][1].as_f64().unwrap_or(0.0));
+    assert!((dy - 8.0).abs() < 1e-6 || dy.abs() < 1e-6, "{b0} {b}");
+}
+
+#[test]
+fn a_design_with_a_jog_saves_and_reopens_as_it_was() {
+    let mut s = Session::default();
+    jog_plate(&mut s);
+    jog(&mut s, json!({"offset": 20, "position": "middle"})).unwrap();
+    let (v, f, b) = (volume(&mut s), flat(&mut s), bbox(&mut s));
+    let saved = s.doc.to_json();
+    assert!(saved.contains("\"sheet_jog\""), "the feature saves as a jog");
+    let mut t = Session::new(solidcraft_doc::Document::from_json(&saved).unwrap_or_else(|e| panic!("{e}")));
+    t.refresh();
+    assert!(t.model.results.iter().all(|r| r.error.is_none()), "{:?}", t.model.results);
+    assert!(rel(volume(&mut t), v) < 1e-9, "{} {v}", volume(&mut t));
+    assert_eq!(bbox(&mut t), b);
+    let g = flat(&mut t);
+    assert_eq!(g["flat_size_mm"], f["flat_size_mm"]);
+    assert_eq!(g["bends"], f["bends"]);
+    assert_eq!(t.doc.to_json(), saved);
+}
+
+/// A jog line extends across its panel, as a fold's does; when the side that moves is two tabs,
+/// the jog is refused, with the design as it was.
+#[test]
+fn a_jog_whose_moving_side_is_two_tabs_is_refused() {
+    let mut s = Session::default();
+    run(&mut s, "sheet.manage_rules", json!({"name": "Jog", "active": true, "thickness": "2 mm", "k_factor": 0.4, "bend_radius": "2 mm"}));
+    // A 120 x 60 plate with a 40 x 10 slot in from its x = 0 edge: two prongs there.
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Base"}));
+    run(&mut s, "sketch.line", json!({"points": [[0, 0], [120, 0], [120, 60], [0, 60], [0, 35], [40, 35], [40, 25], [0, 25]], "closed": true}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "sheet.flange", json!({"sketch": "Base"}));
+    let before = s.doc.to_json();
+    let e = jog(&mut s, json!({"offset": 20, "points": [[30, 0, 2], [30, 60, 2]]})).unwrap_err().to_string();
+    assert!(e.contains("not supported yet: a jog whose first bend splits the sheet into separate tabs"), "{e}");
+    assert_eq!(s.doc.to_json(), before);
+    // A line that ends inside the plate jogs it all the way across, as one along its full width.
+    let mut short = Session::default();
+    jog_plate(&mut short);
+    jog(&mut short, json!({"offset": 20, "points": [[50, 0, 2], [50, 30, 2]]})).unwrap();
+    let mut full = Session::default();
+    jog_plate(&mut full);
+    jog(&mut full, json!({"offset": 20})).unwrap();
+    assert_eq!(bbox(&mut short), bbox(&mut full));
+    assert_eq!(flat(&mut short)["bends"], flat(&mut full)["bends"]);
+}

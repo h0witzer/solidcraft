@@ -92,22 +92,11 @@ impl SurfaceSheet {
             "end" => span,
             o => return err(format!("unknown jog position `{o}` (start, middle or end)")),
         };
-        // Which way the side that moves lies from the line, as Fold chooses it: a fold of no
-        // radius and next to no angle, its zone next to nothing, so it fits wherever the jog does.
-        let (panel, n) = {
-            let mut probe = self.clone();
-            let j = probe.add_fold(a, b, 1e-3, 0.0, "start", flip, fixed)?;
-            let joint = probe.sheet.joints.get(j).ok_or_else(|| DocError::Invalid("jog".into()))?;
-            let n = (joint.b.origin - joint.a.origin).normalized().ok_or_else(|| DocError::Invalid("jog".into()))?;
-            (joint.a.panel, n)
-        };
-        let place = |s: &SurfaceSheet, p: usize| -> Result<solidcraft_develop::Rigid3> {
-            let dev = develop(&s.sheet, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
-            let folded = crate::sheet_surface_convert::fold_onto(&s.sheet, &dev, &s.places)?;
-            folded.places.get(p).copied().flatten().ok_or_else(|| DocError::Invalid("a panel of the jog has no place".into()))
-        };
+        // The panel the line lies on and the side that moves, as Fold chooses them: `n` points
+        // across the line toward that side, in the panel's chart.
+        let crate::sheet_surface_features::FoldLine { back: to_chart, n, .. } = self.fold_line(a, b, fixed)?;
         let on = |v: Vec2| Vec3::new(v.x, v.y, 0.0);
-        let nw = place(self, panel)?.vector(on(n));
+        let nw = to_chart.inverse().vector(on(n));
         // The first bend: its zone starts `back` short of the line, toward the side that stays. A
         // point on that side keeps it, wherever the line moved to.
         let (a1, b1) = (a - nw * back, b - nw * back);
@@ -126,10 +115,17 @@ impl SurfaceSheet {
             },
             None => return err("jog"),
         };
-        let at = place(self, wall_panel)?;
-        let start = from + n * wall;
+        let at = {
+            let dev = develop(&self.sheet, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
+            let folded = crate::sheet_surface_convert::fold_onto(&self.sheet, &dev, &self.places)?;
+            folded.places.get(wall_panel).copied().flatten().ok_or_else(|| DocError::Invalid("a panel of the jog has no place".into()))?
+        };
+        // Across the bend into the wall, in the wall's chart: an anchor's `b` panel lies on the
+        // right of its line ([`solidcraft_develop::Anchor`]).
+        let into = -along.perp();
+        let start = from + into * wall;
         let (a2, b2) = (at.point(on(start)), at.point(on(start + along * length)));
-        let keep = at.point(on(from + n * (wall / 2.0)));
+        let keep = at.point(on(from + into * (wall / 2.0)));
         let joints = self.sheet.joints.len();
         let second = self.add_fold(a2, b2, angle, radius, "start", !flip, Some(keep))?;
         if self.sheet.joints.len() != joints + 1 {
