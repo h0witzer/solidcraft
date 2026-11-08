@@ -1902,12 +1902,12 @@ fn flat_area_and_bends(s: &mut Session) -> (f64, Vec<f64>) {
 
 /// A tray made with this build's sheet metal converts back to the same tray: the walls that run
 /// on past their bends' ends (a notch, a tear) step down to the bend there, and a round relief's
-/// arc stays; also with the short walls made in a second feature, where the corners are notched
-/// or round (a torn butt corner is torn differently from one feature's corner).
+/// arc stays; also with the short walls made in a second feature, which closes its corners as
+/// one feature does.
 #[test]
 fn trays_of_its_own_sheet_metal_convert_back() {
     for shape in ["notch", "tear", "round"] {
-        for two in [false, true].into_iter().filter(|two| !(*two && shape == "tear")) {
+        for two in [false, true] {
             let what = format!("{shape}, {}", if two { "two features" } else { "one feature" });
             let (mut s, picks, mut source) = tray_round_trip(shape, two);
             let body = s.model.state().bodies.first().map(|b| b.name.clone()).unwrap_or_default();
