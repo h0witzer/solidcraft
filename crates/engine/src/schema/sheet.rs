@@ -453,6 +453,61 @@ pub struct PerforateParams {
     pub common: FeatureCommon,
 }
 
+/// What `direction` of a cross break must be: the handler's message and the contract's.
+pub const CROSS_BREAK_DIRECTION: &str = "`direction` must be up or down";
+
+/// Mark a cross break on a flat panel of a sheet metal body: two diagonal creases pressed corner
+/// to corner across the panel so that it bows a little and stiffens. They are the diagonals of
+/// the smallest rectangle round the panel's material in the flat, clipped to the panel, each
+/// `inset` short of its edge. Marks only: the creases are drawn on the model, listed in the flat
+/// pattern and written to the DXF (layers CROSS_BREAK_UP and CROSS_BREAK_DOWN); the B-rep, the
+/// outline and the volume stay as they are. One per panel. Makes no body.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct CrossBreakParams {
+    /// A point on the top or bottom face of the flat panel to mark (not on a bend or a rim).
+    pub face: Point3,
+    /// How far each crease stops short of the panel's edge, measured along the crease. Default 0.
+    #[serde(default)]
+    pub inset: Option<LengthExpr>,
+    /// How far the middle of the panel bows: recorded for the drawing and the press, not
+    /// modelled. Default 1 mm.
+    #[serde(default)]
+    pub depth: Option<LengthExpr>,
+    /// Which face the panel bows toward: `up` (its top face, the sheet's surface, the side up
+    /// bends turn to) or `down`. Default down.
+    #[serde(default)]
+    pub direction: Option<CrossBreakDirection>,
+    /// The sheet metal body. Default: the sheet with a flat panel face under `face`.
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(flatten, deserialize_with = "feature_common")]
+    pub common: FeatureCommon,
+}
+
+/// `up` or `down`, as the handler reads a cross break's `direction`, with its message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CrossBreakDirection(pub bool);
+
+impl<'de> Deserialize<'de> for CrossBreakDirection {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        match Value::deserialize(d)?.as_str() {
+            Some("up") => Ok(CrossBreakDirection(true)),
+            Some("down") => Ok(CrossBreakDirection(false)),
+            _ => Err(D::Error::custom(whole(CROSS_BREAK_DIRECTION))),
+        }
+    }
+}
+
+impl JsonSchema for CrossBreakDirection {
+    fn schema_name() -> Cow<'static, str> {
+        "CrossBreakDirection".into()
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"description": "Which face the panel bows toward: up (its top face) or down (the default).", "type": "string", "enum": ["up", "down"]})
+    }
+}
+
 /// Add hems: the sheet folded back on itself along edges. `participants` changes nothing.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]

@@ -1192,6 +1192,43 @@ pub(super) fn sheet_eval(
             tag_flanges(sh, n0, f.id);
             rebuild_sheet(st, i)
         }
+        FeatureKind::SheetCrossBreak { face, inset, depth, up, body } => {
+            let inset = match inset {
+                Some(e) => val(vals, e, Kind::Length)?,
+                None => 0.0,
+            };
+            let depth = match depth {
+                Some(e) => val(vals, e, Kind::Length)?,
+                None => 1.0,
+            };
+            // The named sheet, else each sheet in turn until one has a flat panel face under the
+            // pick. Marks only: the body stays as it is.
+            let candidates: Vec<usize> = match body {
+                Some(n) => vec![
+                    st.surface_sheets
+                        .iter()
+                        .position(|s| &s.body == n)
+                        .ok_or_else(|| DocError::Invalid(format!("`{n}` is not a sheet metal body")))?,
+                ],
+                None => (0..st.surface_sheets.len()).collect(),
+            };
+            let mut why = None;
+            for i in candidates {
+                let Some(mut sk) = st.surface_sheets.get(i).cloned() else { continue };
+                match sk.add_cross_break(f.id, face.0, inset, depth, *up) {
+                    Ok(_) => {
+                        if let Some(slot) = st.surface_sheets.get_mut(i) {
+                            *slot = sk;
+                        }
+                        return Ok(());
+                    }
+                    // A sheet the pick is on says why before one it is not on.
+                    Err(e) if why.is_none() || !e.to_string().contains(crate::CROSS_BREAK_OFF_PANEL) => why = Some(e),
+                    Err(_) => {}
+                }
+            }
+            Err(why.unwrap_or_else(|| DocError::Invalid(crate::CROSS_BREAK_OFF_PANEL.into())))
+        }
         FeatureKind::SheetUnfold { body, refold } => {
             if let Some(i) = surface_sheet_for(st, body, |s| s.unfolded == *refold) {
                 if let Some(sk) = st.surface_sheets.get_mut(i) {

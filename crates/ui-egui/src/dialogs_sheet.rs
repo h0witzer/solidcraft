@@ -1,5 +1,5 @@
 //! Sheet metal dialogs: Flange (base from profiles, edge flanges from picked edges, contour from
-//! open sketch lines; the picks decide which), Hem, Unfold and Refold, Convert to Sheet Metal,
+//! open sketch lines; the picks decide which), Hem, Cross Break, Unfold and Refold, Convert to Sheet Metal,
 //! Sheet Metal Rules (the rule manager) and Create Flat Pattern (a flat view of the part with
 //! its bend lines, the bend table and DXF export).
 
@@ -22,6 +22,10 @@ use crate::theme::Tokens;
 
 const PERFORATION_PATTERNS: [&str; 2] = ["staggered", "square"];
 const PERFORATION_LABELS: [&str; 2] = ["ui.perforate_staggered", "ui.perforate_square"];
+
+/// Which face a cross break bows toward (`direction`; the first is the default) and their labels.
+const CROSS_BREAK_DIRECTIONS: [&str; 2] = ["down", "up"];
+const CROSS_BREAK_DIRECTION_LABELS: [&str; 2] = ["ui.sheet_cross_break_down", "ui.sheet_cross_break_up"];
 
 const FOLD_POSITIONS: [&str; 4] = ["centerline", "start", "end", "mould"];
 const FOLD_POSITION_LABELS: [&str; 4] = ["Centerline", "Start of Bend", "End of Bend", "Outside Mould Line"];
@@ -72,6 +76,12 @@ crate::dialog_descriptor::dialog_descriptors! {
             gap: String = String::new() => gap.as_deref().map(str::to_string).unwrap_or_default(),
             flip: bool = false => *flip,
         } => json!({"length": length, "flip": flip});
+        CrossBreak("sheet.cross_break", "ui.sheet_cross_break_title", [("Face", PLANAR_FACES, false)],
+            FeatureKind::SheetCrossBreak { inset, depth, up, .. }) {
+            inset: String = "0 mm".into() => inset.as_deref().map_or_else(|| "0 mm".into(), str::to_string),
+            depth: String = "1 mm".into() => depth.as_deref().map_or_else(|| "1 mm".into(), str::to_string),
+            direction: usize = 0 => usize::from(*up),
+        } => json!({"inset": inset, "depth": depth, "direction": CROSS_BREAK_DIRECTIONS.get(*direction).copied().unwrap_or("down")});
         Fold("sheet.fold", "FOLD", [("Bend Line", AXES, false), ("Stationary Side", PLANAR_FACES, false)],
             FeatureKind::SheetFold { angle, radius, position, flip, .. }) {
             angle: String = "90 deg".into() => angle.to_string(),
@@ -391,6 +401,11 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut Vec<
             enter |= expr_row(ui, "Length", length);
             enter |= hint_row(ui, "ui.sheet_gap", gap, crate::i18n::tr_label("from the rule"));
             crate::ui_kit::options(ui, "sheet_options", &mut [("Flip", flip)]);
+        }
+        Sm::CrossBreak { inset, depth, direction } => {
+            enter |= expr_row(ui, "ui.sheet_cross_break_inset", inset);
+            enter |= expr_row(ui, "ui.depth", depth);
+            choice_row(ui, "ui.direction", "sm_cross_break_direction", direction, &CROSS_BREAK_DIRECTION_LABELS);
         }
         Sm::Fold { angle, radius, position, flip } => {
             choice_row(ui, "Bend Line Position", "sm_fold_pos", position, &FOLD_POSITION_LABELS);
@@ -809,6 +824,12 @@ pub fn commands(app: &SolveApp, k: &Sm, inputs: &[SelInput], extra: &Map<String,
             put(&mut p, &[("radius", radius)]);
             ("sheet.path_flange", p)
         }
+        Sm::CrossBreak { .. } => {
+            let Some(Sel::Face { body, point, .. }) = items(inputs, 0).first() else {
+                return Err("select the top or bottom face of a flat panel of the sheet".into());
+            };
+            ("sheet.cross_break", json!({"face": pt(*point), "body": body}))
+        }
         Sm::Perforate { margin, .. } => {
             let mut p = json!({});
             put(&mut p, &[("margin", margin)]);
@@ -969,6 +990,12 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
             }
             (Sm::simple_restore(kind)?, edges.iter().filter_map(|p| edge_sel(s, p.0)).collect())
         }
+        FeatureKind::SheetCrossBreak { face, body, .. } => {
+            if let Some(b) = body {
+                extra.insert("body".into(), json!(b));
+            }
+            (Sm::simple_restore(kind)?, face_sel(s, face.0).into_iter().collect())
+        }
         FeatureKind::SheetFold { sketch, curve, a, b, fixed, body, .. } => {
             if let Some(bd) = body {
                 extra.insert("body".into(), json!(bd));
@@ -1042,6 +1069,7 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
     let id = match &k {
         Sm::Flange { .. } => "sheet.flange",
         Sm::Hem { .. } => "sheet.hem",
+        Sm::CrossBreak { .. } => "sheet.cross_break",
         Sm::Perforate { .. } => "sheet.perforate",
         Sm::Unfold { refold: false } => "sheet.unfold",
         Sm::Unfold { .. } => "sheet.refold",
@@ -1258,6 +1286,16 @@ pub fn overlay(app: &mut SolveApp, painter: &egui::Painter, rect: Rect, d: &Dial
         let (dash, gap) = if l["line"] == "middle" { (8.0, 5.0) } else { (2.0, 3.0) };
         painter.extend(egui::Shape::dashed_line(&[to(a), to(e)], Stroke::new(1.6, t.text), dash, gap));
     }
+    // Cross breaks (#8345): the creases in the bends' colours for the way the panel bows, in
+    // shorter dashes than a bend line.
+    let cross_breaks: Vec<&Value> = v["cross_breaks"].as_array().into_iter().flatten().collect();
+    for c in &cross_breaks {
+        let col = if c["direction"] == "up" { up_col } else { down_col };
+        for line in c["lines"].as_array().into_iter().flatten() {
+            let (Some(a), Some(e)) = (read(&line[0]), read(&line[1])) else { continue };
+            painter.extend(egui::Shape::dashed_line(&[to(a), to(e)], Stroke::new(1.4, col), 3.0, 3.0));
+        }
+    }
     // Legend.
     let mut y = rect.top() + 14.0;
     painter.text(
@@ -1284,6 +1322,22 @@ pub fn overlay(app: &mut SolveApp, painter: &egui::Painter, rect: Rect, d: &Dial
             pos2(rect.left() + 44.0, y),
             Align2::LEFT_TOP,
             "Roll start and end (middle dashed)",
+            FontId::proportional(crate::theme::Tokens::get().font_body),
+            t.text_dim,
+        );
+    }
+    if !cross_breaks.is_empty() {
+        y += 20.0;
+        painter.extend(egui::Shape::dashed_line(
+            &[pos2(rect.left() + 14.0, y + 7.0), pos2(rect.left() + 38.0, y + 7.0)],
+            Stroke::new(1.4, t.text_dim),
+            3.0,
+            3.0,
+        ));
+        painter.text(
+            pos2(rect.left() + 44.0, y),
+            Align2::LEFT_TOP,
+            crate::i18n::tr_label("ui.sheet_cross_break_legend"),
             FontId::proportional(crate::theme::Tokens::get().font_body),
             t.text_dim,
         );

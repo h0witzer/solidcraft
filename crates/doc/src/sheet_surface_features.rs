@@ -907,6 +907,7 @@ impl SurfaceSheet {
                 return err("the fold's bend zone runs through a recess: not supported yet");
             }
         }
+        self.fold_cross_breaks(i, &side, ba, tol, &piece_at)?;
         for l in &mut self.loose {
             if l.panel != i {
                 continue;
@@ -1087,6 +1088,12 @@ impl SurfaceSheet {
             if let Some(o) = &mut p.outline {
                 *o = o.iter().map(r).collect();
             }
+        }
+        for c in &mut self.cross_breaks {
+            c.lines = c.lines.map(|(a, b)| (f(a), f(b)));
+        }
+        for c in &mut self.flat_cross_breaks {
+            c.lines = crate::sheet_surface_cross_break::left_to_right(c.lines.map(|(a, b)| (f(a), f(b))));
         }
     }
 

@@ -1,0 +1,74 @@
+{
+  "en": {
+    "cmd.sheet_cross_break": "Cross Break",
+    "help.sheet.cross_break": "Marks two diagonal creases corner to corner across a flat panel of a sheet, so the panel bows slightly and stiffens. Use it on large panels such as lids, backs and duct sides; the creases go to the flat pattern and its DXF on a layer of their own.",
+    "ui.sheet_cross_break_down": "Bows down",
+    "ui.sheet_cross_break_inset": "Inset",
+    "ui.sheet_cross_break_legend": "Cross break",
+    "ui.sheet_cross_break_title": "CROSS BREAK",
+    "ui.sheet_cross_break_up": "Bows up"
+  },
+  "ar": {
+    "cmd.sheet_cross_break": "ثني متقاطع",
+    "help.sheet.cross_break": "يضع علامة لثنيتين قطريتين من زاوية إلى زاوية عبر لوح مستوٍ من الصفيحة، فينحني اللوح قليلًا ويزداد صلابة. استخدمه للألواح الكبيرة مثل الأغطية والظهور وجوانب مجاري الهواء؛ وتظهر الثنيتان في النمط المسطح وملف DXF الخاص به على طبقة مستقلة.",
+    "ui.sheet_cross_break_down": "انحناء للأسفل",
+    "ui.sheet_cross_break_inset": "الإزاحة للداخل",
+    "ui.sheet_cross_break_legend": "ثني متقاطع",
+    "ui.sheet_cross_break_title": "ثني متقاطع",
+    "ui.sheet_cross_break_up": "انحناء للأعلى"
+  },
+  "de": {
+    "cmd.sheet_cross_break": "Kreuzbruch",
+    "help.sheet.cross_break": "Markiert zwei diagonale Knicke von Ecke zu Ecke über eine ebene Fläche eines Blechs, sodass sie sich leicht wölbt und steifer wird. Für große Flächen wie Deckel, Rückwände und Kanalseiten; die Knicke kommen auf eigener Ebene in die Abwicklung und ihre DXF.",
+    "ui.sheet_cross_break_down": "Wölbung nach unten",
+    "ui.sheet_cross_break_inset": "Einzug",
+    "ui.sheet_cross_break_legend": "Kreuzbruch",
+    "ui.sheet_cross_break_title": "KREUZBRUCH",
+    "ui.sheet_cross_break_up": "Wölbung nach oben"
+  },
+  "he": {
+    "cmd.sheet_cross_break": "קיפול צולב",
+    "help.sheet.cross_break": "מסמן שני קפלים אלכסוניים מפינה לפינה לרוחב לוח שטוח של הפח, כך שהלוח מתקמר מעט ומתקשח. השתמשו בו בלוחות גדולים כמו מכסים, גבים ודפנות תעלה; הקפלים מופיעים בפריסה השטוחה ובקובץ ה-DXF שלה בשכבה נפרדת.",
+    "ui.sheet_cross_break_down": "קימור למטה",
+    "ui.sheet_cross_break_inset": "היסט פנימה",
+    "ui.sheet_cross_break_legend": "קיפול צולב",
+    "ui.sheet_cross_break_title": "קיפול צולב",
+    "ui.sheet_cross_break_up": "קימור למעלה"
+  },
+  "ja": {
+    "cmd.sheet_cross_break": "クロスブレイク",
+    "help.sheet.cross_break": "シートの平らなパネルに角から角へ2本の対角の折り目を付け、パネルをわずかにたわませて剛性を高めます。蓋、背板、ダクト側面などの大きなパネルに使い、折り目は展開図とそのDXFに専用のレイヤーで出力されます。",
+    "ui.sheet_cross_break_down": "下へたわむ",
+    "ui.sheet_cross_break_inset": "インセット",
+    "ui.sheet_cross_break_legend": "クロスブレイク",
+    "ui.sheet_cross_break_title": "クロスブレイク",
+    "ui.sheet_cross_break_up": "上へたわむ"
+  },
+  "ko": {
+    "cmd.sheet_cross_break": "크로스 브레이크",
+    "help.sheet.cross_break": "판금의 평평한 패널에 모서리에서 모서리로 두 개의 대각선 주름을 표시해 패널이 약간 휘면서 강성이 높아지게 합니다. 덮개, 뒷판, 덕트 측면 같은 큰 패널에 사용하며, 주름은 전개도와 그 DXF에 별도 레이어로 들어갑니다.",
+    "ui.sheet_cross_break_down": "아래로 휨",
+    "ui.sheet_cross_break_inset": "안쪽 여유",
+    "ui.sheet_cross_break_legend": "크로스 브레이크",
+    "ui.sheet_cross_break_title": "크로스 브레이크",
+    "ui.sheet_cross_break_up": "위로 휨"
+  },
+  "vi": {
+    "cmd.sheet_cross_break": "Gân chéo (Cross Break)",
+    "help.sheet.cross_break": "Đánh dấu hai nếp gấp chéo từ góc đến góc trên một tấm phẳng của chi tiết tấm, để tấm hơi phồng lên và cứng hơn. Dùng cho các tấm lớn như nắp, tấm sau và thành ống gió; các nếp gấp được đưa vào hình khai triển và tệp DXF của nó trên một lớp riêng.",
+    "ui.sheet_cross_break_down": "Phồng xuống",
+    "ui.sheet_cross_break_inset": "Khoảng lùi",
+    "ui.sheet_cross_break_legend": "Gân chéo",
+    "ui.sheet_cross_break_title": "GÂN CHÉO",
+    "ui.sheet_cross_break_up": "Phồng lên"
+  },
+  "zh": {
+    "cmd.sheet_cross_break": "交叉压痕",
+    "help.sheet.cross_break": "在钣金的平面面板上从角到角压出两条对角折痕，使面板略微拱起并增加刚性。用于盖板、背板、风管侧板等大面板；折痕以单独图层输出到展开图及其 DXF。",
+    "ui.sheet_cross_break_down": "向下拱起",
+    "ui.sheet_cross_break_inset": "内缩",
+    "ui.sheet_cross_break_legend": "交叉压痕",
+    "ui.sheet_cross_break_title": "交叉压痕",
+    "ui.sheet_cross_break_up": "向上拱起"
+  }
+}

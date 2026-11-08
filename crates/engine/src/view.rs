@@ -925,6 +925,9 @@ fn build_scene(
     for line in s.isocurve_lines().iter().flat_map(|lines| lines.iter()) {
         sc.lines.push(SceneLine { points: line.points.clone(), color: p.isocurve, alpha: 1.0, width: 1.4, on_top: false });
     }
+    for (_, a, b) in sheet_markings(s) {
+        sc.lines.push(SceneLine { points: vec![a, b], color: p.edge, alpha: 1.0, width: 1.2, on_top: false });
+    }
     for ss in &st.sketches {
         let active = s.active_sketch == Some(ss.feature);
         if !sketch_shown(s, ss.feature) {
@@ -935,6 +938,29 @@ fn build_scene(
         }
     }
     Ok(sc)
+}
+
+/// The creases of the cross breaks (#8345) on the sheet bodies shown, as world segments with the
+/// body (world name) they mark: marks drawn over the panel's faces, not part of the body or its
+/// mesh.
+pub fn sheet_markings(s: &Session) -> Vec<(String, Vec3, Vec3)> {
+    let st = s.model.state();
+    if st.surface_sheets.iter().all(|sk| sk.cross_breaks.is_empty()) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for (world, own, frame) in s.body_frames().iter() {
+        let Some(sk) = st.surface_sheets.iter().find(|sk| sk.body == *own && !sk.cross_breaks.is_empty()) else { continue };
+        if !s.body_visible(world) {
+            continue;
+        }
+        out.extend(
+            sk.cross_break_segments()
+                .into_iter()
+                .map(|(a, b)| (world.clone(), solidcraft_doc::apply_point(frame, a), solidcraft_doc::apply_point(frame, b))),
+        );
+    }
+    out
 }
 
 /// Where the plane through `o` with normal `n` cuts a mesh: one segment per crossed triangle,

@@ -143,6 +143,8 @@ sheet_flange
   remap_bodies: body
 sheet_hem
   remap_bodies: body
+sheet_cross_break
+  remap_bodies: body
 sheet_perforate
   sketches: [1]
   remap_refs: sketch

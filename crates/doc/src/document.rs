@@ -1384,6 +1384,30 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         body: Option<BodyName>,
     },
+    /// Cross Break (#8345): two diagonal creases pressed corner to corner across one flat panel of
+    /// a sheet, so that it bows a little and stiffens. Marks on the panel, as a perforation field
+    /// is: kept in the panel's chart, listed on the flat and written to the DXF on their own
+    /// layers; the B-rep, the outline and the volume stay as they are
+    /// (`SurfaceSheet::add_cross_break`).
+    SheetCrossBreak {
+        /// A point on the panel's top or bottom face.
+        face: FacePick,
+        /// How far each crease stops short of the panel's edge, along the crease (default 0).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[walk(length = "Inset")]
+        inset: Option<Expr>,
+        /// How far the middle of the panel bows (default 1 mm): recorded for the drawing and the
+        /// press, not modelled.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[walk(length = "Depth")]
+        depth: Option<Expr>,
+        /// The panel bows toward its top face (the sheet's surface, the side up bends turn to);
+        /// else toward its bottom face.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        up: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        body: Option<BodyName>,
+    },
     /// A perforation field (#732): round holes of `diameter` on a staggered (60°) or square grid of `pitch` over the
     /// whole flat sheet, or inside the closed profiles of `sketch` when it is given, kept `margin` (default: the
     /// diameter) clear of its edges, cut-outs, bend zones and the outline. Stored like a cosmetic thread: the holes go
@@ -2649,6 +2673,7 @@ impl FeatureKind {
                 | FeatureKind::SheetContour { .. }
                 | FeatureKind::SheetFlange { .. }
                 | FeatureKind::SheetHem { .. }
+                | FeatureKind::SheetCrossBreak { .. }
                 | FeatureKind::SheetPerforate { .. }
                 | FeatureKind::SheetFold { .. }
                 | FeatureKind::SheetPath { .. }
@@ -2708,6 +2733,7 @@ impl FeatureKind {
             FeatureKind::SheetContour { .. } => "ContourFlangeFeature",
             FeatureKind::SheetFlange { .. } => "EdgeFlangeFeature",
             FeatureKind::SheetHem { .. } => "HemFeature",
+            FeatureKind::SheetCrossBreak { .. } => "CrossBreakFeature",
             FeatureKind::SheetPerforate { .. } => "PerforateFeature",
             FeatureKind::SheetFold { .. } => "FoldFeature",
             FeatureKind::SheetPath { .. } => "PathFlangeFeature",
@@ -2788,6 +2814,7 @@ impl FeatureKind {
             FeatureKind::SheetContour { .. } => "sheet_contour",
             FeatureKind::SheetFlange { .. } => "sheet_flange",
             FeatureKind::SheetHem { .. } => "sheet_hem",
+            FeatureKind::SheetCrossBreak { .. } => "sheet_cross_break",
             FeatureKind::SheetPerforate { .. } => "sheet_perforate",
             FeatureKind::SheetFold { .. } => "sheet_fold",
             FeatureKind::SheetPath { .. } => "sheet_path",
@@ -2874,6 +2901,7 @@ impl FeatureKind {
             "ContourFlangeFeature" => "sheet_contour",
             "EdgeFlangeFeature" => "sheet_flange",
             "HemFeature" => "sheet_hem",
+            "CrossBreakFeature" => "sheet_cross_break",
             "PerforateFeature" => "sheet_perforate",
             "FoldFeature" => "sheet_fold",
             "PathFlangeFeature" => "sheet_path",
@@ -2958,6 +2986,7 @@ impl FeatureKind {
             FeatureKind::SheetContour { .. } => "ContourFlange",
             FeatureKind::SheetFlange { .. } => "EdgeFlange",
             FeatureKind::SheetHem { .. } => "Hem",
+            FeatureKind::SheetCrossBreak { .. } => "CrossBreak",
             FeatureKind::SheetPerforate { .. } => "Perforate",
             FeatureKind::SheetFold { .. } => "Fold",
             FeatureKind::SheetPath { .. } => "PathFlange",

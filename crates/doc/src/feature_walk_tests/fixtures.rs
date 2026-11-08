@@ -148,6 +148,10 @@ pub(super) fn fixtures() -> Vec<(&'static str, Value)> {
         ),
         ("sheet_hem", json!({"type": "sheet_hem", "edges": [o], "length": "hem.length", "gap": "hem.gap"})),
         (
+            "sheet_cross_break",
+            json!({"type": "sheet_cross_break", "face": o, "inset": "cross_break.inset", "depth": "cross_break.depth", "up": true}),
+        ),
+        (
             "sheet_perforate",
             json!({
                 "type": "sheet_perforate", "diameter": "perforate.diameter", "pitch": "perforate.pitch", "margin": "perforate.margin",
@@ -254,8 +258,8 @@ pub(super) fn with_refs(name: &str, mut v: Value) -> Value {
     let extra = match name {
         "extrude" | "extrude_thin" | "revolve" | "sweep" | "sweep_options" | "pipe" | "coil" | "thicken" => json!({"targets": ["B"]}),
         "fillet_constant" | "fillet_chord" | "fillet_curvature" | "fillet_variable" | "fillet_spline" | "chamfer" | "shell" | "draft"
-        | "offset_face" | "delete_face" | "replace_face" | "sheet_flange" | "sheet_hem" | "sheet_perforate" | "sheet_path" | "sheet_unfold"
-        | "boss" | "lip" | "snap_fit" | "rest" | "surface_offset" => {
+        | "offset_face" | "delete_face" | "replace_face" | "sheet_flange" | "sheet_hem" | "sheet_cross_break" | "sheet_perforate" | "sheet_path"
+        | "sheet_unfold" | "boss" | "lip" | "snap_fit" | "rest" | "surface_offset" => {
             json!({"body": "B"})
         }
         "combine" => json!({"target": "B", "tools": ["B"]}),

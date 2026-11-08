@@ -85,6 +85,7 @@ pub mod sheet;
 mod sheet_flat_lineage;
 mod sheet_surface;
 mod sheet_surface_convert;
+mod sheet_surface_cross_break;
 mod sheet_surface_cuts;
 mod sheet_surface_features;
 mod sheet_surface_fold;
@@ -93,6 +94,7 @@ pub mod sketch_equation;
 pub use sheet_surface_convert::{
     ConvertRule, RollEdge, RollInfo, RollLine, SheetFaces, SurfaceBendLine, SurfaceConversion, SurfaceSheet, convert_surfaces,
 };
+pub use sheet_surface_cross_break::{CROSS_BREAK_IN_FOLD, CROSS_BREAK_OFF_PANEL, CROSS_BREAK_TWICE, CrossBreak};
 pub use sheet_surface_cuts::{Loose, Recess};
 pub mod text_params;
 pub mod thread_forms;

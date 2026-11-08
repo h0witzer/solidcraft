@@ -2172,6 +2172,13 @@ pub struct SurfaceSheet {
     /// Perforation fields (#732): holes on a grid over the flat, not cut into the body.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub perforations: Vec<crate::sheet::SheetPerforation>,
+    /// Cross breaks (#8345): creases marked on its flat panels, each in its panel's chart, not
+    /// pressed into the body.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cross_breaks: Vec<crate::CrossBreak>,
+    /// The cross breaks in the flat, as last laid out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub flat_cross_breaks: Vec<crate::CrossBreak>,
     /// The sketch lines that made the base panel's edges: each line's id and its ends in the
     /// panel's chart, so that the base's rims are named after them (`base:rim.l2`, see
     /// [`crate::sheet::FaceNamer`]) and a flange on one after it. Empty on a sheet made from no
@@ -2293,6 +2300,8 @@ impl SurfaceSheet {
             altered_by: None,
             face_names: Vec::new(),
             perforations: Vec::new(),
+            cross_breaks: Vec::new(),
+            flat_cross_breaks: Vec::new(),
             base_curves: Vec::new(),
             rims: Vec::new(),
         };
@@ -2440,6 +2449,8 @@ impl SurfaceSheet {
             altered_by: None,
             face_names: Vec::new(),
             perforations: Vec::new(),
+            cross_breaks: Vec::new(),
+            flat_cross_breaks: Vec::new(),
             base_curves,
             rims: Vec::new(),
         };
@@ -2474,8 +2485,8 @@ impl SurfaceSheet {
 
     /// The sheet with its flat as a flat pattern is read: seen from the sheet's surface, the side
     /// its up bends rise to. The panels' charts face the material, so the flat they lay out is
-    /// that view mirrored; here its regions, bends, roll lines, pockets and perforation outlines
-    /// are mirrored back (a base flange's flat is its sketch's outline as drawn).
+    /// that view mirrored; here its regions, bends, roll lines, pockets, perforation outlines and
+    /// cross breaks are mirrored back (a base flange's flat is its sketch's outline as drawn).
     pub fn shown(&self) -> SurfaceSheet {
         let f = |p: Vec2| Vec2::new(p.x, -p.y);
         let r = |g: &Region2| rigid_region(g, f);
@@ -2496,6 +2507,9 @@ impl SurfaceSheet {
             if let Some(o) = &mut p.outline {
                 *o = o.iter().map(r).collect();
             }
+        }
+        for c in &mut out.flat_cross_breaks {
+            c.lines = c.lines.map(|(a, b)| (f(a), f(b)));
         }
         out.labels = self.labels.iter().map(r).collect();
         out
@@ -2830,6 +2844,7 @@ impl SurfaceSheet {
                 Some(crate::sheet::SheetPocket { region: place.region(&r.region), z0, z1 })
             })
             .collect();
+        self.lay_out_cross_breaks(dev);
         Ok(())
     }
 }
