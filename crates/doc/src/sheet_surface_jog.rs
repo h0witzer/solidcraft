@@ -5,10 +5,10 @@
 //! flat keeps its size.
 
 use solidcore_record::{Vec2, Vec3};
-use solidcraft_develop::{JointKind, develop};
+use solidcraft_develop::JointKind;
 use solidcraft_geom::prelude::*;
 
-use crate::{DocError, Result, SurfaceSheet};
+use crate::{DocError, FoldSide, Result, SurfaceSheet};
 
 fn err<T>(msg: impl Into<String>) -> Result<T> {
     Err(DocError::Invalid(msg.into()))
@@ -49,20 +49,42 @@ fn min_shift(angle: f64, radius: f64, t: f64) -> f64 {
 }
 
 impl SurfaceSheet {
+    /// Which side of a jog's line from `a` to `b` stays put, decided once, when the jog is made,
+    /// as a fold decides it ([`Self::fold_side`]): the side `fixed` lies on, else the side with
+    /// more of the sheet joined to it.
+    pub(crate) fn jog_side(&self, a: Vec3, b: Vec3, step: JogStep<'_>, fixed: Option<Vec3>) -> Result<FoldSide> {
+        self.fold_side(a, b, step.angle, step.radius, "start", step.flip, fixed)
+    }
+
     /// A jog along the line from `a` to `b` (the body's coordinates) on a face of one of the
-    /// sheet's flat panels: the side that moves (the side away from `fixed`, or else the
-    /// smaller) bends by the step's angle, runs straight for a wall
+    /// sheet's flat panels: the side `stays` (left or right of the line as drawn, see
+    /// [`FoldSide`]) stays put, and the other bends by the step's angle, runs straight for a wall
     /// `L = (H − (2R + T)(1 − cos θ)) / sin θ` and bends back, so it lies `H` from where it was,
-    /// face to the same face. Two folds of [`Self::add_fold`]. Returns the second bend's joint;
-    /// an error leaves the sheet as it was.
-    pub(crate) fn add_jog(&mut self, a: Vec3, b: Vec3, step: JogStep<'_>, fixed: Option<Vec3>) -> Result<usize> {
+    /// face to the same face. Two folds of [`Self::add_fold`]; `made` is called after each, with
+    /// the sheet as it was before that fold and the fold's line, so each fold's new panels are
+    /// keyed as a fold's are. Returns the second bend's joint; an error leaves the sheet as it was.
+    pub(crate) fn add_jog(
+        &mut self,
+        a: Vec3,
+        b: Vec3,
+        step: JogStep<'_>,
+        stays: FoldSide,
+        made: &mut dyn FnMut(&mut SurfaceSheet, &SurfaceSheet, [Vec3; 2]),
+    ) -> Result<usize> {
         let mut work = self.clone();
-        let j = work.jog(a, b, step, fixed)?;
+        let j = work.jog(a, b, step, stays, made)?;
         *self = work;
         Ok(j)
     }
 
-    fn jog(&mut self, a: Vec3, b: Vec3, step: JogStep<'_>, fixed: Option<Vec3>) -> Result<usize> {
+    fn jog(
+        &mut self,
+        a: Vec3,
+        b: Vec3,
+        step: JogStep<'_>,
+        stays: FoldSide,
+        made: &mut dyn FnMut(&mut SurfaceSheet, &SurfaceSheet, [Vec3; 2]),
+    ) -> Result<usize> {
         let JogStep { offset, angle, radius, position, flip, .. } = step;
         if !(angle > 1e-6 && angle <= std::f64::consts::PI - 1e-6) {
             return err("the fold angle must be between 0 and 180°");
@@ -92,20 +114,21 @@ impl SurfaceSheet {
             "end" => span,
             o => return err(format!("unknown jog position `{o}` (start, middle or end)")),
         };
-        // The panel the line lies on and the side that moves, as Fold chooses them: `n` points
-        // across the line toward that side, in the panel's chart.
-        let crate::sheet_surface_features::FoldLine { back: to_chart, n, .. } = self.fold_line(a, b, fixed)?;
+        // The panel the line lies on, and `n` across the line toward the side that moves, in the
+        // panel's chart.
+        let (place, n) = self.fold_toward(a, b, angle, radius, flip, stays)?;
         let on = |v: Vec2| Vec3::new(v.x, v.y, 0.0);
-        let nw = to_chart.inverse().vector(on(n));
-        // The first bend: its zone starts `back` short of the line, toward the side that stays. A
-        // point on that side keeps it, wherever the line moved to.
+        let nw = place.vector(on(n));
+        // The first bend: its zone starts `back` short of the line, toward the side that stays.
+        // The shifted line runs the same way, so the same side of it stays.
         let (a1, b1) = (a - nw * back, b - nw * back);
-        let stays = (a1 + b1) * 0.5 - nw;
         let joints = self.sheet.joints.len();
-        let first = self.add_fold(a1, b1, angle, radius, "start", flip, Some(stays))?;
+        let before = self.clone();
+        let first = self.add_fold(a1, b1, angle, radius, "start", flip, stays)?;
         if self.sheet.joints.len() != joints + 1 {
             return err("not supported yet: a jog whose first bend splits the sheet into separate tabs");
         }
+        made(self, &before, [a1, b1]);
         // The second bends the wall the first made back the other way, `wall` past the first's
         // zone, on the wall's own chart (the panel's, cut), with the wall's side staying.
         let (wall_panel, from, along, length) = match self.sheet.joints.get(first) {
@@ -116,7 +139,7 @@ impl SurfaceSheet {
             None => return err("jog"),
         };
         let at = {
-            let dev = develop(&self.sheet, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
+            let dev = self.develop().map_err(|e| DocError::Invalid(e.to_string()))?;
             let folded = crate::sheet_surface_convert::fold_onto(&self.sheet, &dev, &self.places)?;
             folded.places.get(wall_panel).copied().flatten().ok_or_else(|| DocError::Invalid("a panel of the jog has no place".into()))?
         };
@@ -125,12 +148,16 @@ impl SurfaceSheet {
         let into = -along.perp();
         let start = from + into * wall;
         let (a2, b2) = (at.point(on(start)), at.point(on(start + along * length)));
+        // The wall's side stays: a point on it decides, as a fold's fixed point does.
         let keep = at.point(on(from + into * (wall / 2.0)));
+        let wall_stays = self.fold_side(a2, b2, angle, radius, "start", !flip, Some(keep))?;
         let joints = self.sheet.joints.len();
-        let second = self.add_fold(a2, b2, angle, radius, "start", !flip, Some(keep))?;
+        let before = self.clone();
+        let second = self.add_fold(a2, b2, angle, radius, "start", !flip, wall_stays)?;
         if self.sheet.joints.len() != joints + 1 {
             return err("not supported yet: a jog whose second bend splits the sheet into separate tabs");
         }
+        made(self, &before, [a2, b2]);
         Ok(second)
     }
 }

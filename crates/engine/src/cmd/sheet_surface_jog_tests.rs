@@ -307,3 +307,32 @@ fn a_jog_whose_moving_side_is_two_tabs_is_refused() {
     assert_eq!(bbox(&mut short), bbox(&mut full));
     assert_eq!(flat(&mut short)["bends"], flat(&mut full)["bends"]);
 }
+
+/// A jog decides which side stays as it is made and keeps it, as a fold does (#6748): made with
+/// no fixed point on the 120 x 60 plate along x = 50, the larger side (x > 50) stays and the jog
+/// stores that side, so the plate still reaches x = 120 and the smaller side steps in from x = 0.
+/// Given the other side (`stays`), the smaller side stays at x = 0 and the larger steps instead.
+#[test]
+fn a_jog_stores_the_side_that_stays_and_takes_the_other_when_asked() {
+    let line = json!([[50, 0, 2], [50, 60, 2]]);
+    let mut s = Session::default();
+    jog_plate(&mut s);
+    run(&mut s, "sheet.jog", json!({"points": line, "offset": 20}));
+    let side = match s.doc.features.last().map(|f| &f.kind) {
+        Some(solidcraft_doc::FeatureKind::SheetJog { stays, .. }) => *stays,
+        _ => None,
+    };
+    let side = side.unwrap_or_else(|| panic!("the jog stores no side"));
+    let x = |s: &mut Session| {
+        let b = bbox(s);
+        (b["min"][0].as_f64().unwrap_or(f64::NAN), b["max"][0].as_f64().unwrap_or(f64::NAN))
+    };
+    let (lo, hi) = x(&mut s);
+    assert!((hi - 120.0).abs() < 1e-6 && lo > 1.0, "{lo} {hi}");
+    let other = if side == solidcraft_doc::FoldSide::Left { "right" } else { "left" };
+    let mut o = Session::default();
+    jog_plate(&mut o);
+    run(&mut o, "sheet.jog", json!({"points": line, "offset": 20, "stays": other}));
+    let (lo, hi) = x(&mut o);
+    assert!(lo.abs() < 1e-6 && hi < 119.0, "{lo} {hi}");
+}
