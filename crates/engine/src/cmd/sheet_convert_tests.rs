@@ -1963,7 +1963,7 @@ fn a_bend_split_by_slots_across_it_converts_as_one_bend() {
                 picks.extend([[15.0, o - d, o - d], [100.0, o - d, o - d], [120.0 - o + d, 20.0, o - d], [120.0 - o + d, 75.0, o - d]]);
             }
             let body = s.model.state().bodies.first().map(|b| b.name.clone()).unwrap_or_default();
-            let out = s.execute("sheet.convert", &json!({"mode": "thicken", "body": body, "face": [60, 45, 0], "bends": picks, "rule": "T"}));
+            let out = s.execute("sheet.convert", &json!({"body": body, "face": [60, 45, 0], "bends": picks, "rule": "T"}));
             assert!(out.is_ok(), "{what}: {}", out.err().map(|e| e.to_string()).unwrap_or_default());
             let (v, size, (area, bends)) = (volume(&mut source), flat_size(&mut source), flat_area_and_bends(&mut source));
             let cutouts = flat(&mut source)["cutouts"].as_array().map(Vec::len);
