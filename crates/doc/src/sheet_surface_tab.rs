@@ -4,11 +4,11 @@
 //! follow, and no joint changes.
 
 use solidcore_record::{Loop2, Plane, Region2, Vec2, Vec3};
-use solidcraft_develop::{JointKind, Surface, develop};
+use solidcraft_develop::{JointKind, Surface};
 use solidcraft_geom::prelude::*;
 use solidcraft_kernel::BoolOp;
 
-use crate::sheet::{TAB_ADDS_NOTHING, TAB_APART, TAB_IN_BEND, TAB_OFF_SHEET, TAB_OVERLAPS};
+use crate::sheet::{TAB_ADDS_NOTHING, TAB_APART, TAB_IN_BEND, TAB_OFF_SHEET, TAB_OVERLAPS, TAB_SEVERAL};
 use crate::{DocError, Result, SurfaceSheet};
 
 fn err<T>(msg: impl Into<String>) -> Result<T> {
@@ -30,9 +30,10 @@ fn oriented(r: Region2) -> Region2 {
 
 impl SurfaceSheet {
     /// A tab: the closed `regions` of a sketch in `plane` join the flat panel whose face (either
-    /// side) the plane lies in, through the thickness. The first panel that takes them, when the
-    /// plane lies in the faces of several. Returns that panel's index; an error leaves the sheet as
-    /// it was.
+    /// side) the plane lies in, through the thickness. Where the plane lies in the faces of several
+    /// panels, the one panel that takes them; which is never a matter of the panels' order, so a
+    /// tab more than one would take is refused. Returns that panel's index; an error leaves the
+    /// sheet as it was.
     pub fn add_tab(&mut self, plane: &Plane, regions: &[Region2]) -> Result<usize> {
         if self.unfolded {
             return err("refold the sheet before adding a tab");
@@ -47,10 +48,11 @@ impl SurfaceSheet {
         if !all_finite || !plane_ok {
             return err(TAB_OFF_SHEET);
         }
-        let dev = develop(&self.sheet, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
+        let dev = self.develop().map_err(|e| DocError::Invalid(e.to_string()))?;
         let frames = crate::sheet_surface_cuts::frames(self, &dev)?;
         let t = self.thickness;
         let mut first = None;
+        let mut took: Vec<(usize, SurfaceSheet)> = Vec::new();
         for (i, (panel, frame)) in self.sheet.panels.iter().zip(&frames).enumerate() {
             let (Surface::Plane, Some(frame)) = (&panel.surface, frame) else { continue };
             let z = (plane.origin - frame.shift).dot(frame.z);
@@ -66,16 +68,20 @@ impl SurfaceSheet {
             let profile: Vec<Region2> = regions.iter().map(|r| oriented(crate::sheet_surface_convert::rigid_region(r, map))).collect();
             let mut work = self.clone();
             match work.tab_on(i, &profile) {
-                Ok(()) => {
-                    *self = work;
-                    return Ok(i);
-                }
+                Ok(()) => took.push((i, work)),
                 Err(e) => {
                     first.get_or_insert(e);
                 }
             }
         }
-        Err(first.unwrap_or_else(|| DocError::Invalid(TAB_OFF_SHEET.into())))
+        match <[(usize, SurfaceSheet); 1]>::try_from(took) {
+            Ok([(i, work)]) => {
+                *self = work;
+                Ok(i)
+            }
+            Err(took) if !took.is_empty() => err(TAB_SEVERAL),
+            Err(_) => Err(first.unwrap_or_else(|| DocError::Invalid(TAB_OFF_SHEET.into()))),
+        }
     }
 
     /// Joins `profile` (panel `i`'s chart) to panel `i`'s outline.
@@ -120,7 +126,7 @@ impl SurfaceSheet {
         }
         // Folded, what the tab adds must stay clear of the sheet's other pieces.
         let others = self.pieces_in_space().map(|(_, boxes)| boxes).unwrap_or_default();
-        let dev = develop(&self.sheet, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
+        let dev = self.develop().map_err(|e| DocError::Invalid(e.to_string()))?;
         if let Some(frame) = crate::sheet_surface_cuts::frames(self, &dev)?.get(i).copied().flatten() {
             let mut b = solidcraft_geom::Aabb3::EMPTY;
             for r in &added {
@@ -143,7 +149,7 @@ impl SurfaceSheet {
             p.region = one;
         }
         // Flat, the panel must not run onto another.
-        let dev = develop(&self.sheet, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
+        let dev = self.develop().map_err(|e| DocError::Invalid(e.to_string()))?;
         let pieces = crate::sheet_surface::pieces(&dev, &mut crate::sheet::FlatWork::new())?;
         let regions: Vec<Region2> = pieces.into_iter().map(|(_, r)| r).collect();
         let whole = crate::sheet::material_union(regions.clone(), &mut crate::sheet::FlatWork::new())?;

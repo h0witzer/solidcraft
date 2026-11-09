@@ -2,8 +2,9 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::{
-    ConvertParams, FixedPoint, FlangeEdges, FlangeParams, FlangePosition, FlangeTypeParam, FoldParams, FoldPoints, FoldPosition, HeightFromParam,
-    HemParams, PerforateParams, PerforationPattern, ReliefShapeParam, SheetPoints, TabParams, ThenSteps, UnfoldParams,
+    ConvertParams, FixedPoint, FlangeEdges, FlangeParams, FlangePosition, FlangeTypeParam, FoldParams, FoldPoints, FoldPosition, FoldStays,
+    HeightFromParam, HemParams, MaterialSide, MeasureBodyParams, PerforateParams, PerforationPattern, RecognizeParams, ReliefShapeParam, SheetPoints,
+    TabParams, ThenSteps, UnfoldParams,
 };
 use crate::Session;
 use crate::schema::features::FeatureResult;
@@ -66,9 +67,14 @@ fn schemas_and_the_key_check_agree() {
     );
     assert_keys(input_schema_for::<PerforateParams>(), &keys(&["body", "diameter", "margin", "pattern", "pitch", "profiles", "sketch"]));
     assert_keys(input_schema_for::<HemParams>(), &keys(&["body", "edges", "flip", "gap", "length"]));
-    assert_keys(input_schema_for::<FoldParams>(), &keys(&["angle", "body", "curve", "fixed", "flip", "points", "position", "radius", "sketch"]));
+    assert_keys(
+        input_schema_for::<FoldParams>(),
+        &keys(&["angle", "body", "curve", "fixed", "flip", "points", "position", "radius", "sketch", "stays"]),
+    );
     assert_keys(input_schema_for::<UnfoldParams>(), &keys(&["body"]));
-    assert_keys(input_schema_for::<ConvertParams>(), &keys(&["bends", "body", "face", "rule"]));
+    assert_keys(input_schema_for::<ConvertParams>(), &keys(&["bends", "body", "direction", "face", "faces", "rule", "skip"]));
+    assert_keys(input_schema_for::<RecognizeParams>(), &keys(&["bends", "body", "face", "new_rule", "rule", "skip"]));
+    assert_keys(input_schema_for::<MeasureBodyParams>(), &["body", "face"]);
 }
 
 fn parse<T: DeserializeOwned>(v: Value) -> Option<T> {
@@ -184,7 +190,9 @@ fn the_value_types_match_the_readers() {
     );
     words(&["outer", " Inner ", "TANGENT"], &[json!("sharp"), json!(""), json!(5)], &|v| parse::<HeightFromParam>(v).is_some());
     words(&["centerline", "Start", "END", "mould", "Mold"], &[json!("center"), json!("side"), json!(null)], &|v| parse::<FoldPosition>(v).is_some());
+    words(&["left", "Right", "LEFT"], &[json!("up"), json!(" left"), json!(""), json!(5), json!(null)], &|v| parse::<FoldStays>(v).is_some());
     words(&["notch", " Round ", "rectangular", "TEAR"], &[json!("oval"), json!(""), json!(5)], &|v| parse::<ReliefShapeParam>(v).is_some());
+    words(&["inside", "Outside", "INSIDE"], &[json!("both"), json!(""), json!(5)], &|v| parse::<MaterialSide>(v).is_some());
 }
 
 #[test]
@@ -227,6 +235,8 @@ fn strict_keeps_todays_errors() {
         ("sheet.convert", json!({"body": "Plate", "face": [50, 130, 2.5], "bends": [[1, 2]]})),
         ("sheet.convert", json!({"body": "Plate", "face": ""})),
         ("sheet.convert", json!({"body": "Plate", "face": true})),
+        ("sheet.convert", json!({"body": "Plate", "direction": "both"})),
+        ("sheet.convert", json!({"body": "Plate", "skip": [[50, 130, 2.5], ""]})),
     ] {
         let error = |level: ParamCheck| {
             let mut s = sheet();
@@ -333,7 +343,7 @@ fn replies_match_the_output_schema() {
     ] {
         ok(&mut s, id, p);
     }
-    let body = s.model.state().sheets.first().map(|sh| sh.body.clone()).unwrap_or_default();
+    let body = s.model.state().surface_sheets.first().map(|sh| sh.body.clone()).unwrap_or_default();
     check(ok(&mut s, "sheet.fold", json!({"sketch": "FoldLine", "curve": "fl", "position": "start", "flip": true, "body": body})));
     let mut s = warn();
     for (id, p) in [
@@ -533,11 +543,20 @@ fn sheet_with_tab_sketch(param_check: ParamCheck) -> Session {
 fn tab_replies_with_feature_result() {
     let schema = output_schema_for::<FeatureResult>();
     let schema = schema.as_value();
+    // The face's projected outline parts the drawn profile into regions: the exact region past the
+    // face's y = 60 edge, picked by a point in it (an index would be the regions' order).
+    let past = {
+        use solidcraft_geom::prelude::*;
+        let s = sheet_with_tab_sketch(ParamCheck::Warn);
+        let plane = s.model.state().sketches.last().map(|ss| ss.plane).unwrap_or_else(|| panic!("no sketch"));
+        let q = plane.to_local(solidcore_record::Vec3::new(50.0, 80.0, 2.5));
+        [q.x, q.y]
+    };
     for p in [
         json!({}),
         json!({"sketch": "Ear"}),
         json!({"sketch": "Ear", "profiles": "all", "body": "Body1", "name": "Ear tab"}),
-        json!({"sketch": "Ear", "profiles": [0], "exact_regions": true}),
+        json!({"sketch": "Ear", "profiles": [{"point": past}], "exact_regions": true}),
     ] {
         let mut s = sheet_with_tab_sketch(ParamCheck::Warn);
         let r = s.execute("sheet.tab", &p).unwrap_or_else(|e| panic!("{p}: {e}"));

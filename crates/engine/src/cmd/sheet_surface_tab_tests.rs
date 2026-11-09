@@ -131,6 +131,33 @@ fn a_tab_on_a_folded_wall_and_tabs_that_are_refused() {
     refused(&mut s, json!({"sketch": "Ear"}), "refold the sheet");
 }
 
+/// Which panel a tab joins is never a matter of the panels' or sheets' order (#6748): two plates
+/// side by side in one plane, 10 mm apart, and a profile over the gap touching both is refused,
+/// with the design as it was; one touching only the second joins the second.
+#[test]
+fn a_tab_two_sheets_would_take_is_refused() {
+    let mut s = Session::default();
+    run(&mut s, "sheet.manage_rules", json!({"name": "S2", "thickness": "2 mm", "bend_radius": "2 mm", "k_factor": "0.4", "active": true}));
+    for (name, x0) in [("A", 0.0), ("B", 110.0)] {
+        run(&mut s, "sketch.create", json!({"plane": "XY", "name": name}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0": [x0, 0.0], "p1": [x0 + 100.0, 60.0]}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "sheet.flange", json!({"sketch": name}));
+    }
+    assert_eq!(s.model.state().bodies.len(), 2);
+    let before = volume(&mut s);
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 2], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "Both"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [95, 20], "p1": [115, 40]}));
+    run(&mut s, "sketch.finish", json!({}));
+    refused(&mut s, json!({"sketch": "Both"}), solidcraft_doc::sheet::TAB_SEVERAL);
+    run(&mut s, "sketch.create", json!({"plane": {"origin": [0, 0, 2], "x_dir": [1, 0, 0], "y_dir": [0, 1, 0]}, "name": "One"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [200, 20], "p1": [230, 40]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let r = run(&mut s, "sheet.tab", json!({"sketch": "One"}));
+    assert_eq!(r["changed_bodies"], json!(["Body2"]));
+    assert!((volume(&mut s) - before - 20.0 * 20.0 * 2.0).abs() < 1e-6, "{}", volume(&mut s) - before);
+}
+
 #[test]
 fn hostile_tab_params_never_panic() {
     let mut s = Session::default();
