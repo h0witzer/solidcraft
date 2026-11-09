@@ -74,7 +74,7 @@ fn corner_join_overlap_changes_the_surface_outline_not_a_flat_copy() {
                     rip.curves =
                         (vec![Seg2::Line { a: rip.edges.0[0], b: rip.edges.0[1] }], vec![Seg2::Line { a: rip.edges.1[0], b: rip.edges.1[1] }]);
                 }
-                let dev = develop(&sheet, 0).unwrap();
+                let dev = develop(&sheet, &[(0, Rigid2::IDENTITY)]).unwrap();
                 let (a, b) = lap.cuts(turn, T);
                 let first = &dev.panels[0].as_ref().unwrap().region;
                 let second = &dev.panels[1].as_ref().unwrap().region;
@@ -111,7 +111,7 @@ fn corner_join_overlap_refuses_invalid_lengths_and_degenerate_corners() {
         let mut sheet = bracket(bend(FRAC_PI_2, Datum::Sharp, (0.0, 100.0)));
         let kind = rip_along(&sheet.joints[0], 100.0, turn, lap);
         sheet.joints[0].kind = kind;
-        assert!(matches!(develop(&sheet, 0), Err(DevelopError::Joint(0, _))), "{turn}: {lap:?}");
+        assert!(matches!(develop(&sheet, &[(0, Rigid2::IDENTITY)]), Err(DevelopError::Joint(0, _))), "{turn}: {lap:?}");
     }
 }
 
