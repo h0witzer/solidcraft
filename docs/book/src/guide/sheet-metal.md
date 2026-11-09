@@ -11,17 +11,19 @@ and selected when the active body is a sheet), and builds parts from a sheet of 
 - **Cross Break** (`sheet.cross_break`) marks two diagonal creases across a flat panel, so a large
   panel bows a little and stiffens; it changes no geometry (see below).
 - **Unfold / Refold** (`sheet.unfold`, `sheet.refold`) for working on the flat part.
-- **Convert** (`sheet.convert`) turns a body into sheet metal from its faces: every face becomes
-  a panel, with no face fixed; sharp edges are cut open but the ones picked as bends. The sheet
+- **Convert** (`sheet.convert`) turns surfaces into sheet metal: the faces of a solid, of a
+  surface body, or of one side of a shell or a plate. Every face becomes a panel, with no face
+  fixed; sharp edges are cut open but the ones picked as bends. The sheet
   is the rule's, as your tooling makes it: the rule's thickness, its bends at the rule's radius
   and its corners with the rule's reliefs, whatever a vendor's file has. A cylinder modelled
   between two flat faces is a bend while its inside radius is short of 10^0.7 (about 5)
   thicknesses, where DIN 6935 puts the neutral fiber halfway through the sheet, and a roll from
   there; other cylinders and cones are rolls, which keep their own radius. A roll's flat pattern
   has its lines where it starts and ends and halfway between, and the DXF draws them on a `ROLL`
-  layer. Its **Thicken** mode (`mode: thicken`)
-  turns a plate of constant thickness into sheet metal from a fixed face, or, with bend edges, a
-  solid or a shelled body.
+  layer. The sheet is every face of the body but the ones skipped (`skip`), or the faces picked
+  (`face`, `faces`) and every face a bend joins to them. A surface body has no thickness of its
+  own: its faces are the sheet's surface, with the rule's thickness on the side `direction`
+  says.
 - **Create Flat Pattern** (`sheet.flat_pattern`) shows the flat part with its bend lines and a
   bend table, and exports it as DXF or a bend-table CSV through the save picker.
 
@@ -273,9 +275,10 @@ open with a warning. Side-edge setbacks on curved panels or on only part of an e
 a cut-out are not supported yet. The edge connecting a panel to its existing bend is not a
 free edge. See `examples/regressions/sheet-side-flange-corner.json` for a small reproduction.
 
-**Thicken** (Convert's `mode: thicken`) also takes a solid or a shelled body: pick the face that
-stays fixed and the sharp edges that become bends (`bends`; Bend Edges in the dialog). The flat
-faces reached from the fixed face across those edges become the sheet. A shelled body keeps its walls and their
+**Picked faces** (Convert's `face` and `faces`; Faces in the dialog) take a solid, a surface body
+or a shelled body: pick a face of the sheet and the sharp edges that become bends (`bends`; Bend
+Edges in the dialog). The flat faces reached from the picked face across those edges become the
+sheet. A shelled body keeps its walls and their
 thickness; any other solid's faces become the outside of the sheet, with the rule's thickness
 taken into the body. Each sharp edge stays where the faces of its bend would meet, so the part
 keeps its envelope and the flat pattern is the outside lengths less a bend deduction per bend,
@@ -294,7 +297,7 @@ the flat pattern is the one your tooling makes; from five thicknesses on it is a
 result is an
 ordinary sheet body: edge flanges, cuts, Unfold, the flat pattern and its exports work on it,
 and it follows the solid when a parameter changes (the edges and the fixed face are found by
-their names). Without bend edges Thicken expects a plate, as before. Either way round walls
+their names). Without bend edges the sheet is the picked face, a plate. Either way round walls
 (holes, slot ends, rounded corners, notches) stay circles and arcs in the flat pattern and the
 DXF, also where a STEP file writes one in pieces, and the holes and slots of every face of the
 sheet are its cut-outs, where the bends put them. An engraving in a face of the sheet (a recess
@@ -319,7 +322,7 @@ any pocket, so fold or flange clear of an engraving.
 ```json
 {"command":"solid.box","params":{"length":100,"width":60,"height":30,"body_name":"Tray"}}
 {"command":"solid.shell","params":{"faces":[[50,30,30]],"thickness":2}}
-{"command":"sheet.convert","params":{"body":"Tray","mode":"thicken","face":[50,30,0],
+{"command":"sheet.convert","params":{"body":"Tray","face":[50,30,0],
  "bends":[[50,0,0],[100,30,0],[50,60,0],[0,30,0]]}}
 ```
 
@@ -508,12 +511,14 @@ off, and each stops `inset` short of the panel's edge, measured along the crease
 side up bends turn to) or `down` (the default), and `depth` how far its middle bows (default
 1 mm), for the drawing and the press. It is a marking, like a perforation field: the body, its
 outline and its volume do not change. The creases are drawn on the panel in the view, listed in
-Create Flat Pattern (`cross_breaks`, in flat coordinates with their panel, direction and depth),
+Create Flat Pattern (`cross_breaks`, in flat coordinates with their panel's key, direction and
+depth),
 drawn dashed on the flat pattern page, and written to the DXF as lines on `CROSS_BREAK_UP` or
 `CROSS_BREAK_DOWN`. They stay with their panel when the sheet is unfolded and refolded, and when
 a fold elsewhere moves the panel. A panel takes one cross break; a pick off every flat panel face
 (on a bend, a rim or off the sheet) is refused, and so is a later fold whose bend zone would run
-through the creases.
+through the creases. With no `body`, a pick on the faces of two sheets at once is refused too:
+name the body.
 
 ```json
 {"command":"sheet.cross_break","params":{"face":[150,100,2],"inset":"5 mm","direction":"down"}}

@@ -11,7 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 use solidcore_record::{Loop2, Vec2, Vec3};
-use solidcraft_develop::{Development, Surface, develop};
+use solidcraft_develop::{Development, Surface};
 use solidcraft_geom::prelude::*;
 
 use crate::sheet_surface::Piece;
@@ -22,6 +22,8 @@ pub const CROSS_BREAK_OFF_PANEL: &str =
     "a cross break needs a point on the top or bottom face of a flat panel of the sheet (not on a bend, a rim or off the sheet)";
 /// The panel already carries one.
 pub const CROSS_BREAK_TWICE: &str = "this panel already has a cross break";
+/// A cross break whose pick lies on the faces of two sheets at once.
+pub const CROSS_BREAK_SEVERAL: &str = "not supported yet: a cross break picked on the faces of two sheets at once; name the sheet's body";
 /// A fold whose bend zone crosses a cross break's creases.
 pub const CROSS_BREAK_IN_FOLD: &str = "the fold's bend zone runs through a cross break: not supported yet";
 
@@ -62,7 +64,7 @@ impl SurfaceSheet {
         if !(pick.x.is_finite() && pick.y.is_finite() && pick.z.is_finite()) {
             return Err(DocError::Invalid(CROSS_BREAK_OFF_PANEL.into()));
         }
-        let dev = develop(&self.sheet, 0).map_err(|e| DocError::Invalid(e.to_string()))?;
+        let dev = self.develop().map_err(|e| DocError::Invalid(e.to_string()))?;
         let (panel, outline) = self.panel_under(&dev, pick)?;
         if self.cross_breaks.iter().any(|c| c.panel == panel) {
             return Err(DocError::Invalid(CROSS_BREAK_TWICE.into()));
@@ -128,32 +130,36 @@ impl SurfaceSheet {
             .collect();
     }
 
-    /// The name of a cross break's panel (`base`, a flange's, a fold's), for the flat pattern's
+    /// The key of a cross break's panel (what made it, see `Panel::name`), for the flat pattern's
     /// listing.
     pub fn cross_break_panel(&self, c: &CrossBreak) -> String {
         self.sheet.panels.get(c.panel).map(|p| p.name.clone()).unwrap_or_default()
     }
 
-    /// What a fold across panel `panel` does to its cross break: one wholly past the fold's zone
-    /// (`side` of a point at least `ba`) goes to the panel that moves (`piece_at`), one wholly on
-    /// the fixed side stays, and one the zone runs through is refused.
+    /// What a fold across panel `panel` would do to its cross breaks: one wholly past the fold's
+    /// zone (`side` of a point at least `ba`) goes to the piece that moves there (`piece_at`), as
+    /// each one's index and that piece's panel; one wholly on the side that stays stays, and one
+    /// the zone runs through is refused.
     pub(crate) fn fold_cross_breaks(
-        &mut self,
+        &self,
         panel: usize,
         side: impl Fn(Vec2) -> f64,
         ba: f64,
         tol: f64,
-        piece_at: impl Fn(Vec2) -> usize,
-    ) -> Result<()> {
-        for c in self.cross_breaks.iter_mut().filter(|c| c.panel == panel) {
+        piece_at: impl Fn(Vec2) -> Option<usize>,
+    ) -> Result<Vec<(usize, usize)>> {
+        let mut out = Vec::new();
+        for (k, c) in self.cross_breaks.iter().enumerate().filter(|(_, c)| c.panel == panel) {
             let s: Vec<f64> = c.lines.iter().flat_map(|(a, b)| [side(*a), side(*b)]).collect();
             if s.iter().all(|x| *x >= ba - tol) {
-                c.panel = piece_at(c.lines[0].0);
+                if let Some(p) = piece_at(c.lines[0].0) {
+                    out.push((k, p));
+                }
             } else if !s.iter().all(|x| *x <= tol) {
                 return Err(DocError::Invalid(CROSS_BREAK_IN_FOLD.into()));
             }
         }
-        Ok(())
+        Ok(out)
     }
 
     /// The creases of every cross break in the body's coordinates, a hair off the top face and
@@ -163,7 +169,7 @@ impl SurfaceSheet {
         if self.cross_breaks.is_empty() {
             return Vec::new();
         }
-        let Ok(dev) = develop(&self.sheet, 0) else { return Vec::new() };
+        let Ok(dev) = self.develop() else { return Vec::new() };
         let Ok(frames) = crate::sheet_surface_cuts::frames(self, &dev) else { return Vec::new() };
         let t = self.thickness;
         let lift = (t * 0.01).clamp(1e-3, 0.05);

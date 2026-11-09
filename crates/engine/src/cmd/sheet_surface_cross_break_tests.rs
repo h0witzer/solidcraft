@@ -119,6 +119,7 @@ fn inside(s: &Session, p: solidcore_record::Vec3) -> bool {
 fn cross_break_marks_the_diagonals_in_the_flat_pattern_and_dxf() {
     let mut s = Session::default();
     outline_blank(&mut s, json!([[0, 0], [300, 0], [300, 200], [0, 200]]));
+    let base = s.doc.features.last().map(|f| f.id).unwrap_or_default();
     let (before, volume_before, outline_before) = (run(&mut s, "inspect.measure", json!({})), volume(&mut s), flat(&mut s)["outline"].clone());
     run(&mut s, "sheet.cross_break", json!({"face": [150, 100, 0.8], "inset": "5 mm"}));
     let f = flat(&mut s);
@@ -130,7 +131,8 @@ fn cross_break_marks_the_diagonals_in_the_flat_pattern_and_dxf() {
     assert_eq!(listed.len(), 1, "{}", f["cross_breaks"]);
     assert_eq!(listed[0].0, "down", "bows down by default");
     assert!(listed[0].1.len() == 2 && want.iter().all(|w| listed[0].1.iter().any(|l| close(l, w))), "{:?}", listed[0].1);
-    assert_eq!(f["cross_breaks"][0]["panel"], "base");
+    // Listed by its panel's key: the base flange's panel is its feature's.
+    assert_eq!(f["cross_breaks"][0]["panel"], json!(format!("F{base}")));
     assert_eq!(f["cross_breaks"][0]["depth"].as_f64(), Some(1.0), "the default depth");
     let d = dxf(&mut s, json!({}));
     let creases = dxf_lines_on(&d, "CROSS_BREAK_DOWN");
@@ -179,9 +181,9 @@ fn cross_break_stays_with_its_panel_through_unfold_and_reopen() {
     assert_eq!(flat(&mut reopened)["cross_breaks"][0]["depth"].as_f64(), Some(2.0));
 }
 
-/// A cross break on a folded wall, not the base: it marks that panel (named after the edge it
-/// stands on), lies on the wall's part of the flat corner to corner, and is drawn on the wall's
-/// faces in the view. The body does not change.
+/// A cross break on a folded wall, not the base: it marks that panel (keyed by the flange and the
+/// base panel's rim it stands on), lies on the wall's part of the flat corner to corner, and is
+/// drawn on the wall's faces in the view. The body does not change.
 #[test]
 fn a_cross_break_on_a_flanges_wall_marks_that_panel() {
     let mut s = Session::default();
@@ -190,9 +192,11 @@ fn a_cross_break_on_a_flanges_wall_marks_that_panel() {
     let wall_flat = flat(&mut s);
     run(&mut s, "sheet.cross_break", json!({"face": [50, y0, 25]}));
     let f = flat(&mut s);
-    let wall = s.model.state().surface_sheets.first().and_then(|sk| sk.sheet.panels.get(1)).map(|p| p.name.clone()).unwrap_or_default();
-    assert!(wall.starts_with('F') && wall.contains(".base."), "{wall}");
-    assert_eq!(f["cross_breaks"][0]["panel"], json!(wall));
+    let ids: Vec<u64> = s.doc.features.iter().map(|f| f.id).collect();
+    let (base, flange) = (ids[ids.len() - 3], ids[ids.len() - 2]);
+    let wall = f["cross_breaks"][0]["panel"].as_str().unwrap_or_default().to_string();
+    assert!(wall.starts_with(&format!("F{flange}/F{base}/side.")), "{wall}");
+    assert!(s.model.state().surface_sheets.first().is_some_and(|sk| sk.sheet.panels.iter().any(|p| p.name == wall)), "{wall}");
     // In the flat the wall lies past the base's y = 0 edge and its bend: both creases run there,
     // from one end of the wall to the other.
     let listed = cross_break_lines(&f);
