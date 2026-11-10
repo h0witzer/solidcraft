@@ -2,7 +2,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::{
-    BendTableFormatParam, BendTableParams, BendTableResult, ConvertParams, DxfCurvesParam, DxfLayersParam, DxfNoteHeight, DxfTextParam,
+    BendTableFormatParam, BendTableParams, BendTableResult, ConvertParams, DxfCurvesParam, DxfLayersParam, DxfNoteHeight, DxfTextParam, DxfUnitsParam,
     ExportDxfParams, ExportDxfResult, FixedPoint, FlangeEdges, FlangeParams, FlangePosition, FlangeTypeParam, FlatPatternParams, FlatPatternResult,
     FoldParams, FoldPoints, FoldPosition, FoldStays, HeightFromParam, HemParams, MaterialSide, MeasureBodyParams, PathFlangeParams, PerforateParams,
     PerforationPattern, RecognizeParams, ReliefShapeParam, SheetEdgePoint, SheetPoints, ThenSteps, UnfoldParams,
@@ -224,6 +224,12 @@ fn the_value_types_match_the_readers() {
     words(&["roles", "ROLES", "single", "Single"], &[json!("one"), json!("0"), json!(""), json!(5), json!(null)], &|v| {
         parse::<DxfLayersParam>(v).is_some()
     });
+    words(&["mm", "MM", "inches", "Inches"], &[json!("in"), json!("inch"), json!("feet"), json!(" mm"), json!(""), json!(25.4), json!(null)], &|v| {
+        parse::<DxfUnitsParam>(v).is_some()
+    });
+    for w in ["mm", "MM", "inches", "Inches"] {
+        assert_eq!(parse::<DxfUnitsParam>(json!(w)).map(|u| u.0), crate::cmd::dxf_units(w), "{w}");
+    }
     for w in ["exact", "EXACT", "arcs", "Arcs"] {
         assert_eq!(parse::<DxfCurvesParam>(json!(w)).map(|c| c.0), crate::cmd::dxf_curves(w), "{w}");
     }
@@ -253,6 +259,7 @@ fn the_value_types_match_the_readers() {
         (input_schema_for::<DxfCurvesParam>(), "^([Ee][Xx][Aa][Cc][Tt]|[Aa][Rr][Cc][Ss])$"),
         (input_schema_for::<DxfTextParam>(), "^([Cc][Uu][Tt]|[Ee][Tt][Cc][Hh])$"),
         (input_schema_for::<DxfLayersParam>(), "^([Rr][Oo][Ll][Ee][Ss]|[Ss][Ii][Nn][Gg][Ll][Ee])$"),
+        (input_schema_for::<DxfUnitsParam>(), "^([Mm][Mm]|[Ii][Nn][Cc][Hh][Ee][Ss])$"),
     ] {
         assert_eq!(ty.as_value()["pattern"], want);
     }
@@ -299,6 +306,7 @@ fn strict_keeps_todays_errors() {
         ("sheet.export_bend_table", json!({"format": " csv", "body": "Nothing"})),
         ("sheet.export_bend_table", json!({"format": "JSON", "body": "Nothing"})),
         // A DXF export reads its words and its note height before it looks for a sheet.
+        ("sheet.export_dxf", json!({"units": "feet"})),
         ("sheet.export_dxf", json!({"curves": "arc"})),
         ("sheet.export_dxf", json!({"curves": " exact"})),
         ("sheet.export_dxf", json!({"text": "engrave"})),
