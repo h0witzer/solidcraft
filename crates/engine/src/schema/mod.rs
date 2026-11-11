@@ -101,6 +101,7 @@ pub mod plastic;
 pub mod plugin;
 pub mod point_cloud;
 pub mod print_face;
+pub mod print_unfold;
 pub mod render;
 pub mod render_bindings;
 pub mod render_camera;

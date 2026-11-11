@@ -74,7 +74,27 @@ fn schemas_and_the_key_check_agree() {
         &keys(&["angle", "body", "curve", "fixed", "flip", "points", "position", "radius", "sketch", "stays"]),
     );
     assert_keys(input_schema_for::<UnfoldParams>(), &keys(&["body"]));
-    assert_keys(input_schema_for::<ConvertParams>(), &keys(&["bends", "body", "direction", "engrave", "face", "faces", "rule", "skip"]));
+    assert_keys(
+        input_schema_for::<ConvertParams>(),
+        &keys(&[
+            "bends",
+            "body",
+            "direction",
+            "engrave",
+            "face",
+            "faces",
+            "print_clearance",
+            "print_filament",
+            "print_film",
+            "print_fold",
+            "print_joint",
+            "print_press",
+            "print_splits",
+            "print_wall",
+            "rule",
+            "skip",
+        ]),
+    );
     assert_keys(input_schema_for::<RecognizeParams>(), &keys(&["bends", "body", "face", "new_rule", "rule", "skip"]));
     assert_keys(input_schema_for::<MeasureBodyParams>(), &["body", "face"]);
     assert_keys(input_schema_for::<PathFlangeParams>(), &keys(&["body", "curves", "edge", "radius", "sketch"]));

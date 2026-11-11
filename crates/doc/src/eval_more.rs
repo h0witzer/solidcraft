@@ -1331,7 +1331,10 @@ pub(super) fn sheet_eval(
             let engrave: Vec<Vec3> = engrave.iter().map(|p| p.0).collect();
             convert_to_sheet(doc, vals, f, st, warning, body, rule, bends, crate::SheetFaces::AllBut(&skip), &engrave, direction)
         }
-        FeatureKind::SheetConvert { body, face, faces, rule, bends, engrave, direction } => {
+        FeatureKind::SheetConvert { print_fold: true, .. } => {
+            Err(DocError::Invalid("a foldable print is not made from the surface sheet yet (see sheet_print_fold)".into()))
+        }
+        FeatureKind::SheetConvert { body, face, faces, rule, bends, engrave, direction, .. } => {
             let picked: Vec<Vec3> = std::iter::once(face.0).chain(faces.iter().map(|p| p.0)).collect();
             let engrave: Vec<Vec3> = engrave.iter().map(|p| p.0).collect();
             convert_to_sheet(doc, vals, f, st, warning, body, rule, bends, crate::SheetFaces::Picked(&picked), &engrave, direction)

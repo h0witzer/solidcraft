@@ -22,6 +22,13 @@ use crate::{DocError, Document, Result};
 mod face_names;
 pub use crate::sheet_surface_convert::bend_edge_names;
 pub use face_names::body_sheet_face_names;
+#[path = "sheet_print_fold.rs"]
+mod print_fold;
+pub use print_fold::{
+    DEFAULT_CHANNEL_TOLERANCE, DEFAULT_FILAMENT, DEFAULT_FILM, DEFAULT_JOINT_WALL, DEFAULT_NUB_HEIGHT, DEFAULT_NUB_RADIUS, DEFAULT_PRINT_CLEARANCE,
+    DEFAULT_SEGMENTS, FOLD_JOINT_ANGLES, FilamentCut, FoldCore, FoldEnd, FoldFilament, MIN_FINGER_WIDTH, PressFit, PrintFilament, PrintFold,
+    PrintJoint, finger_count, fold_core,
+};
 pub(crate) use face_names::{FaceNamer, FaceRole, carried, ranked, rims};
 
 /// The most work one sheet's flat may take (see [`FlatWork`]).
