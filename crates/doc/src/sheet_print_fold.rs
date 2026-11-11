@@ -37,6 +37,16 @@ pub fn finger_count(segments: u32, len: f64) -> u32 {
     segments.min(fit).max(2.min(segments.max(1)))
 }
 
+/// The least two panels of a foldable print that lie side by side in the flat stay apart where
+/// their fingers lean toward each other (mm): a line of a 0.4 mm nozzle, so they print apart.
+pub const FINGER_FLAT_GAP: f64 = 0.4;
+
+/// A loose piece of a foldable print smaller than this is a crumb its cuts left, and is dropped (mm³).
+pub const CRUMB: f64 = 5.0;
+
+/// A corner fill smaller than this share of a cube of the wall's thickness is a fin, and is left out.
+pub const FIN: f64 = 0.15;
+
 /// The default wall round the channel or the nub of a joint on a bend, inside its fingers (mm):
 /// two lines of a 0.4 mm nozzle.
 pub const DEFAULT_JOINT_WALL: f64 = 0.8;
@@ -184,6 +194,34 @@ impl PrintFilament {
     pub fn side(&self) -> f64 {
         self.diameter + self.tolerance
     }
+}
+
+/// Sockets along a straight edge of a hole through a face of a foldable print, the edge from
+/// `a` to `b` (the body's coordinates): the hole's wall there is printed as a part of its own
+/// (a carved-out group of Unfold for Printing), and fingers of it stand in the face along
+/// `fingers` (stretches from `a`, mm). The face is notched for each, a wall and the clearance
+/// deep, with a dimple for a press-fit nub in both sides of each notch, or with `filament` a
+/// channel along the edge through what is left of the face there.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PrintSocket {
+    pub a: Vec3,
+    pub b: Vec3,
+    pub fingers: Vec<(f64, f64)>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub filament: bool,
+}
+
+/// Where a hole wall `len` long has its fingers in the face it meets (from the edge's first end):
+/// every other stretch of the edge split as a joint's is, never the first or the last, so the
+/// corners of the hole stay the face's. An edge too short for three stretches of
+/// [`MIN_FINGER_WIDTH`] gets three narrower ones from 9 mm on, and none below.
+pub fn socket_fingers(len: f64) -> Vec<(f64, f64)> {
+    if !(len.is_finite() && len >= 9.0) {
+        return Vec::new();
+    }
+    let n = finger_count(DEFAULT_SEGMENTS, len).max(3);
+    let each = len / f64::from(n);
+    (0..n).filter(|k| k % 2 == 1 && k + 1 < n).map(|k| (f64::from(k) * each, f64::from(k + 1) * each)).collect()
 }
 
 /// A filament joint's cuts in one panel of the flat: the open edge from `a` to `b` on the

@@ -25,9 +25,9 @@ pub use face_names::body_sheet_face_names;
 #[path = "sheet_print_fold.rs"]
 mod print_fold;
 pub use print_fold::{
-    DEFAULT_CHANNEL_TOLERANCE, DEFAULT_FILAMENT, DEFAULT_FILM, DEFAULT_JOINT_WALL, DEFAULT_NUB_HEIGHT, DEFAULT_NUB_RADIUS, DEFAULT_PRINT_CLEARANCE,
-    DEFAULT_SEGMENTS, FOLD_JOINT_ANGLES, FilamentCut, FoldCore, FoldEnd, FoldFilament, MIN_FINGER_WIDTH, PressFit, PrintFilament, PrintFold,
-    PrintJoint, finger_count, fold_core,
+    CRUMB, DEFAULT_CHANNEL_TOLERANCE, DEFAULT_FILAMENT, DEFAULT_FILM, DEFAULT_JOINT_WALL, DEFAULT_NUB_HEIGHT, DEFAULT_NUB_RADIUS,
+    DEFAULT_PRINT_CLEARANCE, DEFAULT_SEGMENTS, FIN, FINGER_FLAT_GAP, FOLD_JOINT_ANGLES, FilamentCut, FoldCore, FoldEnd, FoldFilament, MIN_FINGER_WIDTH,
+    PressFit, PrintFilament, PrintFold, PrintJoint, PrintSocket, finger_count, fold_core, socket_fingers,
 };
 pub(crate) use face_names::{FaceNamer, FaceRole, carried, ranked, rims};
 
