@@ -176,7 +176,7 @@
    }
   },
   {
-   "command": "sheet.convert",
+   "command": "sheet.recognize",
    "params": {
     "body": "Angle",
     "rule": "Rule"

@@ -4715,7 +4715,7 @@
    }
   },
   {
-   "command": "sheet.convert",
+   "command": "sheet.recognize",
    "params": {
     "body": "8512-channel",
     "rule": "Steel"

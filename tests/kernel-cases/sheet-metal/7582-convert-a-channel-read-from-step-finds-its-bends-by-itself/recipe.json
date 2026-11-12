@@ -97,7 +97,7 @@
    }
   },
   {
-   "command": "sheet.convert",
+   "command": "sheet.recognize",
    "params": {
     "body": "7582-channel",
     "rule": "T"
