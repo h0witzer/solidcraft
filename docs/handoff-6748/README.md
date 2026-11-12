@@ -86,3 +86,27 @@ cases, oracle) are copied here. UI runs skip `progressive_image_controls_route_t
   cuts and fix there if it fails.
 - Open on main, all flat-model: #15357 (segment junction reliefs), #15296 and #14758 (flat
   pattern cut-out booleans).
+
+## Probe results on this head (desktop, after the handoff was written)
+Ran: holes, schema replies, loft, every contour test, ball cuts (engine, with eprintln at each
+`return Ok(Vec::new())` in `surface_hole_cut`; that instrumentation is NOT on the branch).
+- Contour generator, first run: `a_contour_flange_rolls_a_tangent_arc_at_its_own_radius`,
+  `a_contour_flange_of_one_half_turn_is_a_half_pipe`, `contour_flange_hem_and_tray` and
+  `an_edge_flange_is_the_contour_flange_of_its_l` PASS.
+  - `a_contour_flange_along_an_elliptical_arc_flattens_to_its_neutral_length` FAILS: "a piece
+    of the flat pattern has no place on the folded sheet" (the spline panel's folding: develop
+    fold.rs / fitted.rs `param`, or sheet_surface_fold's free-form caps).
+  - Main's ported `contour_flange_takes_tangent_arcs_and_develops_their_bends` FAILS at its half
+    pipe's `flat_size_mm[0]`: our flat lays the developed length along y (flat is [100, 173.573],
+    and pi * 55.25 = 173.573 is right). Port the assert to read the developed side whatever its
+    axis (as `contour_flat` sorts the sides); its numbers stay.
+- Holes: `schema::sheet::...replies_match_the_output_schema` (both) bail at `surface_hole_cut`'s
+  `if out.recesses.iter().any(|r| r.panel == p) || !out.sheet.cuts.is_empty()`: a hole (here the
+  bore into the rim) is refused on any panel that has a pocket; the schema test's sheet has one.
+  Fix: refuse only where the hole meets a pocket's region (exact), not the whole panel.
+  `holes_in_a_contour_flanges_end_panels...` did NOT bail there; still failing at its round
+  cut-out check in a foot: look at the contour generator's foot panels (flat placement) first.
+- Loft through Recognize: "sew: ambiguous edge contact" (Recognize on the shelled hopper with three
+  bends): investigate Recognize's sew.
+- Ball cuts on a roll's face: still main's kernel check (B-spline with coincident control
+  points). `a_ball_through_a_roll_is_cut_where_it_turns_edge_on` passes.
