@@ -664,6 +664,10 @@ pub struct ModelState {
     /// picks its pieces were named by (by feature id, see [`crate::lineage::order_legacy_lumps`]):
     /// the state stands for the feature only while those picks are the same.
     legacy_picks: BTreeMap<u64, u64>,
+    /// Each extrude that cut or intersected a sheet made from surfaces, as drawn (by feature id):
+    /// its sketch plane and the interval along the plane's normal it ran over. A pocket it leaves
+    /// is as deep as the extrude ran from the panel's face (see `sheet_surface_cuts`).
+    cut_extents: BTreeMap<u64, (Plane, (f64, f64))>,
 }
 
 /// How a piece a join split off into a body of its own (`Touching::Separate`) touched the
@@ -2970,9 +2974,19 @@ fn absorb_sheet_cuts(
     };
     // What isn't a cut is always weighed: material the sheet doesn't show (a join into a bend)
     // is caught there.
-    for (i, absorbed) in crate::sheet_surface_cuts::absorb(before, after, f, weigh || !cuts)? {
+    let drawn = after.cut_extents.get(&f.id).copied();
+    for (i, absorbed) in crate::sheet_surface_cuts::absorb(before, after, f, weigh || !cuts, drawn.as_ref())? {
         let (mut sk, built) = match absorbed {
             crate::sheet_surface_cuts::Absorbed::Read(sk, built) => (*sk, built),
+            // An intersect keeps what lies in its tool and takes the rest: refused, it says so in
+            // the words a flat-first sheet uses for machining it can't keep.
+            crate::sheet_surface_cuts::Absorbed::Refused(why)
+                if cuts && matches!(&f.kind, FeatureKind::Extrude { operation: Operation::Intersect, .. }) =>
+            {
+                return Err(DocError::Invalid(format!(
+                    "{why}; this sheet machining cannot be preserved in its flat material: use a parallel extrude, or unfold the sheet before intersecting"
+                )));
+            }
             crate::sheet_surface_cuts::Absorbed::Refused(why) if cuts => return Err(DocError::Invalid(why)),
             crate::sheet_surface_cuts::Absorbed::Refused(_) => {
                 // Its body is no longer as it built it: what it said of the body's faces is gone.
@@ -3112,6 +3126,26 @@ fn intersection_tool_union(tools: Vec<Traced>) -> Result<Vec<Traced>> {
         return Ok(tools);
     }
     Ok(vec![union_all(&tools.iter().collect::<Vec<_>>())?])
+}
+
+/// Refuses a cut or intersect of `tools` that would change the sheet's body `body`, for machining
+/// the sheet can't keep: a cut that meets the body changes it, as does an intersect whose tools
+/// leave some of it out.
+fn sheet_boolean_unchanged(body: &Body, tools: &[Body], op: Operation) -> Result<()> {
+    let united;
+    let tools: &[Body] = if op == Operation::Intersect {
+        united = intersection_tool_union(tools.iter().cloned().map(Traced::unnamed).collect())?.into_iter().map(|t| t.body).collect::<Vec<_>>();
+        &united
+    } else {
+        tools
+    };
+    let test = if op == Operation::Cut { BoolOp::Intersect } else { BoolOp::Cut };
+    for tool in tools {
+        if kernel::boolean(body, tool, test)?.is_some() {
+            return Err(DocError::Invalid("this sheet machining cannot be preserved in its flat material: use a parallel, untapered extrude pocket/cut, or unfold before intersecting; unsupported 3D sheet machining is refused to prevent material restoration".into()));
+        }
+    }
+    Ok(())
 }
 
 /// The union of `operands` (traced bodies) in one kernel call, keeping their lineage.
@@ -5337,6 +5371,10 @@ fn feature_tools_with_constructor(
                         None => 0.0,
                     };
                 extrude_within_reach([base, base + sign * len])?;
+                // A tapered tool is never trimmed: its caps lie at the ends of this interval, as
+                // drawn. A tapered cut of a sheet made from surfaces is read by where they lie (see
+                // `surface_taper_refused`).
+                *constructor = Some(ExtrudeConstructor { plane: ss.plane, interval: (base, base + sign * len) });
                 let start_plane = ss.plane.offset(base);
                 let caps = [
                     Some(crate::lineage::extrude_cap_role(base)),
@@ -7407,6 +7445,27 @@ fn eval_feature(
             let mut constructor = None;
             let mut to_body = None;
             let tools = feature_tools_with_constructor(doc, vals, f, st, &mut constructor, &mut to_body, warning)?;
+            // An extrude that cuts a sheet made from surfaces leaves pockets as deep as it was drawn,
+            // and none of a layer thinner than the extrusion resolution.
+            if matches!(operation, Operation::Cut | Operation::Intersect)
+                && matches!(f.kind, FeatureKind::Extrude { .. })
+                && !st.surface_sheets.is_empty()
+                && let Some(c) = &constructor
+            {
+                let reach: Vec<_> = tools.iter().map(|t| more::exact_box(&t.body)).collect();
+                more::surface_thin_layer_refused(st, &reach, &c.plane, c.interval, &crate::plain(targets))?;
+                st.cut_extents.insert(f.id, (c.plane, c.interval));
+            }
+            // A tapered cut's walls are not square to a sheet made from surfaces: refused where it
+            // stops inside a flat panel's thickness, and an intersect where it changes one. A
+            // tapered cut through the sheet goes on to be read as its shadow.
+            if matches!(operation, Operation::Cut | Operation::Intersect)
+                && matches!(&f.kind, FeatureKind::Extrude { extent, .. } if extent.taper.is_some())
+                && !st.surface_sheets.is_empty()
+            {
+                let bodies: Vec<Body> = tools.iter().map(|t| t.body.clone()).collect();
+                more::surface_taper_refused(st, &bodies, constructor.as_ref(), &crate::plain(targets), *operation)?;
+            }
             // A cut square through flat panels of sheets made from surfaces goes into their outlines.
             if *operation == Operation::Cut && matches!(f.kind, FeatureKind::Extrude { .. }) && !st.surface_sheets.is_empty() {
                 let bodies: Vec<Body> = tools.iter().map(|t| t.body.clone()).collect();

@@ -978,6 +978,9 @@ pub(super) fn sheet_eval(
             };
             let sh = st.surface_sheets.get_mut(i).ok_or_else(|| DocError::Invalid("sheet".into()))?;
             sh.perforations.push(crate::sheet::SheetPerforation { feature: f.id, diameter: d, pitch, margin, square, from_right: false, outline });
+            // It keeps clear of the bends the sheet has now; a bend made later runs through it.
+            let joints = sh.sheet.joints.len();
+            sh.perforation_joints.push((f.id, joints));
             Ok(())
         }
         FeatureKind::SheetHem { edges, length, gap, flip, body }
@@ -1446,6 +1449,63 @@ pub(super) fn surface_prism_cut(
     Ok(handled)
 }
 
+/// Refuses a tapered extrude cut (or intersect) that changes a sheet made from surfaces it targets
+/// (#6748) where the sheet can't keep it, as the flat model refuses it:
+///
+/// - a cut that stops inside a flat panel's thickness: a cap of the extrude (an end of the
+///   interval `constructor` says it was drawn over) lies strictly between the faces of a flat
+///   panel parallel to its plane, in a panel a tool reaches by their exact boxes. Its walls are
+///   not square to the sheet, and read back only its floor would show: the panel would keep a
+///   pocket at its floor's size;
+/// - an intersect: what it keeps has walls that are not square to the sheet.
+///
+/// Any other tapered cut goes on to the reader as an untapered one does (see
+/// `sheet_surface_cuts`): one through the sheet has walls from face to face, and the reader cuts
+/// it as its shadow, square through as a shop cuts it, as it cuts a hole at a slant. A cut beside
+/// the sheet changes nothing. Where the extrude's interval isn't known, a cut is refused wherever
+/// it changes the sheet.
+pub(super) fn surface_taper_refused(
+    st: &ModelState,
+    tools: &[Body],
+    constructor: Option<&ExtrudeConstructor>,
+    targets: &[String],
+    op: Operation,
+) -> Result<()> {
+    let all = targets.len() == 1 && targets.first().is_some_and(|t| t == "*");
+    let reach: Vec<Option<Aabb3>> = tools.iter().map(exact_box).collect();
+    for sk in st.surface_sheets.iter().filter(|sk| all || targets.is_empty() || targets.contains(&sk.body)) {
+        let Some(mb) = st.body(&sk.body) else { continue };
+        if op == Operation::Cut && constructor.is_some_and(|c| !stops_inside(sk, &reach, &c.plane, c.interval)) {
+            continue;
+        }
+        super::sheet_boolean_unchanged(&mb.body, tools, op)?;
+    }
+    Ok(())
+}
+
+/// Whether an extrude drawn on `plane` over `interval` (along the plane's normal) stops inside a
+/// flat panel of `sk` that a tool reaches (`reach`: the tools' boxes): a cap of it strictly between
+/// the panel's faces, parallel to them. Past a rounding of the numbers its depths come from, a cap
+/// within a few units in the last place of a face is on it (see [`surface_thin_layer_refused`]).
+/// Where the sheet's pieces can't be placed, it is taken to stop inside one.
+fn stops_inside(sk: &crate::SurfaceSheet, reach: &[Option<Aabb3>], plane: &Plane, interval: (f64, f64)) -> bool {
+    let Some((panels, boxes)) = sk.pieces_in_space() else { return true };
+    let n = plane.normal();
+    let t = sk.thickness;
+    panels.iter().any(|(p, frame, _)| {
+        if frame.z.cross(n).len() > 1e-9 {
+            return false;
+        }
+        // The panel's faces along the normal.
+        let s0 = (frame.shift - plane.origin).dot(n);
+        let s1 = s0 + t * frame.z.dot(n);
+        let (p0, p1) = (s0.min(s1), s0.max(s1));
+        let ulps = 4.0 * f64::EPSILON * (frame.shift.len() + plane.origin.len() + interval.0.abs() + interval.1.abs() + t);
+        [interval.0, interval.1].into_iter().any(|cap| cap - p0 > ulps && p1 - cap > ulps)
+            && boxes.iter().any(|(k, b)| *k == Some(*p) && reach.iter().any(|r| !boxes_apart(r, &Some(*b))))
+    })
+}
+
 /// What the drills of hole feature `f` take from the sheets made from surfaces they reach, of the
 /// bodies the hole cuts (see [`takes_part`]) (#6748): a drill square across a flat panel, through
 /// its thickness and clear inside its material, is a round hole in its outline; one along a flat
@@ -1744,6 +1804,51 @@ pub(super) enum PrimitivePrism {
 /// tells (see [`crate::SurfaceSheet::labels`]).
 const MAX_TEXT_CURVES: usize = 20_000;
 const MAX_LABELS: usize = 1000;
+
+/// Refuses an extrude drawn on `plane` over `interval` (along the plane's normal) that would leave,
+/// in a flat panel it reaches (`reach`: the tools' boxes) of a sheet made from surfaces, a layer
+/// thinner than the extrusion resolution: the material it keeps or takes, or what it leaves
+/// beside either face. Past a rounding of the numbers its depths come from, a cap within a few
+/// units in the last place of a face is on it. The boolean doesn't resolve such a layer, so the
+/// sheet would keep what the cut took or lose what it kept; the extrude's own interval shows it.
+pub(super) fn surface_thin_layer_refused(
+    st: &ModelState,
+    reach: &[Option<Aabb3>],
+    plane: &Plane,
+    interval: (f64, f64),
+    targets: &[String],
+) -> Result<()> {
+    let n = plane.normal();
+    let (lo, hi) = (interval.0.min(interval.1), interval.0.max(interval.1));
+    let all = targets.len() == 1 && targets.first().is_some_and(|t| t == "*");
+    for sk in st.surface_sheets.iter().filter(|sk| all || targets.is_empty() || targets.contains(&sk.body)) {
+        let Some((panels, boxes)) = sk.pieces_in_space() else { continue };
+        let t = sk.thickness;
+        for (p, frame, _) in &panels {
+            if frame.z.cross(n).len() > 1e-9 {
+                continue;
+            }
+            // The panel's faces along the normal, and the part of them the extrude spans.
+            let s0 = (frame.shift - plane.origin).dot(n);
+            let s1 = s0 + t * frame.z.dot(n);
+            let (p0, p1) = (s0.min(s1), s0.max(s1));
+            let (z0, z1) = (lo.max(p0), hi.min(p1));
+            if z1 <= z0 {
+                continue;
+            }
+            let ulps = 4.0 * f64::EPSILON * (frame.shift.len() + plane.origin.len() + lo.abs() + hi.abs() + t);
+            if ![z0 - p0, p1 - z1, z1 - z0].into_iter().any(|d| d > ulps && d < 1e-6) {
+                continue;
+            }
+            if boxes.iter().any(|(k, b)| *k == Some(*p) && reach.iter().any(|r| !boxes_apart(r, &Some(*b)))) {
+                return Err(DocError::Invalid(
+                    "sheet machining depth is below the supported 0.000001 mm extrusion resolution; increase the layer depth".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// The exact box of `body`, grown by twice its tolerance: bodies whose boxes are apart do not
 /// meet. None when it can't be worked out.

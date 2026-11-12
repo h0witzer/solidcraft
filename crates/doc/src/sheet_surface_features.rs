@@ -39,6 +39,26 @@ fn straight(e: &FreeEdge) -> Result<(Vec2, Vec2, Vec2)> {
     Ok((e.a, e.b, d))
 }
 
+/// A turn sharper than this (its sine) between two edges of an outline is a corner. The outline is
+/// the sheet's own curves, not chords of them, so edges that meet smoothly (a line running on into
+/// an arc, an arc into another) turn only by round-off: any turn above it, however small, is a
+/// corner.
+const CORNER_TURN: f64 = 1e-6;
+
+/// Where two edges of an outline meet at a corner, read from the edges' own tangents.
+fn outline_corners(outline: &Loop2) -> Vec<Vec2> {
+    let segs = &outline.segs;
+    let mut corners = Vec::new();
+    for (i, next) in segs.iter().enumerate() {
+        let Some(prev) = segs.get((i + segs.len() - 1) % segs.len()) else { continue };
+        let (t0, t1) = (prev.end_tangent(), next.start_tangent());
+        if t0.cross(t1).abs() > CORNER_TURN || t0.dot(t1) < 0.0 {
+            corners.push(next.start());
+        }
+    }
+    corners
+}
+
 impl SurfaceSheet {
     /// The free edge of the sheet nearest the point `p` (the body's coordinates), on a face of a
     /// planar panel or its rim: one no joint runs along. `None` when no such edge is within twice
@@ -97,7 +117,7 @@ impl SurfaceSheet {
             }
         }
         if bent <= reach && best.as_ref().is_none_or(|(x, _)| bent < *x) {
-            return err("that is a bend line, not a free edge of the sheet: pick a free edge");
+            return err("that edge is the bend line of a flange; pick a free edge of the sheet");
         }
         Ok(best.map(|(_, e)| e))
     }
@@ -302,15 +322,19 @@ impl SurfaceSheet {
         })
     }
 
-    /// Moves the edge `a`–`b` of panel `i` `by` mm outward (inward where negative): the panel
-    /// gains, or loses, the strip between. At each end the line of the outline beside the edge
-    /// is followed to the edge's new line (on a slanted edge the strip is a parallelogram); where
-    /// that line is round, or runs nearly along the edge, the end moves square to it.
-    fn move_edge(&mut self, i: usize, (a, b, d): (Vec2, Vec2, Vec2), by: f64) -> Result<()> {
+    /// Moves the edge `a`–`b` of panel `i` `by` mm outward (inward where negative), its bend
+    /// starting `start` mm inside it: the panel gains, or loses, the strip between. At each end
+    /// the line of the outline beside the edge is followed to the edge's new line (on a slanted
+    /// edge the strip is a parallelogram); where it runs nearly along the edge, the end moves
+    /// square to it; where it is round, the strip runs square from where the round crosses the
+    /// bend's start (see `round_ends`), taking all of the round between the two lines.
+    fn move_edge(&mut self, i: usize, (a, b, d): (Vec2, Vec2, Vec2), by: f64, start: f64) -> Result<()> {
         if by.abs() <= 1e-9 {
             return Ok(());
         }
-        let (p, q) = self.moved_ends(i, (a, b, d), by);
+        let (p, q) = self.moved_ends(i, (a, b, d), by, start);
+        let (r0, r1) = self.round_ends(i, (a, b, d), start);
+        let (a, b) = (a + d * r0.unwrap_or(0.0), b + d * r1.unwrap_or(0.0));
         let panel = self.sheet.panels.get(i).ok_or_else(|| DocError::Invalid("panel".into()))?;
         let strip = if by > 0.0 { [a, b, q, p] } else { [p, q, b, a] };
         let strip = Region2 { outer: Loop2::polygon(&strip).ccw(), holes: Vec::new() };
@@ -327,13 +351,83 @@ impl SurfaceSheet {
     }
 
     /// Where the ends of the edge `a`–`b` of panel `i` land with the edge moved `by` mm outward
-    /// (inward where negative): at each end the line of the outline beside the edge is followed
-    /// to the edge's new line; where that line is round, or runs nearly along the edge, the end
-    /// moves square to it.
-    fn moved_ends(&self, i: usize, (a, b, d): (Vec2, Vec2, Vec2), by: f64) -> (Vec2, Vec2) {
+    /// (inward where negative), its bend starting `start` mm inside it: at each end the line of
+    /// the outline beside the edge is followed to the edge's new line; where it runs nearly along
+    /// the edge, the end moves square to it; where it is round, the end lies square across from
+    /// where the round crosses the bend's start (see `round_ends`).
+    fn moved_ends(&self, i: usize, (a, b, d): (Vec2, Vec2, Vec2), by: f64, start: f64) -> (Vec2, Vec2) {
         let out = Vec2::new(d.y, -d.x);
         let (k0, k1) = self.edge_slants(i, (a, b, d));
-        (a + d * (k0 * by) + out * by, b + d * (k1 * by) + out * by)
+        let (r0, r1) = self.round_ends(i, (a, b, d), start);
+        (a + d * r0.unwrap_or(k0 * by) + out * by, b + d * r1.unwrap_or(k1 * by) + out * by)
+    }
+
+    /// At each end of the edge `a`–`b` (way `d`) of panel `i` where the outline beside it is
+    /// round, how far along the edge from that end the outline, followed from the end round the
+    /// corner, first crosses the line `start` mm inside the edge, where the edge's bend starts:
+    /// a bend set in from an edge between rounded corners starts as wide as the plate is there,
+    /// the rounds the blank's outline down to it, and its sides carry on square from there.
+    /// `None` at an end beside a straight edge, where the bend starts on the edge, or where the
+    /// outline turns on past the line without crossing it on lines and arcs.
+    fn round_ends(&self, i: usize, (a, b, d): (Vec2, Vec2, Vec2), start: f64) -> (Option<f64>, Option<f64>) {
+        let Some(panel) = self.sheet.panels.get(i) else { return (None, None) };
+        let segs = &panel.region.outer.segs;
+        let n = segs.len();
+        let k = segs.iter().position(|s| matches!(*s, Seg2::Line { a: x, b: y } if x.dist(a) <= 1e-9 && y.dist(b) <= 1e-9));
+        let Some(k) = k.filter(|_| start > 1e-9) else { return (None, None) };
+        let inward = d.perp();
+        let depth = |p: Vec2| (p - a).dot(inward);
+        // Where segment `s` meets the line: its parameter there, and the point.
+        let meets = |s: &Seg2| -> Vec<(f64, Vec2)> {
+            match *s {
+                Seg2::Line { a: x, b: y } => {
+                    let (dx, dy) = (depth(x), depth(y));
+                    if (dy - dx).abs() <= 1e-12 {
+                        return Vec::new();
+                    }
+                    let t = (start - dx) / (dy - dx);
+                    if (0.0..=1.0).contains(&t) { vec![(t, x.lerp(y, t))] } else { Vec::new() }
+                }
+                Seg2::Arc { center, radius, start: from, sweep } => {
+                    // cos(θ − φ) = c, φ the way inward.
+                    let c = (start - depth(center)) / radius;
+                    if !(-1.0..=1.0).contains(&c) {
+                        return Vec::new();
+                    }
+                    let phi = inward.y.atan2(inward.x);
+                    [phi + c.acos(), phi - c.acos()]
+                        .into_iter()
+                        .map(|th| Vec2::new(th.cos(), th.sin()))
+                        .filter(|&v| crate::sheet_surface_cuts::on_arc(v, from, sweep))
+                        .map(|v| {
+                            let t = ((v.y.atan2(v.x) - from) * sweep.signum()).rem_euclid(std::f64::consts::TAU) / sweep.abs();
+                            (t.min(1.0), center + v * radius)
+                        })
+                        .collect()
+                }
+                _ => Vec::new(),
+            }
+        };
+        // From the end round the outline: back along the segments before the edge, or on along
+        // those after it; the first crossing as walked.
+        let walk = |end: Vec2, back: bool| -> Option<f64> {
+            let at = |m: usize| segs.get(if back { (k + n - m) % n } else { (k + m) % n });
+            if matches!(at(1)?, Seg2::Line { .. }) {
+                return None;
+            }
+            for m in 1..n {
+                let s = at(m)?;
+                if !matches!(s, Seg2::Line { .. } | Seg2::Arc { .. }) {
+                    return None;
+                }
+                let hit = meets(s).into_iter().min_by(|x, y| if back { y.0.total_cmp(&x.0) } else { x.0.total_cmp(&y.0) });
+                if let Some((_, p)) = hit {
+                    return Some((p - end).dot(d));
+                }
+            }
+            None
+        };
+        (walk(a, true), walk(b, false))
     }
 
     /// How far along the edge `a`–`b` (way `d`) of panel `i` the lines of the outline beside it
@@ -469,12 +563,12 @@ impl SurfaceSheet {
         let by = sharp - start;
         // The anchor runs where the edge's neighbours meet its line moved to the sharp (on a
         // slanted edge, not square across from its ends).
-        let (from, to) = self.moved_ends(edge.panel, (a, b, d), by);
+        let (from, to) = self.moved_ends(edge.panel, (a, b, d), by, start);
         // A sharp inside the edge by no more than the thickness needs no cut: the bend's band runs
         // a thickness past its anchor and takes that strip, leaving the panel's other edges (and
         // the rips along them) as they are.
         if by > 0.0 || by < -t - 1e-9 {
-            self.move_edge(edge.panel, (a, b, d), by)?;
+            self.move_edge(edge.panel, (a, b, d), by, start)?;
         }
         let len = (to - from).dot(d);
         if !(len > 1e-9) {
@@ -811,6 +905,31 @@ impl SurfaceSheet {
         if moves.is_empty() {
             return err("the fold leaves nothing on its moving side");
         }
+        // A corner of the outline inside the bend zone of a piece that folds (a fold right at a
+        // tab's root): the zone would not be a strip of the panel, and the material beside the
+        // tab would be lost. A corner on a piece the line does not reach stays with it, its zone
+        // too, and refuses nothing. Name the corner nearest the middle of the line, of two as near
+        // (a tab's root) the first along the line as drawn, as the pieces are ordered above, and
+        // how far the line has to move to clear them all.
+        let folds = |q: Vec2| moves.iter().any(|m| q.dot(u) >= m.span.0 - tol && q.dot(u) <= m.span.1 + tol);
+        let corners: Vec<(Vec2, f64)> =
+            outline_corners(&region.outer).into_iter().map(|c| (c, side(c))).filter(|&(c, s)| s > 1e-6 && s < ba - 1e-6 && folds(c)).collect();
+        let mid = Vec2::new((line[0].x + line[1].x) / 2.0, (line[0].y + line[1].y) / 2.0);
+        let nearest = corners.iter().min_by(|x, y| {
+            let (dx, dy) = (x.0.dist(mid), y.0.dist(mid));
+            if (dx - dy).abs() <= tol { x.0.dot(way).total_cmp(&y.0.dot(way)) } else { dx.total_cmp(&dy) }
+        });
+        if let Some(&(c, _)) = nearest {
+            let to_fold = corners.iter().fold(0.0_f64, |m, (_, s)| m.max(*s));
+            let to_stay = corners.iter().fold(0.0_f64, |m, (_, s)| m.max(ba - *s));
+            // Where it lies on the sheet's surface.
+            let w = here.point(Vec3::new(c.x, c.y, 0.0));
+            return err(format!(
+                "the bend zone ({ba:.3} mm wide) reaches a corner of the sheet's outline at ({:.3}, {:.3}, {:.3}): \
+                 move the fold line at least {to_fold:.3} mm toward the side that folds or {to_stay:.3} mm toward the side that stays",
+                w.x, w.y, w.z
+            ));
+        }
         let one = |r: Vec<Region2>| -> Result<std::result::Result<Region2, &'static str>> {
             match <[Region2; 1]>::try_from(r) {
                 Ok([one]) => Ok(Ok(one)),
@@ -980,7 +1099,7 @@ impl SurfaceSheet {
         };
         let starts = |mine: bool, l: &Loop2| mine.then(|| l.segs.iter().map(|g| g.start()).collect::<Vec<Vec2>>());
         let moved_cuts = beyond(self.sheet.cuts.iter().map(|c| starts(c.panel == i, &c.region.outer)).collect(), None)?;
-        let recesses = beyond(self.recesses.iter().map(|r| starts(r.panel == i, &r.region.outer)).collect(), Some("a recess"))?;
+        let recesses = beyond(self.recesses.iter().map(|r| starts(r.panel == i, &r.region.outer)).collect(), Some("a pocket"))?;
         let loose = beyond(self.loose.iter().map(|l| starts(l.panel == i, &l.region.outer)).collect(), Some("a loose piece of the sheet"))?;
         let cross_breaks = self.fold_cross_breaks(i, side, ba, tol, piece_at)?;
         Ok(Ok(FoldPlan { n, u, s0, ba, stays, moves, cuts, anchors, rips, moved_cuts, recesses, loose, cross_breaks }))
@@ -1074,10 +1193,16 @@ impl SurfaceSheet {
     }
 
     /// The sheet of a copy of its body, named `body`, by `m`: moved, or mirrored into the opposite
-    /// hand. A mirror turns each panel's chart over (v → −v) so that its frame stays
-    /// right-handed with the material where it was: every outline, anchor, cut and record in the
-    /// charts and the flat is mirrored with it, and each joint runs the other way. None for a
-    /// transform that is no rigid motion or mirror, and for a mirror of a sheet with a roll.
+    /// hand. A mirror turns each panel's chart over (u → −u), so that its frame stays
+    /// right-handed with the material where it was and the copy's flat is its source's mirrored
+    /// across the flat's y axis (x → −x). Every outline, anchor, cut and record in the charts and
+    /// the flat is mirrored with it, each joint and bend line runs the other way, and each
+    /// perforation field counts its grid from the other side. The turn keeps the records in the
+    /// charts and the parts (what each face was made for, `parts`, and the rim each bend's panel
+    /// was made on, in `recipes`) as the copy's own build has them: each bend's anchors start at
+    /// its other end, so its ends, the rims across and past them and its tabs count from there.
+    /// The model names the faces from the parts. None for a transform that is no rigid motion or
+    /// mirror, and for a mirror of a sheet with a roll.
     pub fn copied(&self, body: &str, m: &crate::Mat) -> Option<SurfaceSheet> {
         let axis = |i: usize| m.get(i).map(|c| Vec3::new(c[0], c[1], c[2]));
         let (x, y, z) = (axis(0)?, axis(1)?, axis(2)?);
@@ -1098,7 +1223,7 @@ impl SurfaceSheet {
         }
         let place = |r: Rigid3| {
             let (x, y, z) = (crate::apply_vector(m, r.x), crate::apply_vector(m, r.y), crate::apply_vector(m, r.z));
-            Rigid3 { x, y: if mirror { y * -1.0 } else { y }, z, shift: crate::apply_point(m, r.shift) }
+            Rigid3 { x: if mirror { x * -1.0 } else { x }, y, z, shift: crate::apply_point(m, r.shift) }
         };
         let mut out = self.clone();
         out.body = body.to_string();
@@ -1110,9 +1235,11 @@ impl SurfaceSheet {
         Some(out)
     }
 
-    /// Every chart and the flat turned over (v → −v): see [`Self::copied`].
+    /// Every chart and the flat turned over (u → −u), with the parts as the turned sheet's own
+    /// build reports them: see [`Self::copied`].
     fn turn_charts_over(&mut self) {
-        let f = |p: Vec2| Vec2::new(p.x, -p.y);
+        use crate::sheet_surface_convert::{PanelMade, RimEdge, SheetPart};
+        let f = |p: Vec2| Vec2::new(-p.x, p.y);
         let r = |g: &Region2| crate::sheet_surface_convert::rigid_region(g, f);
         let seg =
             |s: &Seg2| crate::sheet_surface_convert::rigid_region(&Region2 { outer: Loop2 { segs: vec![*s] }, holes: Vec::new() }, f).outer.segs;
@@ -1124,7 +1251,7 @@ impl SurfaceSheet {
             // its side of it.
             let turn = |a: &mut Anchor, length: f64| {
                 a.origin = f(a.origin + a.dir * length);
-                a.dir = Vec2::new(-a.dir.x, a.dir.y);
+                a.dir = f(a.dir) * -1.0;
             };
             match &mut j.kind {
                 JointKind::Bend(b) => {
@@ -1163,11 +1290,13 @@ impl SurfaceSheet {
         for l in &mut self.loose {
             l.region = r(&l.region);
         }
-        // The flat lies in the first panel's chart: it turns over with it.
+        // The flat lies in the sheet's flat frame, which `copied` turns with `place`: it turns
+        // over with the frame.
         self.regions = self.regions.iter().map(r).collect();
         for b in &mut self.bends {
             b.zone = r(&b.zone);
-            (b.start, b.end) = (f(b.start), f(b.end));
+            // It runs the other way, as its joint does, with the same panel on each side of it.
+            (b.start, b.end) = (f(b.end), f(b.start));
             b.tabs = b.tabs.iter().map(r).collect();
         }
         for l in &mut self.roll_lines {
@@ -1178,6 +1307,8 @@ impl SurfaceSheet {
         }
         self.labels = self.labels.iter().map(r).collect();
         for p in &mut self.perforations {
+            // Its rows stay; along each, the holes count from the other side.
+            p.from_right = !p.from_right;
             if let Some(o) = &mut p.outline {
                 *o = o.iter().map(r).collect();
             }
@@ -1187,6 +1318,64 @@ impl SurfaceSheet {
         }
         for c in &mut self.flat_cross_breaks {
             c.lines = crate::sheet_surface_cross_break::left_to_right(c.lines.map(|(a, b)| (f(a), f(b))));
+        }
+        for b in &mut self.bores {
+            b.base.x = -b.base.x;
+            b.axis.x = -b.axis.x;
+        }
+        // Each panel's own sketch lines and its rims as its own layout would keep them: each edge
+        // where its chart turned it, the material still on its left.
+        for (_, _, a, b) in &mut self.sketch_curves {
+            (*a, *b) = (f(*b), f(*a));
+        }
+        for (_, a, b, _) in &mut self.rims {
+            (*a, *b) = (f(*b), f(*a));
+        }
+        // The holes' loops and their sketch curves as drawn, where the chart turned them: each
+        // drawn curve keeps its way, so a wall's pieces rank along it as on the source.
+        let turned = crate::sheet_surface_convert::rigid_seg(f);
+        for h in &mut self.holes {
+            for (seg, _, drawn) in &mut h.segs {
+                *seg = turned(seg);
+                if let Some(d) = drawn {
+                    *d = turned(d);
+                }
+            }
+        }
+        // What each face was made for, as the copy's own build reports it. Each bend's anchors
+        // now start at its other end: the bend's end at their origin (`zone.near[0]` in
+        // `FaceNamer::part`), and the rim across its end or past its end there (`rim_edges`), are
+        // the ones that were at the other end. A bend's tabs rank along it from that end, so the
+        // `k`th of `n` is the `n + 1 − k`th. Nothing else a part holds is read from where a bend's
+        // anchors start.
+        let turn_part = |part: &mut SheetPart| {
+            let at_origin = match part {
+                SheetPart::BendEnd { at_origin, .. } => at_origin,
+                SheetPart::Rim { edge: RimEdge::End { at_origin } | RimEdge::Past { at_origin }, .. } => at_origin,
+                _ => return,
+            };
+            *at_origin = !*at_origin;
+        };
+        // How many places along its bend each tab's cap has: its last.
+        let mut tabs: std::collections::HashMap<SheetPart, usize> = std::collections::HashMap::new();
+        for x in self.parts.iter().flatten() {
+            if let (SheetPart::Tab { .. }, Some(k)) = (&x.part, x.place) {
+                let n = tabs.entry(x.part.clone()).or_default();
+                *n = (*n).max(k);
+            }
+        }
+        for x in self.parts.iter_mut().flatten() {
+            if let (Some(k), Some(n)) = (x.place, tabs.get(&x.part)) {
+                x.place = Some((n + 1).saturating_sub(k));
+            }
+            turn_part(&mut x.part);
+        }
+        // A bend's panel made on a rim across or past another bend's end: that rim as the copy's
+        // build reports it.
+        for (_, made) in &mut self.recipes {
+            if let PanelMade::Bend { on: Some(part), .. } = made {
+                turn_part(part);
+            }
         }
     }
 

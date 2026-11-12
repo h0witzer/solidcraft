@@ -741,9 +741,11 @@ fn outline_ends(sheet: &Sheet, b: &BendEdge, bend: &Bend, end: f64, tol: f64) ->
     let side = |an: &Anchor, into: Vec2, base: f64, sign: f64, tangent: f64| -> Option<f64> {
         let region = &sheet.panels.get(an.panel)?.region;
         let flat = |p: Vec2| ((p - an.origin).dot(an.dir), base + sign * (p - an.origin).dot(into));
-        let lines: Vec<Vec<((f64, f64), (f64, f64))>> = std::iter::once(&region.outer)
+        // Each loop's segments in order, its lines laid out (a curve, `None`, has no line to
+        // carry on, and keeps its place: the side beside an edge is its neighbour in the loop).
+        let lines: Vec<Vec<Option<((f64, f64), (f64, f64))>>> = std::iter::once(&region.outer)
             .chain(&region.holes)
-            .map(|l| l.segs.iter().filter_map(|g| if let Seg2::Line { a: p, b: q } = *g { Some((flat(p), flat(q))) } else { None }).collect())
+            .map(|l| l.segs.iter().map(|g| if let Seg2::Line { a: p, b: q } = *g { Some((flat(p), flat(q))) } else { None }).collect())
             .collect();
         // Where a line meets the tangent line, near the end.
         let meets = |(p, q): ((f64, f64), (f64, f64))| -> Option<f64> {
@@ -758,14 +760,14 @@ fn outline_ends(sheet: &Sheet, b: &BendEdge, bend: &Bend, end: f64, tol: f64) ->
         let mut beside: Option<(f64, f64)> = None;
         for segs in &lines {
             let n = segs.len();
-            for (k, &(p, q)) in segs.iter().enumerate() {
+            for (k, &(p, q)) in segs.iter().enumerate().filter_map(|(k, s)| s.as_ref().map(|s| (k, s))) {
                 if !(on_anchor(p) && on_anchor(q)) {
                     continue;
                 }
                 for (corner, next) in [(p, segs.get((k + n - 1) % n)), (q, segs.get((k + 1) % n))] {
                     // At the end: on it, or as far off it as the side's slant carries it from
                     // the `a` anchor's line to this one (a side laid on in the flat).
-                    let Some(&(g0, g1)) = next else { continue };
+                    let Some(&Some((g0, g1))) = next else { continue };
                     let (ds, dy) = (g1.0 - g0.0, g1.1 - g0.1);
                     let slant = if dy.abs() > 1e-9 * (ds.abs() + dy.abs()) { (ds / dy * base).abs() } else { 0.0 };
                     let off = (corner.0 - end).abs();
@@ -782,7 +784,7 @@ fn outline_ends(sheet: &Sheet, b: &BendEdge, bend: &Bend, end: f64, tol: f64) ->
             return Some(s);
         }
         let mut found = None;
-        for &(p, q) in lines.iter().flatten() {
+        for &(p, q) in lines.iter().flatten().flatten() {
             let (ds, dy) = (q.0 - p.0, q.1 - p.1);
             if dy.abs() <= 1e-9 * (ds.abs() + dy.abs()) {
                 continue;
@@ -2952,6 +2954,11 @@ pub struct SurfaceSheet {
     /// The cross breaks in the flat, as last laid out.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub flat_cross_breaks: Vec<crate::CrossBreak>,
+    /// For each perforation field, by its feature, how many joints the sheet had when the field
+    /// was made: the field keeps clear of those bends, and the bends made after it run through
+    /// it, as a press brake bends perforated stock.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub perforation_joints: Vec<(u64, usize)>,
     /// The sketch lines that made panels' edges: the panel (by its key, `Panel::name`), each line's
     /// id and its ends in that panel's chart. Any panel a sketch made has its own (a base flange's);
     /// a rim on one is made by that line (see [`RimEdge::Sketch`]).
@@ -3176,6 +3183,9 @@ pub struct SurfaceBendLine {
     /// stops at them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tabs: Vec<Region2>,
+    /// The bend's joint in the sheet.
+    #[serde(default)]
+    pub joint: usize,
 }
 
 impl SurfaceSheet {
@@ -3220,6 +3230,7 @@ impl SurfaceSheet {
             perforations: Vec::new(),
             cross_breaks: Vec::new(),
             flat_cross_breaks: Vec::new(),
+            perforation_joints: Vec::new(),
             sketch_curves: Vec::new(),
             rims: Vec::new(),
             parts: Vec::new(),
@@ -3399,6 +3410,7 @@ impl SurfaceSheet {
             perforations: Vec::new(),
             cross_breaks: Vec::new(),
             flat_cross_breaks: Vec::new(),
+            perforation_joints: Vec::new(),
             sketch_curves,
             rims: Vec::new(),
             parts: Vec::new(),
@@ -3410,10 +3422,13 @@ impl SurfaceSheet {
     }
 
     /// Hole centres of a perforation field in the flat: a grid continuous over the developed flat,
-    /// through its bends as perforated stock runs through them, margin clear of its edges and
-    /// cut-outs (see [`crate::sheet::perforation_grid`]).
+    /// margin clear of its edges, its cut-outs and the zones of the bends the sheet had when the
+    /// field was made (see [`crate::sheet::perforation_grid`]). A bend made after the field runs
+    /// through it, as a press brake bends perforated stock.
     pub fn perforation_holes(&self, p: &crate::sheet::SheetPerforation) -> Vec<Vec2> {
-        crate::sheet::perforation_grid(&self.regions, &[], p)
+        let before = self.perforation_joints.iter().find(|(f, _)| *f == p.feature).map_or(0, |(_, n)| *n);
+        let zones: Vec<Region2> = self.bends.iter().filter(|b| b.joint < before).map(|b| b.zone.clone()).collect();
+        crate::sheet::perforation_grid(&self.regions, &zones, p)
     }
 
     /// Whether the flat describes the body: refused while a feature the sheet can't hold changed
@@ -3428,10 +3443,112 @@ impl SurfaceSheet {
         }
     }
 
-    /// Open area of all perforation fields (mm²): what they take out of the sheet's faces.
-    pub fn perforated_area(&self) -> f64 {
-        let shown = self.shown();
-        shown.perforations.iter().map(|p| shown.perforation_holes(p).len() as f64 * std::f64::consts::PI * (p.diameter / 2.0).powi(2)).sum()
+    /// `measured`, the B-rep's measure of this sheet's body, with the holes its perforation fields
+    /// leave out of the body taken off where the sheet lies now (folded, or laid out flat): a
+    /// cylinder through a flat panel, or bent with a bend made after its field (see
+    /// [`crate::sheet_surface_perforation`]). `placement` maps the sheet's geometry into the
+    /// measurement's frame. The bounds and the topology stay as measured.
+    pub fn correct_perforation_properties(&self, measured: &mut solidcraft_kernel::BodyMeasure, placement: &crate::Mat) -> Result<()> {
+        let (mut removed, mut area_delta, mut moment_delta) = (0.0, 0.0, Vec3::ZERO);
+        self.visit_perforation_holes(placement, |center, volume, area, _| {
+            removed += volume;
+            area_delta += area;
+            // From the measured centre, so that a far placement keeps its digits.
+            moment_delta += (measured.centroid - center) * volume;
+        })?;
+        if removed == 0.0 {
+            return Ok(());
+        }
+        let volume = measured.volume - removed;
+        let area = measured.area + area_delta;
+        let centroid = measured.centroid + moment_delta / volume;
+        if !(volume.is_finite() && volume > 0.0 && area.is_finite() && area >= 0.0 && centroid.is_finite()) {
+            return Err(DocError::Invalid(format!("invalid perforation physical properties for `{}`", self.body)));
+        }
+        measured.volume = volume;
+        measured.area = area;
+        measured.centroid = centroid;
+        Ok(())
+    }
+
+    /// `measured`, the mass properties of this sheet's body at unit density (its inertia about
+    /// its centroid), with the same holes taken off as [`Self::correct_perforation_properties`]
+    /// takes.
+    pub fn correct_perforation_mass_properties(&self, measured: &mut solidcraft_geom::MassProperties, placement: &crate::Mat) -> Result<()> {
+        use solidcraft_geom::inertia;
+        let (mut removed, mut moment_delta, mut removed_inertia) = (0.0, Vec3::ZERO, [[0.0; 3]; 3]);
+        self.visit_perforation_holes(placement, |center, volume, _, own| {
+            let delta = measured.centroid - center;
+            removed += volume;
+            moment_delta += delta * volume;
+            let about_center = inertia::shifted(&own, volume, delta);
+            for (row, hole) in removed_inertia.iter_mut().zip(about_center) {
+                for (value, h) in row.iter_mut().zip(hole) {
+                    *value += h;
+                }
+            }
+        })?;
+        if removed == 0.0 {
+            return Ok(());
+        }
+        let volume = measured.volume - removed;
+        let delta = moment_delta / volume;
+        let centroid = measured.centroid + delta;
+        let mut tensor = measured.inertia;
+        for (row, hole) in tensor.iter_mut().zip(removed_inertia) {
+            for (value, h) in row.iter_mut().zip(hole) {
+                *value -= h;
+            }
+        }
+        // From the old centre to the new one: the parallel-axis term taken back.
+        let tensor = inertia::shifted(&tensor, -volume, delta);
+        if !(volume.is_finite() && volume > 0.0 && centroid.is_finite() && tensor.iter().flatten().all(|v| v.is_finite())) {
+            return Err(DocError::Invalid(format!("invalid perforation inertia for `{}`", self.body)));
+        }
+        measured.volume = volume;
+        measured.centroid = centroid;
+        measured.inertia = tensor;
+        Ok(())
+    }
+
+    /// Each hole of the perforation fields as what it takes out of the body (see
+    /// [`crate::sheet_surface_perforation`]), in the frame `placement` maps the sheet into: its
+    /// centroid, volume, the area its walls add to the body's faces less the area it opens in
+    /// them, and its inertia about its centroid at unit density. Refused: a placement that scales
+    /// or shears, and the holes `hole_masses` refuses.
+    fn visit_perforation_holes(
+        &self,
+        placement: &crate::Mat,
+        mut visit: impl FnMut(Vec3, f64, f64, solidcraft_geom::inertia::Tensor3),
+    ) -> Result<()> {
+        if self.perforations.is_empty() {
+            return Ok(());
+        }
+        if placement.iter().flatten().any(|v| !v.is_finite()) {
+            return Err(DocError::Invalid(format!("invalid perforation physical properties for `{}`", self.body)));
+        }
+        let [x, y, z] = [0, 1, 2].map(|i| Vec3::new(placement[i][0], placement[i][1], placement[i][2]));
+        let rigid = placement[0][3] == 0.0
+            && placement[1][3] == 0.0
+            && placement[2][3] == 0.0
+            && placement[3][3] == 1.0
+            && [x, y, z].iter().all(|a| (a.dot(*a) - 1.0).abs() < 1e-9)
+            && x.dot(y).abs() < 1e-9
+            && x.dot(z).abs() < 1e-9
+            && y.dot(z).abs() < 1e-9;
+        if !rigid {
+            return Err(DocError::Invalid("not supported yet: perforation physical properties under scale or shear".into()));
+        }
+        let rotation = [0, 1, 2].map(|r| [0, 1, 2].map(|c| placement[c][r]));
+        for hole in crate::sheet_surface_perforation::hole_masses(self)? {
+            visit(
+                crate::apply_point(placement, hole.centroid),
+                hole.volume,
+                hole.area,
+                solidcraft_geom::inertia::transformed(&hole.inertia, &rotation),
+            );
+        }
+        Ok(())
     }
 
     /// The sheet with its flat as a flat pattern is read: seen from the sheet's surface, the side
@@ -3824,6 +3941,7 @@ impl SurfaceSheet {
                     up: !b.toward_material,
                     allowance: b.allowance(self.sheet.thickness, self.sheet.k_factor),
                     tabs: pieces.iter().filter(|(p, _)| matches!(p, Piece::Tab(t, _) if *t == k)).map(|(_, r)| r.clone()).collect(),
+                    joint: z.joint,
                 })
             })
             .collect();
@@ -3840,7 +3958,9 @@ impl SurfaceSheet {
             .iter()
             .filter_map(|r| {
                 let place = dev.placements.get(r.panel).copied().flatten()?;
-                let (z0, z1) = if r.far { (t - r.depth, t) } else { (0.0, r.depth) };
+                // The sheet's surface is its top (z t), the face one thickness into the material
+                // its bottom (z 0), folded or flat: a pocket's side is the face it is on.
+                let (z0, z1) = if r.far { (0.0, r.depth) } else { (t - r.depth, t) };
                 Some(crate::sheet::SheetPocket { region: place.region(&r.region), z0, z1 })
             })
             .collect();
