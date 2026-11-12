@@ -3854,6 +3854,68 @@ fn flanges_go_on_a_curved_outline_folded_across_its_straight_part() {
     assert!(rel(v, t2_volume_from_flat(&f)) < 3e-4, "volume {v} vs the flat's {}: {f}", t2_volume_from_flat(&f));
 }
 
+/// A cut through a free-form rim leaves the rest of the rim as drawn, and the cut's own curves
+/// too: the outline holds the sketch's cubics and conics, not splines fitted to them, and the
+/// wall is a face per curve, far from the cut as well as beside it. It folds the same, and a
+/// piece the cut parts stays, a loose piece, as the cut says.
+#[test]
+fn a_cut_across_a_free_form_rim_keeps_its_curves() {
+    use solidcore_record::Seg2;
+    let spline = (
+        "sketch.spline.fit_point",
+        json!({"points": [[-37.22, 26.29], [-2.29, -8.73], [34, 17], [58.5, -6], [32.19, -37.73], [-2.1, -17.06], [-45.64, -35.44]], "periodic": true}),
+    );
+    let cut = |s: &mut Session, draw: (&str, Value)| -> Value {
+        run(s, "sketch.create", json!({"plane": "XY", "name": "Cut"}));
+        run(s, draw.0, draw.1);
+        run(s, "sketch.finish", json!({}));
+        run(s, "solid.extrude", json!({"sketch": "Cut", "distance": 20, "direction": "symmetric", "operation": "cut", "targets": ["Body1"]}))
+    };
+    // The lines, conics, cubics and anything else (a fitted arc) in the outlines of the sheet's
+    // panels and loose pieces.
+    let kinds = |s: &Session| -> [usize; 4] {
+        let st = s.model.state();
+        let sk = &st.surface_sheets[0];
+        let regions = sk.sheet.panels.iter().map(|p| &p.region).chain(sk.loose.iter().map(|l| &l.region));
+        let mut n = [0; 4];
+        for g in regions.flat_map(|r| std::iter::once(&r.outer).chain(&r.holes)).flat_map(|l| &l.segs) {
+            n[match g {
+                Seg2::Line { .. } => 0,
+                Seg2::Conic { .. } => 1,
+                Seg2::Cubic { .. } => 2,
+                _ => 3,
+            }] += 1;
+        }
+        n
+    };
+    let rectangle = ("sketch.rectangle.two_point", json!({"p0": [50.18, -45], "p1": [70.68, 27]}));
+    let ellipse = ("sketch.ellipse", json!({"center": [-2, -13], "major": [18, -13], "minor_radius": 8}));
+    // Top, bottom, the 7 cubics and one straight edge of the cut.
+    let mut s = Session::default();
+    t2_curved_blank(&mut s, std::slice::from_ref(&spline), "0.4");
+    cut(&mut s, rectangle);
+    assert_eq!(kinds(&s), [1, 0, 7, 0], "lines, conics, cubics, other");
+    assert!(faces(&mut s).0 <= 2 + 7 + 1, "{} faces", faces(&mut s).0);
+    let (v, f) = (volume(&mut s), flat(&mut s));
+    assert!(rel(v, t2_volume_from_flat(&f)) < 3e-4, "volume {v} vs the flat's {}", t2_volume_from_flat(&f));
+    assert!((bbox(&mut s)["max"][0].as_f64().unwrap_or(f64::NAN) - 50.18).abs() < 1e-6, "the cut's edge");
+    // Folded after, where the fold's lines cut two curves.
+    run(&mut s, "sheet.fold", json!({"points": [[-20, -300, 2], [-20, 300, 2]], "fixed": [40, 0, 2]}));
+    assert!(faces(&mut s).0 <= 2 + 7 + 1 + 12, "folded: {} faces", faces(&mut s).0);
+    let (v, f) = (volume(&mut s), flat(&mut s));
+    assert!(rel(v, t2_volume_from_flat(&f)) < 3e-4, "folded: volume {v} vs the flat's {}", t2_volume_from_flat(&f));
+    // An ellipse through the rim's narrow waist: its 4 conics as drawn, two on each side, and the
+    // lobe it parts from the rest stays.
+    let mut s = Session::default();
+    t2_curved_blank(&mut s, std::slice::from_ref(&spline), "0.4");
+    cut(&mut s, ellipse);
+    assert_eq!(kinds(&s), [0, 4, 7, 0], "lines, conics, cubics, other");
+    assert!(faces(&mut s).0 <= 2 + 7 + 4 + 2, "{} faces", faces(&mut s).0);
+    assert_eq!(s.model.state().surface_sheets[0].loose.len(), 1);
+    let (v, f) = (volume(&mut s), flat(&mut s));
+    assert!(rel(v, t2_volume_from_flat(&f)) < 3e-4, "volume {v} vs the flat's {}", t2_volume_from_flat(&f));
+}
+
 /// A sharp corner in the zone stays refused, by name: the material beside it wouldn't hang from
 /// anything. A fold clear of it, on the same outline, folds. Where the lines run smoothly into the
 /// arc is no corner.
@@ -5086,6 +5148,121 @@ fn per_edge_values_are_expressions_and_feature_inputs() {
     assert!(no_errors_or_warnings(&s), "{:?}", s.model.results);
 }
 
+/// A 60 x 40 base of the default rule (T = R = 2.5, K 0.44, gap 2.5) with two walls 10 high,
+/// inside, in one feature: on its front edge (y = 0) at `front` degrees and on its right edge
+/// (x = 60) at `right`, the front one listed first or last.
+fn two_angles_at_a_corner(front: f64, right: f64, front_first: bool) -> Session {
+    let mut s = Session::default();
+    base(&mut s, 60.0, 40.0);
+    let wall = |at: [f64; 3], angle: f64| json!({"point": at, "angle": format!("{angle} deg")});
+    let (f, r) = (wall([30.0, 0.0, 2.5], front), wall([60.0, 20.0, 2.5], right));
+    let edges = if front_first { json!([f, r]) } else { json!([r, f]) };
+    run(&mut s, "sheet.flange", json!({"edges": edges, "height": "10 mm", "position": "inside"}));
+    s
+}
+
+// By hand, for `two_angles_at_a_corner` (T = R = g = 2.5, K = 0.44). A wall at θ starts its bend
+// s0 = (R + T)·tan(θ/2) in from its edge: 5 at 90°, 2.886751 at 60°. The corner is notched: each
+// bend ends where the two bends' tangent lines on the base cross, so the base keeps
+// (60 − s0 of the right wall) × (40 − s0 of the front wall) and each bend runs along its side.
+// Folded, a bend L long holds a ring sector from R to R + T, L·θ·(R + T/2)·T; in the flat its zone
+// is BA = θ·(R + K·T) = 3.6·θ wide: 5.654867 at 90°, 3.769911 at 60°.
+//
+// The walls' surfaces (their inside faces) meet along a line, and the rip there keeps each wall's
+// metal g/2 off the plane halving them. Here they meet square, whichever wall is at 60°: the 90°
+// wall's face is square to the other wall's edge, which that wall's face holds. So each wall is
+// cut back (g/2)·√2 from the line, square to it on its own face, and (as for the tray of
+// `hand_panels`) a wall at θ beside one at φ ends
+// x(w) = ((g/2)·√(2 − 2·cosθ·cosφ) + T·(1 − cosθ·cosφ) − w·sinθ·cosφ) / sinφ along its edge from
+// the corner, w up its outer face from its outer sharp, over its panel's w = s0 … 10:
+// - the 90° wall beside the 60° one: ((g/2)·√2 + T − w/2) / sin 60°, 2.041241 at w = 5 and
+//   −0.845510 at w = 10 (there it reaches past the corner, under the 60° wall leaning out), 0.597866
+//   on average. Along the line it reaches a little past the 60° wall's top, but its end stays the
+//   one line of the rip's cut up to its own top;
+// - the 60° wall beside the 90° one: (g/2)·√2 + T = 4.267767 all the way up.
+// The panels are 10 − s0 high: 5 at 90°, 7.113249 at 60°.
+//
+// Front 90°, right 60° (the part of UI scenario s49):
+//   base 57.113249 × 35 = 1998.963703;
+//   bends folded 57.113249·(π/2)·3.75 + 35·(π/3)·3.75 = 336.424804 + 137.444679 = 473.869483,
+//   flat 57.113249·5.654867 + 35·3.769911 = 322.967812 + 131.946891 = 454.914704;
+//   panels 5·(60 − 0.597866) = 297.010671 and 7.113249·(40 − 4.267767) = 254.172259;
+//   volume 2.5·(1998.963703 + 473.869483 + 297.010671 + 254.172259) = 2.5·3024.016116 = 7560.040289;
+//   flat area 1998.963703 + 454.914704 + 297.010671 + 254.172259 = 3005.061336.
+// Front 60°, right 90°:
+//   base 55 × 37.113249 = 2041.228676;
+//   bends folded 55·(π/3)·3.75 + 37.113249·(π/2)·3.75 = 215.984495 + 218.615080 = 434.599575,
+//   flat 55·3.769911 + 37.113249·5.654867 = 207.345115 + 209.870477 = 417.215592;
+//   panels 7.113249·(60 − 4.267767) = 396.437232 and 5·(40 − 0.597866) = 197.010671;
+//   volume 2.5·(2041.228676 + 434.599575 + 396.437232 + 197.010671) = 2.5·3069.276154 = 7673.190384;
+//   flat area 2041.228676 + 417.215592 + 396.437232 + 197.010671 = 3051.892171.
+// In the flat a point w up a wall's outer face lies s0 − BA − (w − s0) into the base from its edge
+// (−0.654867 at w = 5 and −5.654867 at w = 10 at 90°; −0.883160 at w = s0 and −7.996408 at
+// w = 10 at 60°), x(w) along it from the corner. So each panel's end at the corner runs:
+//   front 90° from (57.958759, −0.654867) to (60.845510, −5.654867), right 60° from
+//   (60.883160, 4.267767) to (67.996408, 4.267767);
+//   front 60° from (55.732233, −0.883160) to (55.732233, −7.996408), right 90° from
+//   (60.654867, 2.041241) to (65.654867, −0.845510).
+
+/// Walls at 90° and 60° in one feature close the corner they meet at, with either wall at 60° and
+/// either listed first. Along the rip the 90° wall reaches a little past the 60° one, and the rip's
+/// cut leaves it through its top: its end is one straight line up to there. Before, its side
+/// stepped in past its top and ran back down the rip's cut, and the flat could not be made
+/// ("trimming panel 1: ... SMLib failed").
+#[test]
+fn walls_at_90_and_60_degrees_close_their_corner_either_way_round() {
+    let (t, r, k, g) = (2.5, 2.5, 0.44, 2.5);
+    let s0 = |th: f64| (r + t) * (th / 2.0).tan();
+    let ba = |th: f64| th * (r + k * t);
+    let ring = |th: f64| th * (r + t / 2.0);
+    let x_end = |th: f64, phi: f64, w: f64| {
+        let c = th.cos() * phi.cos();
+        ((g / 2.0) * (2.0 - 2.0 * c).sqrt() + t * (1.0 - c) - w * th.sin() * phi.cos()) / phi.sin()
+    };
+    let into = |th: f64, w: f64| s0(th) - ba(th) - (w - s0(th));
+    // A wall at θ beside one at φ, on an edge `len` long: its panel, 10 − s0 high.
+    let panel = |th: f64, phi: f64, len: f64| (10.0 - s0(th)) * (len - (x_end(th, phi, s0(th)) + x_end(th, phi, 10.0)) / 2.0);
+    for (front, right, by_hand) in [(90.0_f64, 60.0_f64, (7560.040289, 3005.061336)), (60.0, 90.0, (7673.190384, 3051.892171))] {
+        let (a, b) = (front.to_radians(), right.to_radians());
+        let (front_len, right_len) = (60.0 - s0(b), 40.0 - s0(a));
+        let base_area = front_len * right_len;
+        let panels = panel(a, b, 60.0) + panel(b, a, 40.0);
+        let want_volume = t * (base_area + front_len * ring(a) + right_len * ring(b) + panels);
+        let want_area = base_area + front_len * ba(a) + right_len * ba(b) + panels;
+        assert!((want_volume - by_hand.0).abs() < 1e-6 && (want_area - by_hand.1).abs() < 1e-6, "{want_volume} {want_area}");
+        let ends = [
+            (60.0 - x_end(a, b, s0(a)), into(a, s0(a))),
+            (60.0 - x_end(a, b, 10.0), into(a, 10.0)),
+            (60.0 - into(b, s0(b)), x_end(b, a, s0(b))),
+            (60.0 - into(b, 10.0), x_end(b, a, 10.0)),
+        ];
+        let mut made = Vec::new();
+        for front_first in [true, false] {
+            let what = format!("front {front}°, right {right}°, front listed first: {front_first}");
+            let mut s = two_angles_at_a_corner(front, right, front_first);
+            assert!(no_errors_or_warnings(&s), "{what}: {:?}", s.model.results);
+            // The measure follows the bends by facets.
+            let v = volume(&mut s);
+            assert!(rel(v, want_volume) < 1e-4, "{what}: {v} vs {want_volume}");
+            let f = flat(&mut s);
+            assert_eq!(f["outline"].as_array().map(Vec::len), Some(1), "{what}: {f}");
+            assert!(rel(flat_area(&f), want_area) < 1e-9, "{what}: {} vs {want_area}", flat_area(&f));
+            let mut lengths = bend_lengths(&mut s);
+            lengths.sort_by(f64::total_cmp);
+            let mut want = [front_len, right_len];
+            want.sort_by(f64::total_cmp);
+            assert!(lengths.len() == 2 && lengths.iter().zip(want).all(|(l, w)| (l - w).abs() < 1e-6), "{what}: {lengths:?} vs {want:?}");
+            let outline = outline_points(&f);
+            for (x, y) in ends {
+                assert!(outline.iter().any(|p| (p.0 - x).abs() < 1e-6 && (p.1 - y).abs() < 1e-6), "{what}: ({x}, {y}) not in {outline:?}");
+            }
+            made.push((v, flat_area(&f)));
+        }
+        // Which wall is listed first changes nothing at the corner.
+        assert!(rel(made[0].0, made[1].0) < 1e-6 && rel(made[0].1, made[1].1) < 1e-9, "front {front}°, right {right}°: {made:?}");
+    }
+}
+
 /// The bends' lengths in the flat pattern, in the order the bends were made.
 fn bend_lengths(s: &mut Session) -> Vec<f64> {
     flat(s)["bends"].as_array().cloned().unwrap_or_default().iter().map(|b| b["length"].as_f64().unwrap_or(f64::NAN)).collect()
@@ -5502,7 +5679,9 @@ fn a_box_cut_straight_through_a_flat_sheet_is_a_cutout_like_the_extrude_cut() {
         .execute("solid.cylinder", &json!({"base": [10, 50, 1.25], "axis": "X", "radius": 1, "height": 20, "operation": "cut"}))
         .unwrap_err()
         .to_string();
-    assert!(error.contains("preserv"), "{error}");
+    // R 1 about z 1.25 reaches z 0.25 to 2.25, neither face: a hollow in the metal, whose walls
+    // don't run through the sheet.
+    assert!(error.contains("don't run through"), "{error}");
 }
 
 #[test]
@@ -7000,4 +7179,151 @@ fn a_flange_on_part_of_a_stepped_outline_spans_that_part() {
     let allowance = PI / 2.0 * (1.0 + 0.44 * 1.0);
     let expected = 215.8 * 403.5 + 377.8 * (allowance + 18.0);
     assert!(rel(flat_area(&flat(&mut s)), expected) < 1e-9, "{} vs {expected}", flat_area(&flat(&mut s)));
+}
+
+/// The corner of a 130 x 90 base (T 1.2, R 1.2, K 0.4, gap 0.8) with 40 high walls on its front
+/// (y = 0) and right (x = 130) edges, made by one flange so that they close the corner between
+/// them; with `notch`, the front wall cut away from x 95 to the side wall's inside face (x 128.8),
+/// from z 22 up through its top, which leaves the side wall's end edge free from z 22 up. Without
+/// the front wall (`front` false) the side wall stands alone.
+fn notched_corner(s: &mut Session, front: bool, notch: bool) {
+    run(s, "sheet.manage_rules", json!({"name": "S", "thickness": "1.2 mm", "bend_radius": "1.2 mm", "k_factor": 0.4, "gap": "0.8 mm", "active": true}));
+    run(s, "sketch.create", json!({"plane": "XY", "name": "Base"}));
+    run(s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [130, 90]}));
+    run(s, "sketch.finish", json!({}));
+    run(s, "sheet.flange", json!({"type": "base", "body_name": "Corner"}));
+    let walls = if front { json!([[65, 0, 1.2], [130, 45, 1.2]]) } else { json!([[130, 45, 1.2]]) };
+    run(s, "sheet.flange", json!({"edges": walls, "height": 40}));
+    if notch {
+        run(s, "sketch.create", json!({"name": "Notch", "plane": {"origin": [0, 0, 0], "x_dir": [1, 0, 0], "y_dir": [0, 0, 1]}}));
+        run(s, "sketch.rectangle.two_point", json!({"p0": [95, 22], "p1": [128.8, 45]}));
+        run(s, "sketch.finish", json!({}));
+        run(s, "solid.extrude", json!({"sketch": "Notch", "distance": 8, "direction": "symmetric", "operation": "cut"}));
+    }
+}
+
+/// The bends of the flat pattern as (start, end, length).
+fn bend_rows(s: &mut Session) -> Vec<([f64; 2], [f64; 2], f64)> {
+    let point = |v: &Value| [v[0].as_f64().unwrap_or(f64::NAN), v[1].as_f64().unwrap_or(f64::NAN)];
+    flat(s)["bends"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|b| (point(&b["start"]), point(&b["end"]), b["length"].as_f64().unwrap_or(f64::NAN)))
+        .collect()
+}
+
+// By hand, for the corner of `notched_corner` (T = R = 1.2, K = 0.4, gap g = 0.8). The base's
+// surface is its top (z = T), so the walls rise away from its material: each wall's surface is its
+// inside face, the side wall's at x = 130 − T = 128.8 with its material out to x = 130, and each
+// wall stands up from its inside sharp at z = T. The walls' surfaces meet on the line x = 128.8,
+// y = T, and the rip there keeps each wall's metal g/2 off the plane halving the corner: each is cut
+// back (g/2)·√2 from the line, so the side wall ends at y = T + (g/2)·√2 = 1.765685 (`WALL_END`)
+// and the front wall at x = 128.8 − (g/2)·√2 = 128.234315. The notch takes the front wall from
+// z 22 up; the side wall's end is free from z = 22 to its top at z = 40, L = 18. A flange 20 high
+// picked at (130, 2, 30), on the side wall's outside face (a thickness into its material from its
+// surface), turns toward that material, out along +x, flush with the wall's end ("inside": it
+// starts (R + T)·tan 45° = 2.4 inside the edge, its tangent line on the wall at y = WALL_END + 2.4).
+// Its height runs from its outer sharp, where the lines of the bend's outer faces meet: the side
+// wall's inside face x = 128.8 and the flange's face y = WALL_END; so its far edge is at
+// x = 128.8 + 20 = 148.8.
+//
+// In the flat: the base's tangent line is R·tan 45° = 1.2 inside the walls' inside sharp, at
+// x = 127.6; their bend allowance is BA = (π/2)(R + K·T) = (π/2)(1.68) = 2.638938 (`CORNER_BA`); so
+// the side wall lies from x = 127.6 + BA = 130.238938, its tangent line at z = T + R = 2.4, and its
+// point at z lies at x = 127.6 + BA − 2.4 + z, y as in the part. The new bend's zone runs BA from
+// its tangent line on the wall out past the wall's end, its center line at
+// y = WALL_END + 2.4 − BA/2 = 2.846217, from z = 22 to z = 40: x 149.838938 to 167.838938, on the
+// side wall's strip (x 130.238938 … 167.838938).
+//
+// The volume the flange adds: its bend, a quarter of a ring from R to R + T over L,
+// (π/4)((R + T)² − R²)·L = (π/4)(4.32)(18) = 19.44π = 61.072561 (the flat's zone, BA wide at the
+// neutral radius, holds (π/2)(R + K·T)·L·T = 57.00: the bend's metal lies about R + T/2); its leg,
+// past its tangent line, (20 − 2.4)·L·T = 380.16; less the side wall's end from its edge to its
+// tangent line, which the bend takes, 2.4·L·T = 51.84; less the rule's bend relief at the bend's end
+// at z = 22, where the side wall runs on below it: a slot T = 1.2 wide past the end, from T/2 = 0.6
+// inside that tangent line out through the wall's end, 1.2·(2.4 + 0.6)·T = 4.32. In all
+// 61.072561 + 380.16 − 51.84 − 4.32 = 385.072561.
+const CORNER_FLANGE: f64 = 19.44 * PI + 380.16 - 51.84 - 4.32;
+const CORNER_BA: f64 = FRAC_PI_2 * (1.2 + 0.4 * 1.2);
+const WALL_END: f64 = 1.2 + 0.4 * std::f64::consts::SQRT_2;
+
+/// A flange on a wall's end edge that a notch left free beside a closed corner stands on that wall:
+/// out from its end at 90°, along the free 18 mm, and in the flat on that wall's strip. Before, the
+/// pick found the edge the notch left in the front wall's outline inside its lap at the corner (no
+/// material on either side of it), hinged the flange there, and folded it back along the side
+/// wall's inside.
+#[test]
+fn a_flange_on_a_wall_end_a_notch_left_free_stands_on_that_wall() {
+    let mut s = Session::default();
+    notched_corner(&mut s, true, true);
+    let notched = volume(&mut s);
+    run(&mut s, "sheet.flange", json!({"edges": [[130, 2, 30]], "height": 20, "angle": 90}));
+    assert!(no_errors_or_warnings(&s), "{:?}", s.model.results);
+    let b = bbox(&mut s);
+    assert!((b["max"][0].as_f64().unwrap_or(f64::NAN) - 148.8).abs() < 1e-6, "{b}");
+    let rows = bend_rows(&mut s);
+    let Some(&(start, end, _)) = rows.iter().find(|r| (r.2 - 18.0).abs() < 1e-6) else { panic!("no bend 18 long: {rows:?}") };
+    let (x0, x1) = (start[0].min(end[0]), start[0].max(end[0]));
+    let at = |z: f64| 127.6 + CORNER_BA - 2.4 + z;
+    assert!((x0 - at(22.0)).abs() < 1e-6 && (x1 - at(40.0)).abs() < 1e-6, "{rows:?}");
+    let y = WALL_END + 2.4 - CORNER_BA / 2.0;
+    assert!((start[1] - y).abs() < 1e-6 && (end[1] - y).abs() < 1e-6, "{rows:?}");
+    let added = volume(&mut s) - notched;
+    assert!((added - CORNER_FLANGE).abs() < 1e-6 * notched, "{added} vs {CORNER_FLANGE}");
+}
+
+/// A further bend on that flange's far edge keeps clear of the side wall: picked on the flange's
+/// surface (its face flush with the wall's end), it turns away from the flange's material, along
+/// -y, and the part reaches no farther out than the flange. Before, the flange folded back along
+/// the side wall's inside and the second leg came out through the wall, to x 158.23.
+#[test]
+fn a_further_bend_on_a_flange_a_notch_left_free_keeps_clear_of_the_wall() {
+    let mut s = Session::default();
+    notched_corner(&mut s, true, true);
+    let notched = volume(&mut s);
+    run(&mut s, "sheet.flange", json!({"edges": [[130, 2, 30]], "height": 20, "angle": 90, "then": [{"angle": 90, "height": 30}]}));
+    assert!(no_errors_or_warnings(&s), "{:?}", s.model.results);
+    // The second bend stands on the flange's far edge, x = 148.8. Its outer sharp is where the
+    // lines of the flange's other face, y = WALL_END + T = 2.965685, and the second leg's outer
+    // face, x = 148.8, meet; 30 from there along -y the leg ends at y = -27.034315.
+    let b = bbox(&mut s);
+    let (max_x, min_y) = (b["max"][0].as_f64().unwrap_or(f64::NAN), b["min"][1].as_f64().unwrap_or(f64::NAN));
+    assert!((max_x - 148.8).abs() < 1e-6 && (min_y - (WALL_END + 1.2 - 30.0)).abs() < 1e-6, "{b}");
+    // The second bend, away from the flange's material, starts (R + T)·tan 45° = 2.4 inside the far
+    // edge too, so the flange keeps 20 − 2.4 − 2.4 = 15.2 flat between its bends, 2.4 less than its
+    // leg alone (2.4·L·T = 51.84 less); the second adds its bend, 19.44π, and its leg,
+    // (30 − 2.4)·L·T = 596.16: 990.465122 in all.
+    let want = CORNER_FLANGE - 2.4 * 18.0 * 1.2 + 19.44 * PI + 27.6 * 18.0 * 1.2;
+    let added = volume(&mut s) - notched;
+    assert!((added - want).abs() < 1e-6 * notched, "{added} vs {want}");
+}
+
+/// The same flange on the side wall's end when the wall stands alone (no front wall, no notch) is
+/// as it was: out to x 148.8, its bend on the wall's strip in the flat over the end's whole run.
+#[test]
+fn a_flange_on_a_lone_wall_end_stands_on_that_wall() {
+    let mut s = Session::default();
+    notched_corner(&mut s, false, false);
+    run(&mut s, "sheet.flange", json!({"edges": [[130, 0, 30]], "height": 20, "angle": 90}));
+    assert!(no_errors_or_warnings(&s), "{:?}", s.model.results);
+    let b = bbox(&mut s);
+    assert!((b["max"][0].as_f64().unwrap_or(f64::NAN) - 148.8).abs() < 1e-6, "{b}");
+    // The wall ends at y = 0. The new bend meets the wall's own bend at the wall's corner, and both
+    // end where their tangent lines on the wall cross: the new bend at z = T + R = 2.4. So it runs
+    // from z 2.4 to 40 (37.6), at x 130.238938 to 167.838938, its center line BA/2 short of its
+    // tangent line 2.4 in from the end: y = 2.4 − 1.319469 = 1.080531.
+    let rows = bend_rows(&mut s);
+    let Some(&(start, end, _)) = rows.iter().find(|r| (r.2 - 37.6).abs() < 1e-6) else { panic!("no bend 37.6 long: {rows:?}") };
+    let (x0, x1) = (start[0].min(end[0]), start[0].max(end[0]));
+    assert!((x0 - (127.6 + CORNER_BA)).abs() < 1e-6 && (x1 - (127.6 + CORNER_BA - 2.4 + 40.0)).abs() < 1e-6, "{rows:?}");
+    let y = 2.4 - CORNER_BA / 2.0;
+    assert!((start[1] - y).abs() < 1e-6 && (end[1] - y).abs() < 1e-6, "{rows:?}");
+    // The flat: x from 0 to the wall's top, 167.838938; y from the flange's far edge, its leg
+    // 20 − 2.4 = 17.6 past its zone, which runs BA − 2.4 = 0.238938 past the wall's end
+    // (y = -17.838938), to the base's far edge, y = 90: 107.838938.
+    let f = flat(&mut s);
+    let size = (f["flat_size_mm"][0].as_f64().unwrap_or(f64::NAN), f["flat_size_mm"][1].as_f64().unwrap_or(f64::NAN));
+    let want = (127.6 + CORNER_BA - 2.4 + 40.0, 90.0 + 17.6 + CORNER_BA - 2.4);
+    assert!((size.0 - want.0).abs() < 1e-6 && (size.1 - want.1).abs() < 1e-6, "{size:?} vs {want:?}");
 }
