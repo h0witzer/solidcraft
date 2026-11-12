@@ -144,8 +144,9 @@ crate::dialog_descriptor::dialog_descriptors! {
                 refold: bool,
             },
             /// Convert (#6748): no face is fixed; the sheet is every face of the body but the
-            /// skipped ones, or the faces picked and every face a bend joins to them, and the
-            /// sharp edges are cut open but the bends.
+            /// skipped ones, or the faces picked and every face a bend joins to them, each a panel
+            /// however thin the body, and the sharp edges are cut open but the bends. The faces
+            /// picked to engrave are a pocket of the panel round them.
             Convert {
                 rule: usize,
                 /// The side of the faces the material lies on (index into `MATERIAL_SIDES`).
@@ -334,15 +335,16 @@ fn measure_text(app: &SolveApp, name: &str) -> Result<String, String> {
     Ok(crate::i18n::tr("sheet.recognize_measured").replace("{thickness}", &format!("{:.3}", m.thickness)).replace("{bends}", &bends))
 }
 
-/// Convert's inputs (#6748): the body (a solid, a surface body, or a shell or a plate), the bend
-/// edges, the faces left out, and the faces that make the sheet (none: every face but those left
-/// out).
+/// Convert's inputs (#6748): the body (a solid or a surface body), the bend edges, the faces left
+/// out, the faces that make the sheet (none: every face but those left out), and the walls and
+/// floors of recesses kept as engravings (none: a recess's faces are panels too).
 pub(crate) fn convert_inputs() -> Vec<SelInput> {
     vec![
         SelInput::new("Body", BODIES, false),
         SelInput::new("Bend Edges", EDGES, true),
         SelInput::new("Skip Faces", FACES, true),
         SelInput::new("Faces", FACES, true),
+        SelInput::new("Engrave Faces", FACES, true),
     ]
 }
 
@@ -670,7 +672,7 @@ pub fn start_export(app: &mut SolveApp, id: &str) -> bool {
         _ => return false,
     };
     let state = app.session.model.state();
-    let last = state.surface_sheets.last().map(|sheet| sheet.body.clone()).or_else(|| state.sheets.last().map(|sheet| sheet.body.clone()));
+    let last = state.surface_sheets.last().map(|sheet| sheet.body.clone());
     drop(state);
     if let Some(body) = last {
         export_flat(app, &body, extension);
@@ -979,7 +981,7 @@ pub fn commands(app: &SolveApp, k: &Sm, inputs: &[SelInput], extra: &Map<String,
         }
         Sm::Convert { rule, side, .. } => {
             // No face is fixed: the body picked, or the one its bend edges or faces are on.
-            let picks = items(inputs, 0).iter().chain(items(inputs, 1)).chain(items(inputs, 2)).chain(items(inputs, 3));
+            let picks = items(inputs, 0).iter().chain(items(inputs, 1)).chain(items(inputs, 2)).chain(items(inputs, 3)).chain(items(inputs, 4));
             let Some(body) = picks
                 .filter_map(|x| match x {
                     Sel::Body { name: body } | Sel::Edge { body, .. } | Sel::Face { body, .. } => Some(body.clone()),
@@ -1007,6 +1009,11 @@ pub fn commands(app: &SolveApp, k: &Sm, inputs: &[SelInput], extra: &Map<String,
             }
             if !skip.is_empty() {
                 p["skip"] = json!(skip);
+            }
+            // A recess is an engraving only where its faces are picked for it.
+            let engrave: Vec<Value> = items(inputs, 4).face_points().into_iter().map(pt).collect();
+            if !engrave.is_empty() {
+                p["engrave"] = json!(engrave);
             }
             if let Some((key, _)) = MATERIAL_SIDES.get(*side).filter(|_| *side > 0) {
                 p["direction"] = json!(key);
@@ -1187,7 +1194,7 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
         FeatureKind::SheetUnfold { body, refold } => {
             (Sm::Unfold { refold: *refold }, body.iter().map(|n| Sel::Body { name: n.to_string() }).collect())
         }
-        FeatureKind::SheetConvert { body, face, faces, rule, bends, direction } => {
+        FeatureKind::SheetConvert { body, face, faces, rule, bends, engrave, direction } => {
             let mut ins = convert_inputs();
             if let Some(i) = ins.first_mut() {
                 i.items = vec![Sel::Body { name: body.to_string() }];
@@ -1197,6 +1204,9 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
             }
             if let Some(i) = ins.get_mut(3) {
                 i.items = std::iter::once(face).chain(faces).filter_map(|p| face_sel(s, p.0)).collect();
+            }
+            if let Some(i) = ins.get_mut(4) {
+                i.items = engrave.iter().filter_map(|p| face_sel(s, p.0)).collect();
             }
             let side = MATERIAL_SIDES.iter().position(|(key, _)| key == direction).unwrap_or(0);
             return Some((Kind::Sheet(Sm::Convert { rule: rule_index(rule), side, thin: None }), ins, extra));
@@ -1218,7 +1228,7 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
             let k = Sm::Recognize { rule: rule_index(rule), new_rule: String::new(), measured: None };
             return Some((Kind::Sheet(k), ins, extra));
         }
-        FeatureKind::SheetSurfaceConvert { body, rule, bends, skip, direction } => {
+        FeatureKind::SheetSurfaceConvert { body, rule, bends, skip, engrave, direction } => {
             let mut ins = convert_inputs();
             if let Some(i) = ins.first_mut() {
                 i.items = vec![Sel::Body { name: body.to_string() }];
@@ -1228,6 +1238,9 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
             }
             if let Some(i) = ins.get_mut(2) {
                 i.items = skip.iter().filter_map(|p| face_sel(s, p.0)).collect();
+            }
+            if let Some(i) = ins.get_mut(4) {
+                i.items = engrave.iter().filter_map(|p| face_sel(s, p.0)).collect();
             }
             let side = MATERIAL_SIDES.iter().position(|(key, _)| key == direction).unwrap_or(0);
             return Some((Kind::Sheet(Sm::Convert { rule: rule_index(rule), side, thin: None }), ins, extra));
@@ -1535,24 +1548,10 @@ impl FlatView {
         self.perforations.clear();
         // Bound overlay storage and drawing work, including designs with many fields.
         const MAX_HOLES: usize = 1_000_000;
-        if let Some(sk) = state.surface_sheets.iter().find(|sk| sk.body == body).map(|sk| sk.shown()) {
-            for field in sk.perforations.iter().filter(|f| f.diameter.is_finite() && f.diameter > 0.0) {
-                let remaining = MAX_HOLES.saturating_sub(self.perforations.len());
-                self.perforations.extend(sk.perforation_holes(field).into_iter().take(remaining).map(|centre| (centre, field.diameter / 2.0)));
-            }
-            return;
-        }
-        let Some(sheet) = state.sheets.iter().find(|sheet| sheet.body == body) else { return };
-        for field in &sheet.perforations {
-            if self.perforations.len() >= MAX_HOLES {
-                break;
-            }
-            if !field.diameter.is_finite() || field.diameter <= 0.0 {
-                continue;
-            }
-            let Ok(centres) = sheet.perforation_holes(field) else { continue };
+        let Some(sk) = state.surface_sheets.iter().find(|sk| sk.body == body).map(|sk| sk.shown()) else { return };
+        for field in sk.perforations.iter().filter(|f| f.diameter.is_finite() && f.diameter > 0.0) {
             let remaining = MAX_HOLES.saturating_sub(self.perforations.len());
-            self.perforations.extend(centres.into_iter().take(remaining).map(|centre| (centre, field.diameter / 2.0)));
+            self.perforations.extend(sk.perforation_holes(field).into_iter().take(remaining).map(|centre| (centre, field.diameter / 2.0)));
         }
     }
 

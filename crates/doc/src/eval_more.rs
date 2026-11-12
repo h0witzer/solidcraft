@@ -512,16 +512,6 @@ pub(super) fn replace_sheet_body(mb: &mut ModelBody, body: Body) {
     *mb = next;
 }
 
-fn rebuild_sheet(st: &mut ModelState, idx: usize) -> Result<()> {
-    let sheet = st.sheets.get(idx).cloned().ok_or_else(|| DocError::Invalid("sheet".into()))?;
-    let solid = sheet.solid()?;
-    let i = st.bodies.iter().position(|b| b.name == sheet.body).ok_or_else(|| DocError::Unknown(format!("body `{}`", sheet.body)))?;
-    if let Some(mb) = st.bodies.get_mut(i) {
-        replace_sheet_body(mb, solid);
-    }
-    Ok(())
-}
-
 /// A rule's values as a sheet made from surfaces takes them.
 fn convert_rule(rv: &crate::sheet::RuleValues) -> crate::ConvertRule {
     crate::ConvertRule {
@@ -537,8 +527,9 @@ fn convert_rule(rv: &crate::sheet::RuleValues) -> crate::ConvertRule {
 }
 
 /// Converts the body `body` to sheet metal from its surfaces (#6748), its `faces` as Convert or
-/// Thicken chooses them: the body becomes the folded sheet, and the model keeps the sheet. The
-/// sheet is the rule's: its thickness and bends are, whatever the body's.
+/// Recognize chooses them, the faces at `engrave` engravings of Convert's panels: the body
+/// becomes the folded sheet, and the model keeps the sheet. The sheet is the rule's: its
+/// thickness and bends are, whatever the body's.
 #[allow(clippy::too_many_arguments)]
 fn convert_to_sheet(
     doc: &Document,
@@ -550,6 +541,7 @@ fn convert_to_sheet(
     rule: &Option<String>,
     bends: &[crate::Position],
     faces: crate::SheetFaces,
+    engrave: &[Vec3],
     direction: &str,
 ) -> Result<()> {
     let mb = st.body(body).cloned().ok_or_else(|| DocError::Unknown(format!("body `{body}`")))?;
@@ -558,13 +550,15 @@ fn convert_to_sheet(
     let picks = edge_picks(f, &mb, bends, warning)?;
     let placement = doc.component_transform(doc.model_body_component(&mb));
     let to_world = doc.model_body_offset(&mb).map(|offset| crate::mat_mul(&placement, offset)).unwrap_or(placement);
-    let conversion = crate::convert_surfaces(&mb, &values, &picks, faces, direction == "outside", &to_world)?;
+    let conversion = crate::convert_surfaces(&mb, &values, &picks, faces, engrave, direction == "outside", &to_world)?;
     for note in &conversion.notes {
         append_warning(warning, note.clone());
     }
     let (sheet, solid) = crate::SurfaceSheet::converted(&mb.name, &r.name, &conversion, f.id)?;
-    // A shell's or a plate's recesses are the sheet's, from either face: read where the body has
-    // its own thickness, and kept, each as deep from its face, at the rule's.
+    // Recognizing, a shell's or a plate's recesses are the sheet's, from either face: read where
+    // the body has its own thickness, and kept, each as deep from its face, at the rule's.
+    // Converting, the body has none of its own: only the engravings the user picked are kept,
+    // and the conversion has them already.
     let same = |a: f64, b: f64| (a - b).abs() <= 1e-9 * a.abs().max(1.0);
     let as_ruled = |own: f64| same(own, sheet.thickness) && conversion.modelled_radii.iter().all(|(_, r)| same(*r, conversion.rule_radius));
     let (sheet, solid) = match conversion.own_thickness {
@@ -592,13 +586,12 @@ fn convert_to_sheet(
     Ok(())
 }
 
-/// The sheet made from surfaces (#6748) a feature works on: the named body's, or with none named
-/// and no other sheet metal body, the last one `fits`.
+/// The sheet made from surfaces (#6748) a feature works on: the named body's, or with none named,
+/// the last one `fits`.
 fn surface_sheet_for(st: &ModelState, body: &Option<crate::BodyName>, fits: impl Fn(&crate::SurfaceSheet) -> bool) -> Option<usize> {
     match body {
         Some(n) => st.surface_sheets.iter().position(|s| &s.body == n),
-        None if st.sheets.is_empty() => st.surface_sheets.iter().rposition(fits),
-        None => None,
+        None => st.surface_sheets.iter().rposition(fits),
     }
 }
 
@@ -620,13 +613,22 @@ fn surface_sheet_at(st: &ModelState, body: &Option<crate::BodyName>, name: Optio
     st.surface_sheets.iter().position(|s| !matches!(s.free_edge_at(p), Ok(None)))
 }
 
-/// Whether every sheet of the model is made from surfaces (and there is one).
-fn only_surface_sheets(st: &ModelState) -> bool {
-    st.sheets.is_empty() && !st.surface_sheets.is_empty()
+/// Why a feature found no sheet made from surfaces to work on: the named body is no sheet metal
+/// body, or there is none.
+fn no_sheet(body: &Option<crate::BodyName>) -> DocError {
+    match body {
+        Some(n) => DocError::Invalid(format!("`{n}` is not a sheet metal body")),
+        None => DocError::Invalid("there is no sheet metal body".into()),
+    }
 }
 
-/// Why a pick no sheet made from surfaces holds an edge at was refused.
-fn no_free_edge(pick: Option<Vec3>) -> DocError {
+/// Why a feature on a sheet's edge found no sheet made from surfaces to work on: as
+/// [`no_sheet`] where it names a body or there is no sheet, else no sheet holds a free edge at
+/// its pick.
+fn no_free_edge(st: &ModelState, body: &Option<crate::BodyName>, pick: Option<Vec3>) -> DocError {
+    if body.is_some() || st.surface_sheets.is_empty() {
+        return no_sheet(body);
+    }
     match pick {
         Some(p) => DocError::Invalid(format!("no free edge of the sheet lies at ({:.3}, {:.3}, {:.3}): pick one on the sheet", p.x, p.y, p.z)),
         None => DocError::Invalid("pick a free edge of the sheet".into()),
@@ -759,41 +761,6 @@ fn new_sheet_body(name: String, sheet: &crate::SurfaceSheet, solid: Body, featur
     let mut mb = ModelBody::new(name, solid, feature).with_lineage(lineage);
     mb.sketch_frames = Some(std::sync::Arc::new(sheet.frames.clone()));
     mb
-}
-
-/// The sheet a feature works on: by body name, else the one with an edge nearest the pick.
-fn sheet_for(st: &ModelState, body: &Option<crate::BodyName>, pick: Option<Vec3>) -> Result<usize> {
-    if let Some(n) = body {
-        return st.sheets.iter().position(|s| &s.body == n).ok_or_else(|| DocError::Invalid(format!("`{n}` is not a sheet metal body")));
-    }
-    let p = pick.ok_or_else(|| DocError::Invalid("no sheet metal body".into()))?;
-    st.sheets
-        .iter()
-        .enumerate()
-        .filter_map(|(i, s)| s.edge_at(p).map(|e| (i, e.4)))
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(i, _)| i)
-        .ok_or_else(|| DocError::Invalid("there is no sheet metal body".into()))
-}
-
-/// Whether a point touches sheet `i`'s material: inside it, on one of its faces, or within its
-/// display tolerance of one (picks land on the display mesh). A sheet with no mesh to test
-/// against counts as touched.
-fn on_sheet_material(st: &ModelState, i: usize, p: Vec3) -> bool {
-    let Some(sh) = st.sheets.get(i) else { return true };
-    let t = sh.t;
-    let Some(mb) = st.body(&sh.body) else { return true };
-    let mesh = mb.mesh();
-    if mesh.triangles.is_empty() {
-        return true;
-    }
-    // Twice the display mesh's chord tolerance (see `ModelBody::mesh`), and a quarter of the
-    // thickness: on a large thin sheet the first steps from a point on its face clean through
-    // it, so a point on the face would touch nothing (#685).
-    let step = 2.0 * (mb.body.size() * 1e-3).max(1e-3);
-    let thin = (t * 0.25).min(step);
-    let offsets = [-step, -thin, 0.0, thin, step];
-    offsets.iter().any(|&dx| offsets.iter().any(|&dy| offsets.iter().any(|&dz| mesh.contains(p + Vec3::new(dx, dy, dz)))))
 }
 
 /// A region mirrored in the sketch x axis (y → −y), exactly: free-form curves through their
@@ -971,68 +938,7 @@ pub(super) fn sheet_eval(
             }
             Ok(())
         }
-        FeatureKind::SheetFlange { edges, body: None, .. } if only_surface_sheets(st) => Err(no_free_edge(edges.first().map(|e| e.point.0))),
-        FeatureKind::SheetFlange { edges, height, angle, radius, position, flip, body, corner_relief_shape, corner_relief, height_from } => {
-            let i = sheet_for(st, body, edges.first().map(|e| e.point.0))?;
-            let (h, a) = (val(vals, height, Kind::Length)?, val(vals, angle, Kind::Angle)?);
-            // Each edge's own height and angle, else the feature's.
-            let mut own = Vec::with_capacity(edges.len());
-            for e in edges {
-                let height = match &e.height {
-                    Some(x) => val(vals, x, Kind::Length)?,
-                    None => h,
-                };
-                let angle = match &e.angle {
-                    Some(x) => val(vals, x, Kind::Angle)?,
-                    None => a,
-                };
-                own.push((height, angle));
-            }
-            let rr = match radius {
-                Some(e) => val(vals, e, Kind::Length)?,
-                None => sheet_rule_values(doc, vals, st, i)?.bend_radius,
-            };
-            // The corner relief these flanges ask for in place of the rule's.
-            let relief = sheet::ReliefOverride {
-                shape: match corner_relief_shape {
-                    Some(name) => Some(
-                        sheet::ReliefShape::parse(name)
-                            .ok_or_else(|| DocError::Invalid(format!("unknown corner relief shape `{name}` (notch, round, rectangular or tear)")))?,
-                    ),
-                    None => None,
-                },
-                size: match corner_relief {
-                    Some(e) => Some(val(vals, e, Kind::Length)?),
-                    None => None,
-                },
-            };
-            let from = match height_from {
-                Some(name) => sheet::HeightFrom::parse(name)
-                    .ok_or_else(|| DocError::Invalid(format!("unknown flange height datum `{name}` (outer, inner or tangent)")))?,
-                None => sheet::HeightFrom::Outer,
-            };
-            let sh = st.sheets.get_mut(i).ok_or_else(|| DocError::Invalid("sheet".into()))?;
-            if sh.flat {
-                return Err(DocError::Invalid("refold the sheet before adding flanges".into()));
-            }
-            let points: Vec<Vec3> = edges.iter().map(|e| e.point.0).collect();
-            let each: Vec<sheet::EdgeFlange> = sheet_picks(sh, f, &points, warning)
-                .into_iter()
-                .zip(own)
-                .map(|(pick, (height, angle))| sheet::EdgeFlange { pick, height, angle, from })
-                .collect();
-            let n0 = sh.flanges.len();
-            let (_, notes) = sh.add_flanges_each(&each, rr, position, *flip, relief)?;
-            if !notes.is_empty() {
-                let notes = notes.join("; ");
-                *warning = Some(match warning.take() {
-                    Some(w) => format!("{w}; {notes}"),
-                    None => notes,
-                });
-            }
-            tag_flanges(sh, n0, f.id);
-            rebuild_sheet(st, i)
-        }
+        FeatureKind::SheetFlange { edges, body, .. } => Err(no_free_edge(st, body, edges.first().map(|e| e.point.0))),
         FeatureKind::SheetPath { edge, sketch, curves, radius, body } if surface_sheet_at(st, body, None, Some(edge.0)).is_some() => {
             let ss = st.sketch(sketch.0).ok_or_else(|| DocError::Unknown(format!("sketch {sketch}")))?.clone();
             if curves.is_empty() || curves.len() > sheet::MAX_PATH_LINES {
@@ -1065,56 +971,14 @@ pub(super) fn sheet_eval(
             }
             rebuild_surface_sheet(st, i)
         }
-        FeatureKind::SheetPath { edge, body: None, .. } if only_surface_sheets(st) => Err(no_free_edge(Some(edge.0))),
-        FeatureKind::SheetPath { edge, sketch, curves, radius, body } => {
-            let ss = st.sketch(sketch.0).ok_or_else(|| DocError::Unknown(format!("sketch {sketch}")))?.clone();
-            if curves.is_empty() || curves.len() > sheet::MAX_PATH_LINES {
-                return Err(DocError::Invalid(format!("a path flange's path must have 1…{} lines", sheet::MAX_PATH_LINES)));
-            }
-            for id in curves {
-                let ci = ss.sketch.curve_index(id).ok_or_else(|| DocError::Unknown(format!("curve `{id}`")))?;
-                if !ss.sketch.segs(ci).iter().all(|s| matches!(s, Seg2::Line { .. })) {
-                    return Err(DocError::Invalid("not supported yet: arcs in a path flange's path (use lines; the bends are made for you)".into()));
-                }
-            }
-            let path: Vec<Vec3> = chain_points(&ss, &ss.chain_order(curves)?)?.into_iter().map(|p| ss.plane.to_world(p)).collect();
-            let i = sheet_for(st, body, Some(edge.0))?;
-            let rr = match radius {
-                Some(e) => val(vals, e, Kind::Length)?,
-                None => {
-                    let rule = st.sheets.get(i).map(|s| s.rule.clone()).unwrap_or_default();
-                    doc.rule_values(vals, &doc.sheet_rule(Some(&rule)))?.bend_radius
-                }
-            };
-            let sh = st.sheets.get_mut(i).ok_or_else(|| DocError::Invalid("sheet".into()))?;
-            if sh.flat {
-                return Err(DocError::Invalid("refold the sheet before adding flanges".into()));
-            }
-            let pick = sheet_picks(sh, f, &[edge.0], warning).first().copied().unwrap_or(edge.0);
-            let n0 = sh.flanges.len();
-            let (_, notes) = sh.add_path_flange(pick, &path, rr, sheet::ReliefOverride::default())?;
-            if !notes.is_empty() {
-                let notes = notes.join("; ");
-                *warning = Some(match warning.take() {
-                    Some(w) => format!("{w}; {notes}"),
-                    None => notes,
-                });
-            }
-            tag_flanges(sh, n0, f.id);
-            rebuild_sheet(st, i)
-        }
-        FeatureKind::SheetPerforate { diameter, pitch, margin, pattern, body, sketch, profiles }
-            if match body {
-                Some(n) => st.surface_sheets.iter().any(|s| &s.body == n),
-                None => st.sheets.is_empty() && !st.surface_sheets.is_empty(),
-            } =>
-        {
+        FeatureKind::SheetPath { edge, body, .. } => Err(no_free_edge(st, body, Some(edge.0))),
+        FeatureKind::SheetPerforate { diameter, pitch, margin, pattern, body, sketch, profiles } => {
             // Without a body name the field goes on the newest sheet.
             let i = match body {
                 Some(n) => st.surface_sheets.iter().position(|s| &s.body == n),
                 None => st.surface_sheets.len().checked_sub(1),
             }
-            .ok_or_else(|| DocError::Invalid("there is no sheet metal body".into()))?;
+            .ok_or_else(|| no_sheet(body))?;
             let d = val(vals, diameter, Kind::Length)?;
             let pitch = val(vals, pitch, Kind::Length)?;
             let margin = match margin {
@@ -1142,42 +1006,9 @@ pub(super) fn sheet_eval(
             };
             let sh = st.surface_sheets.get_mut(i).ok_or_else(|| DocError::Invalid("sheet".into()))?;
             sh.perforations.push(crate::sheet::SheetPerforation { feature: f.id, diameter: d, pitch, margin, square, from_right: false, outline });
-            Ok(())
-        }
-        FeatureKind::SheetPerforate { diameter, pitch, margin, pattern, body, sketch, profiles } => {
-            // Without a body name the field goes on the newest sheet, as the command's own body lookup does.
-            let i = match body {
-                Some(_) => sheet_for(st, body, None)?,
-                None => st.sheets.len().checked_sub(1).ok_or_else(|| DocError::Invalid("there is no sheet metal body".into()))?,
-            };
-            let d = val(vals, diameter, Kind::Length)?;
-            let pitch = val(vals, pitch, Kind::Length)?;
-            let margin = match margin {
-                Some(e) => val(vals, e, Kind::Length)?,
-                None => d,
-            };
-            let square = match pattern.as_deref() {
-                None | Some("staggered") => false,
-                Some("square") => true,
-                Some(o) => return Err(DocError::Invalid(format!("perforation pattern {o:?}: use \"staggered\" or \"square\""))),
-            };
-            if !(d > 0.0 && pitch > d && margin >= 0.0) {
-                return Err(DocError::Invalid(format!(
-                    "perforation needs diameter > 0, pitch > diameter and margin >= 0 (diameter {d}, pitch {pitch}, margin {margin})"
-                )));
-            }
-            // The outline sketch's profiles, where they lie on the sheet now.
-            let outline = match sketch {
-                Some(sk) => {
-                    let ss = st.sketch(sk.0).ok_or_else(|| DocError::Unknown(format!("sketch {sk}")))?;
-                    let regions = select_profiles(ss, profiles.as_ref().unwrap_or(&ProfileSel::All))?;
-                    let sh = st.sheets.get(i).ok_or_else(|| DocError::Invalid("sheet".into()))?;
-                    Some(sh.perforation_outline(&ss.plane, &regions)?)
-                }
-                None => None,
-            };
-            let sh = st.sheets.get_mut(i).ok_or_else(|| DocError::Invalid("sheet".into()))?;
-            sh.perforations.push(crate::sheet::SheetPerforation { feature: f.id, diameter: d, pitch, margin, square, from_right: false, outline });
+            // It keeps clear of the bends the sheet has now; a bend made later runs through it.
+            let joints = sh.sheet.joints.len();
+            sh.perforation_joints.push((f.id, joints));
             Ok(())
         }
         FeatureKind::SheetHem { edges, length, gap, flip, body }
@@ -1209,23 +1040,7 @@ pub(super) fn sheet_eval(
             }
             rebuild_surface_sheet(st, i)
         }
-        FeatureKind::SheetHem { edges, body: None, .. } if only_surface_sheets(st) => Err(no_free_edge(edges.first().map(|p| p.0))),
-        FeatureKind::SheetHem { edges, length, gap, flip, body } => {
-            let i = sheet_for(st, body, edges.first().copied().map(Vec3::from))?;
-            let l = val(vals, length, Kind::Length)?;
-            let g = match gap {
-                Some(e) => val(vals, e, Kind::Length)?,
-                None => sheet_rule_values(doc, vals, st, i)?.hem_gap,
-            };
-            let sh = st.sheets.get_mut(i).ok_or_else(|| DocError::Invalid("sheet".into()))?;
-            let picks = sheet_picks(sh, f, &crate::plain(edges), warning);
-            let n0 = sh.flanges.len();
-            for e in &picks {
-                sh.add_hem(*e, l, g, *flip)?;
-            }
-            tag_flanges(sh, n0, f.id);
-            rebuild_sheet(st, i)
-        }
+        FeatureKind::SheetHem { edges, body, .. } => Err(no_free_edge(st, body, edges.first().map(|p| p.0))),
         FeatureKind::SheetFold { sketch, curve, a, b, angle, radius, position, flip, fixed, stays, body }
             if surface_fold_sheet(st, body, sketch, curve, a, b).is_some() =>
         {
@@ -1262,46 +1077,20 @@ pub(super) fn sheet_eval(
             }
             rebuild_surface_sheet(st, i)
         }
-        FeatureKind::SheetFold { sketch, curve, a, b, angle, radius, position, flip, fixed, body, .. } => {
-            // The sketch line, where it is now.
-            let (a, b) = match (sketch, curve) {
-                (Some(sk), Some(c)) => {
-                    let ss = st.sketch(sk.0).ok_or_else(|| DocError::Unknown(format!("sketch {sk}")))?;
-                    let ci = ss.sketch.curve_index(c).ok_or_else(|| DocError::Unknown(format!("curve `{c}`")))?;
-                    match ss.sketch.segs(ci).as_slice() {
-                        [Seg2::Line { a, b }] => (ss.plane.to_world(*a), ss.plane.to_world(*b)),
-                        _ => return Err(DocError::Invalid("the fold line must be a sketch line".into())),
-                    }
+        FeatureKind::SheetFold { sketch, curve, body, .. } => {
+            // No sheet takes the fold: its sketch line is gone or no line, the named body is no
+            // sheet, there is none, or the line lies on no flat face of one.
+            if let (Some(sk), Some(c)) = (sketch, curve) {
+                let ss = st.sketch(sk.0).ok_or_else(|| DocError::Unknown(format!("sketch {sk}")))?;
+                let ci = ss.sketch.curve_index(c).ok_or_else(|| DocError::Unknown(format!("curve `{c}`")))?;
+                if !matches!(ss.sketch.segs(ci).as_slice(), [Seg2::Line { .. }]) {
+                    return Err(DocError::Invalid("the fold line must be a sketch line".into()));
                 }
-                _ => (a.0, b.0),
-            };
-            let i = sheet_for(st, body, Some((a + b) * 0.5))?;
-            let ang = val(vals, angle, Kind::Angle)?;
-            let rr = match radius {
-                Some(e) => val(vals, e, Kind::Length)?,
-                None => sheet_rule_values(doc, vals, st, i)?.bend_radius,
-            };
-            // A fixed point that touches no material at all (e.g. far above the sheet) still picks
-            // the side it lies on, so a stored fold keeps recomputing; it says so (#371).
-            if let Some(p) = fixed
-                && !on_sheet_material(st, i, p.0)
-            {
-                *warning = Some(format!(
-                    "{} at ({:.3}, {:.3}, {:.3}); the side of the fold line it lies on stays",
-                    sheet::FOLD_FIXED_OFF_SHEET,
-                    p.x,
-                    p.y,
-                    p.z
-                ));
             }
-            let sh = st.sheets.get_mut(i).ok_or_else(|| DocError::Invalid("sheet".into()))?;
-            if sh.flat {
-                return Err(DocError::Invalid("refold the sheet before folding it".into()));
-            }
-            let n0 = sh.flanges.len();
-            sh.add_fold(a, b, ang, rr, position, *flip, fixed.map(Vec3::from), warning)?;
-            tag_flanges(sh, n0, f.id);
-            rebuild_sheet(st, i)
+            Err(match body {
+                None if !st.surface_sheets.is_empty() => DocError::Invalid("the fold line must lie on a flat face of the sheet".into()),
+                _ => no_sheet(body),
+            })
         }
         FeatureKind::SheetJog { sketch, curve, a, b, offset, measure, angle, radius, position, flip, fixed, stays, body } => {
             // The sketch line, where it is now.
@@ -1355,39 +1144,34 @@ pub(super) fn sheet_eval(
             rebuild_surface_sheet(st, i)
         }
         FeatureKind::SheetUnfold { body, refold } => {
-            if let Some(i) = surface_sheet_for(st, body, |s| s.unfolded == *refold) {
-                if let Some(sk) = st.surface_sheets.get_mut(i) {
-                    sk.unfolded = !*refold;
-                }
-                return rebuild_surface_sheet(st, i);
+            let i = surface_sheet_for(st, body, |s| s.unfolded == *refold).ok_or_else(|| match body {
+                Some(_) => no_sheet(body),
+                None => DocError::Invalid(if *refold { "no unfolded sheet to refold".into() } else { "no sheet metal body to unfold".into() }),
+            })?;
+            if let Some(sk) = st.surface_sheets.get_mut(i) {
+                sk.unfolded = !*refold;
             }
-            let i = match body {
-                Some(_) => sheet_for(st, body, None)?,
-                None => st.sheets.iter().rposition(|s| s.flat == *refold).ok_or_else(|| {
-                    DocError::Invalid(if *refold { "no unfolded sheet to refold".into() } else { "no sheet metal body to unfold".into() })
-                })?,
-            };
-            if let Some(sh) = st.sheets.get_mut(i) {
-                sh.flat = !*refold;
-            }
-            rebuild_sheet(st, i)
+            rebuild_surface_sheet(st, i)
         }
         // Convert (#6748): the body becomes the folded sheet, and the model keeps the sheet.
         // Convert takes every face of the body but the skipped ones, or the faces picked and
-        // every face a picked bend joins to them. Recognize takes a body that is sheet metal
-        // already, one side of it.
-        FeatureKind::SheetSurfaceConvert { body, rule, bends, skip, direction } => {
+        // every face a picked bend joins to them, however thin the body: each is a panel, and
+        // the faces picked to engrave are engravings of the panels round them. Recognize alone
+        // reads a body that is sheet metal already, one side of it.
+        FeatureKind::SheetSurfaceConvert { body, rule, bends, skip, engrave, direction } => {
             let skip: Vec<Vec3> = skip.iter().map(|p| p.0).collect();
-            convert_to_sheet(doc, vals, f, st, warning, body, rule, bends, crate::SheetFaces::AllBut(&skip), direction)
+            let engrave: Vec<Vec3> = engrave.iter().map(|p| p.0).collect();
+            convert_to_sheet(doc, vals, f, st, warning, body, rule, bends, crate::SheetFaces::AllBut(&skip), &engrave, direction)
         }
-        FeatureKind::SheetConvert { body, face, faces, rule, bends, direction } => {
+        FeatureKind::SheetConvert { body, face, faces, rule, bends, engrave, direction } => {
             let picked: Vec<Vec3> = std::iter::once(face.0).chain(faces.iter().map(|p| p.0)).collect();
-            convert_to_sheet(doc, vals, f, st, warning, body, rule, bends, crate::SheetFaces::Picked(&picked), direction)
+            let engrave: Vec<Vec3> = engrave.iter().map(|p| p.0).collect();
+            convert_to_sheet(doc, vals, f, st, warning, body, rule, bends, crate::SheetFaces::Picked(&picked), &engrave, direction)
         }
         FeatureKind::SheetRecognize { body, face, skip, bends, rule } => {
             let skip: Vec<Vec3> = skip.iter().map(|p| p.0).collect();
             let faces = crate::SheetFaces::Sheet { face: face.as_ref().map(|p| p.0), skip: &skip };
-            convert_to_sheet(doc, vals, f, st, warning, body, rule, bends, faces, "")
+            convert_to_sheet(doc, vals, f, st, warning, body, rule, bends, faces, &[], "")
         }
         _ => Err(DocError::Invalid(format!("{} is not a sheet metal feature", f.name))),
     }
@@ -1476,50 +1260,6 @@ fn extrusion_tool_span(body: &Body, source: &Plane) -> Option<(f64, f64, f64, Op
     (low_signature == high_signature && low != high).then_some((low.min(high), low.max(high), projection_roundoff, footprint))
 }
 
-/// Exact prismatic machining, retained in sheet material/depth metadata.
-pub(super) fn sheet_cut(
-    f: &Feature,
-    st: &mut ModelState,
-    tools: &[Body],
-    targets: &[String],
-    constructor: Option<&ExtrudeConstructor>,
-    warning: &mut Option<String>,
-) -> Result<Vec<String>> {
-    if !any_eligible_sheet(f, st, targets) {
-        return Ok(Vec::new());
-    }
-    let Some(cut) = extrude_cut(st, f)? else { return Ok(Vec::new()) };
-    sheet_prism_cut(f, st, &cut.plane, &cut.regions, cut.operation, tools, targets, constructor, cut.bound, &cut.text, warning)
-}
-
-/// A copy of the extrude cut `src` that the pattern `f` makes, moved by `m`: machined into the
-/// sheets as the cut itself is, in the moved sketch plane (#6841). `tools` are the copy's. Only
-/// for a cut moved without turning over: a mirrored copy, and any other feature, comes back
-/// unhandled (no sheets) for the caller to apply as before.
-pub(super) fn sheet_cut_copy(
-    f: &Feature,
-    src: &Feature,
-    m: &Mat,
-    st: &mut ModelState,
-    tools: &[Body],
-    targets: &[String],
-    warning: &mut Option<String>,
-) -> Result<Vec<String>> {
-    if !any_eligible_sheet(f, st, targets) {
-        return Ok(Vec::new());
-    }
-    let Some(cut) = extrude_cut(st, src)? else { return Ok(Vec::new()) };
-    if cut.operation != Operation::Cut {
-        return Ok(Vec::new());
-    }
-    let (x, y) = (crate::apply_vector(m, cut.plane.x), crate::apply_vector(m, cut.plane.y));
-    if x.cross(y).dot(crate::apply_vector(m, cut.plane.normal())) <= 0.0 {
-        return Ok(Vec::new());
-    }
-    let Some(plane) = Plane::new(apply_point(m, cut.plane.origin), x, y) else { return Ok(Vec::new()) };
-    sheet_prism_cut(f, st, &plane, &cut.regions, cut.operation, tools, targets, None, cut.bound, &cut.text, warning)
-}
-
 /// What an untapered extrude cut (or intersect) machines into a sheet.
 struct ExtrudeCut {
     plane: Plane,
@@ -1527,8 +1267,6 @@ struct ExtrudeCut {
     /// The outlines of the sketch's text: the sheet remembers where its letters went.
     text: Vec<Seg2>,
     operation: Operation,
-    /// Up to a face: the tools' own footprints bound it.
-    bound: bool,
 }
 
 /// The sketch plane, regions and text of `f`'s extrude; None for any other feature, a tapered
@@ -1548,16 +1286,29 @@ fn extrude_cut(st: &ModelState, f: &Feature) -> Result<Option<ExtrudeCut>> {
         .flat_map(|l| ss.sketch.link_curves(&l.id))
         .flat_map(|ci| ss.sketch.exact_segs(ci).unwrap_or_else(|| ss.sketch.segs(ci)))
         .collect();
-    Ok(Some(ExtrudeCut { plane: ss.plane, regions, text, operation: *operation, bound: extent.to.is_some() }))
+    Ok(Some(ExtrudeCut { plane: ss.plane, regions, text, operation: *operation }))
 }
 
-/// What an extrude cut takes from the sheets made from surfaces it reaches, read straight into
-/// their outlines (#6748): each tool a prism along a flat panel's normal, through its whole
-/// thickness, its footprint clear inside the panel's material and its box apart from the rest
-/// of the sheet. That is what the cut takes in space (see `sheet_surface_cuts`), without cutting
+/// Whether body `b` takes part in feature `f`, as `apply_traced_with` picks the bodies a boolean
+/// changes: the feature's own `targets`, else its explicit participants (`*` for all),
+/// else the bodies of its component and what it made itself. A sheet made from surfaces is one
+/// body among them: a cut aimed at another component's body, or at bodies it names, leaves it be.
+fn takes_part(f: &Feature, targets: &[String], b: &ModelBody) -> bool {
+    let targets: &[String] = if targets.is_empty() { &f.participants } else { targets };
+    let all = targets.len() == 1 && targets.first().is_some_and(|t| t == "*");
+    all || if targets.is_empty() { b.component == f.component || b.feature == f.id } else { targets.contains(&b.name) }
+}
+
+/// What an extrude cut takes from the sheets made from surfaces it reaches, of the bodies it takes
+/// part in (see [`takes_part`]), read straight into their outlines (#6748): each tool a prism
+/// along a flat panel's normal, through its whole thickness, its footprint clear inside the
+/// panel's material and its box apart from the rest of the sheet. That is what the cut takes in
+/// space (see `sheet_surface_cuts`), without cutting
 /// a body the sheet builds again. What lies inside a footprint (a letter's counter) stays, a
-/// loose piece. The sheets' bodies cut; none, and nothing changed, for any other cut, which the
-/// generic path takes.
+/// loose piece. A footprint through the panel's outline takes what it covers of the panel, the
+/// curves of both kept as drawn; a piece it parts from the panel stays, a loose piece. The
+/// sheets' bodies cut; none, and nothing changed, for any other cut, which the generic path
+/// takes.
 pub(super) fn surface_prism_cut(
     f: &Feature,
     st: &mut ModelState,
@@ -1605,7 +1356,6 @@ pub(super) fn surface_prism_cut(
             (lo, hi, plane, region, Some(b.inflated(1e-6)))
         })
         .collect();
-    let all = targets.len() == 1 && targets.first().is_some_and(|t| t == "*");
     // The cut's sketch: the curves its holes' walls are named after (see `SurfaceSheet::name_hole`).
     let cut_sketch = match &f.kind {
         FeatureKind::Extrude { sketch, .. } => st.sketch(sketch.0),
@@ -1614,7 +1364,7 @@ pub(super) fn surface_prism_cut(
     let mut plans: Vec<(usize, crate::SurfaceSheet)> = Vec::new();
     for (i, sk) in st.surface_sheets.iter().enumerate() {
         let Some(mb) = st.body(&sk.body) else { continue };
-        if !(all || targets.is_empty() || targets.contains(&sk.body)) {
+        if !takes_part(f, targets, mb) {
             continue;
         }
         let body_box = exact_box(&mb.body);
@@ -1645,15 +1395,27 @@ pub(super) fn surface_prism_cut(
                 };
                 let mapped = crate::sheet_surface_convert::rigid_region(region, chart);
                 let outline = Region2 { outer: mapped.outer.clone(), holes: Vec::new() };
-                if !crate::sheet_surface::holds_clear(own, &outline) {
-                    continue;
+                // Clear inside the panel's material, a hole of it; else through its outline or a
+                // hole of it where it covers some of that material, and beside the panel where
+                // it covers none.
+                let clear = crate::sheet_surface::holds_clear(own, &outline);
+                if !clear {
+                    match kernel::planar_regions_boolean(std::slice::from_ref(own), std::slice::from_ref(&outline), kernel::BoolOp::Intersect, tol) {
+                        Ok(on) if on.iter().map(Region2::area).sum::<f64>() > 1e-9 => {}
+                        Ok(_) => continue,
+                        // The boolean failing leaves the cut to the body's own, the 3D path, as
+                        // each `Ok(Vec::new())` here does. That is the conservative choice, not an
+                        // equivalent one: the body's cut brings the panel's curves back as splines
+                        // fitted to them, which is what this path exists to avoid.
+                        Err(_) => return Ok(Vec::new()),
+                    }
                 }
                 if found.is_some() {
                     return Ok(Vec::new());
                 }
-                found = Some((*p, mapped, *frame));
+                found = Some((*p, mapped, *frame, clear));
             }
-            let Some((p, mapped, frame)) = found else { return Ok(Vec::new()) };
+            let Some((p, mapped, frame, clear)) = found else { return Ok(Vec::new()) };
             // Nothing else of the sheet in its way, and nothing the panel keeps there already.
             if boxes.iter().any(|(k, b)| *k != Some(p) && !boxes_apart(tool_box, &Some(*b))) {
                 return Ok(Vec::new());
@@ -1667,6 +1429,24 @@ pub(super) fn surface_prism_cut(
                 || !out.sheet.cuts.is_empty()
             {
                 return Ok(Vec::new());
+            }
+            if !clear {
+                // Through the panel's outline: the panel less the footprint, by the planar
+                // boolean, keeps the panel's curves and the tool's as drawn, where the body's cut
+                // brings both back as splines fitted to them. A piece it parts from the panel
+                // stays, a loose piece, as the body's cut reads it; pieces that each hold a joint
+                // are left to the body's cut, which keeps the panel whole. A bore runs in from the
+                // panel's edge, which the cut moves: the body's cut reads what it leaves of one.
+                if out.bores.iter().any(|b| b.panel == Some(p)) {
+                    return Ok(Vec::new());
+                }
+                let Ok((kept, parted)) = crate::sheet_surface_cuts::left_of_panel(&out, p, std::slice::from_ref(&mapped), tol) else {
+                    return Ok(Vec::new());
+                };
+                let Some(panel) = out.sheet.panels.get_mut(p) else { return Ok(Vec::new()) };
+                panel.region = kept;
+                out.loose.extend(parted.into_iter().map(|region| crate::Loose { panel: p, region }));
+                continue;
             }
             let Some(panel) = out.sheet.panels.get_mut(p) else { return Ok(Vec::new()) };
             if !crate::sheet_surface::holds_clear(&panel.region, &Region2 { outer: mapped.outer.clone(), holes: Vec::new() }) {
@@ -1705,13 +1485,70 @@ pub(super) fn surface_prism_cut(
     Ok(handled)
 }
 
-/// What a hole feature's drills take from the sheets made from surfaces they reach (#6748): a
-/// drill square across a flat panel, through its thickness and clear inside its material, is a
-/// round hole in its outline; one along a flat panel, inside its thickness, a bore of it (see
-/// [`crate::sheet::SheetBore`]). Each drill must meet one panel so and nothing else of the
-/// sheet. The sheets' bodies drilled; none, and nothing changed, for any other hole, which the
-/// generic path takes.
-pub(super) fn surface_hole_cut(st: &mut ModelState, tools: &[(Traced, Option<PrimitivePrism>)]) -> Result<Vec<String>> {
+/// Refuses a tapered extrude cut (or intersect) that changes a sheet made from surfaces it targets
+/// (#6748) where the sheet can't keep it, as the flat model refuses it:
+///
+/// - a cut that stops inside a flat panel's thickness: a cap of the extrude (an end of the
+///   interval `constructor` says it was drawn over) lies strictly between the faces of a flat
+///   panel parallel to its plane, in a panel a tool reaches by their exact boxes. Its walls are
+///   not square to the sheet, and read back only its floor would show: the panel would keep a
+///   pocket at its floor's size;
+/// - an intersect: what it keeps has walls that are not square to the sheet.
+///
+/// Any other tapered cut goes on to the reader as an untapered one does (see
+/// `sheet_surface_cuts`): one through the sheet has walls from face to face, and the reader cuts
+/// it as its shadow, square through as a shop cuts it, as it cuts a hole at a slant. A cut beside
+/// the sheet changes nothing. Where the extrude's interval isn't known, a cut is refused wherever
+/// it changes the sheet.
+pub(super) fn surface_taper_refused(
+    st: &ModelState,
+    tools: &[Body],
+    constructor: Option<&ExtrudeConstructor>,
+    targets: &[String],
+    op: Operation,
+) -> Result<()> {
+    let all = targets.len() == 1 && targets.first().is_some_and(|t| t == "*");
+    let reach: Vec<Option<Aabb3>> = tools.iter().map(exact_box).collect();
+    for sk in st.surface_sheets.iter().filter(|sk| all || targets.is_empty() || targets.contains(&sk.body)) {
+        let Some(mb) = st.body(&sk.body) else { continue };
+        if op == Operation::Cut && constructor.is_some_and(|c| !stops_inside(sk, &reach, &c.plane, c.interval)) {
+            continue;
+        }
+        super::sheet_boolean_unchanged(&mb.body, tools, op)?;
+    }
+    Ok(())
+}
+
+/// Whether an extrude drawn on `plane` over `interval` (along the plane's normal) stops inside a
+/// flat panel of `sk` that a tool reaches (`reach`: the tools' boxes): a cap of it strictly between
+/// the panel's faces, parallel to them. Past a rounding of the numbers its depths come from, a cap
+/// within a few units in the last place of a face is on it (see [`surface_thin_layer_refused`]).
+/// Where the sheet's pieces can't be placed, it is taken to stop inside one.
+fn stops_inside(sk: &crate::SurfaceSheet, reach: &[Option<Aabb3>], plane: &Plane, interval: (f64, f64)) -> bool {
+    let Some((panels, boxes)) = sk.pieces_in_space() else { return true };
+    let n = plane.normal();
+    let t = sk.thickness;
+    panels.iter().any(|(p, frame, _)| {
+        if frame.z.cross(n).len() > 1e-9 {
+            return false;
+        }
+        // The panel's faces along the normal.
+        let s0 = (frame.shift - plane.origin).dot(n);
+        let s1 = s0 + t * frame.z.dot(n);
+        let (p0, p1) = (s0.min(s1), s0.max(s1));
+        let ulps = 4.0 * f64::EPSILON * (frame.shift.len() + plane.origin.len() + interval.0.abs() + interval.1.abs() + t);
+        [interval.0, interval.1].into_iter().any(|cap| cap - p0 > ulps && p1 - cap > ulps)
+            && boxes.iter().any(|(k, b)| *k == Some(*p) && reach.iter().any(|r| !boxes_apart(r, &Some(*b))))
+    })
+}
+
+/// What the drills of hole feature `f` take from the sheets made from surfaces they reach, of the
+/// bodies the hole cuts (see [`takes_part`]) (#6748): a drill square across a flat panel, through
+/// its thickness and clear inside its material, is a round hole in its outline; one along a flat
+/// panel, inside its thickness, a bore of it (see [`crate::sheet::SheetBore`]). Each drill must
+/// meet one panel so and nothing else of the sheet. The sheets' bodies drilled; none, and nothing
+/// changed, for any other hole, which the generic path takes.
+pub(super) fn surface_hole_cut(f: &Feature, st: &mut ModelState, tools: &[(Traced, Option<PrimitivePrism>)]) -> Result<Vec<String>> {
     if tools.is_empty() || tools.len() > 10_000 {
         return Ok(Vec::new());
     }
@@ -1723,6 +1560,10 @@ pub(super) fn surface_hole_cut(st: &mut ModelState, tools: &[(Traced, Option<Pri
     let mut plans: Vec<(usize, crate::SurfaceSheet)> = Vec::new();
     for (i, sk) in st.surface_sheets.iter().enumerate() {
         let Some(mb) = st.body(&sk.body) else { continue };
+        // A hole has no targets of its own: its participants, else its component's bodies.
+        if !takes_part(f, &[], mb) {
+            continue;
+        }
         let body_box = exact_box(&mb.body);
         let reaching: Vec<_> = drills.iter().filter(|d| !boxes_apart(&d.4, &body_box)).collect();
         if reaching.is_empty() {
@@ -1806,10 +1647,11 @@ pub(super) fn surface_hole_cut(st: &mut ModelState, tools: &[(Traced, Option<Pri
 }
 
 /// An untapered extrude join one sheet thick in the plane of a flat panel of a sheet made from
-/// surfaces (#6748), folded or flat, that touches that panel's material and no other piece of
-/// the sheet: its footprint becomes part of the panel's outline, so the flat, its DXF and a
-/// refold keep it, and it follows its sketch as a cut there does. The sheets' bodies it joined;
-/// none, and nothing changed, for any other join, which the generic path takes.
+/// surfaces (#6748), folded or flat, of the bodies the join takes part in (see [`takes_part`]),
+/// that touches that panel's material and no other piece of the sheet: its footprint becomes part
+/// of the panel's outline, so the flat, its DXF and a refold keep it, and it follows its sketch as
+/// a cut there does. The sheets' bodies it joined; none, and nothing changed, for any other join,
+/// which the generic path takes.
 pub(super) fn surface_sheet_join(
     f: &Feature,
     st: &mut ModelState,
@@ -1829,9 +1671,8 @@ pub(super) fn surface_sheet_join(
     let plane = ss.plane;
     let n = plane.normal();
     let (lo, hi) = (c.interval.0.min(c.interval.1), c.interval.0.max(c.interval.1));
-    let all = targets.len() == 1 && targets.first().is_some_and(|t| t == "*");
     for (i, sk) in st.surface_sheets.iter().enumerate() {
-        if !(all || targets.is_empty() || targets.contains(&sk.body)) {
+        if !st.body(&sk.body).is_some_and(|mb| takes_part(f, targets, mb)) {
             continue;
         }
         let Some((panels, _)) = sk.pieces_in_space() else { continue };
@@ -1924,380 +1765,14 @@ pub(super) fn cut_letters(st: &ModelState, f: &Feature) -> Option<(Plane, Vec<Re
     (!letters.is_empty()).then_some((cut.plane, letters))
 }
 
-/// An untapered extrude join one sheet thick in the plane of a panel of sheet metal (the base or
-/// a flange's panel, unfolded or folded) that touches that panel and nothing else of the sheet:
-/// the material becomes part of the panel's outline, so the flat pattern, its DXF and a refold
-/// keep it, and it follows its sketch's parameters as a cut made there does. Cut-outs it covers
-/// are filled. Returns the sheets it took; none (and the generic path's warning) for any other
-/// join: another depth, out of every panel's plane, reaching into a bend zone or another panel,
-/// apart from the sheet, or over a pocket, label, bore or perforation.
-pub(super) fn sheet_join(
-    f: &Feature,
-    st: &mut ModelState,
-    tools: &[Body],
-    targets: &[String],
-    constructor: Option<&ExtrudeConstructor>,
-) -> Result<Vec<String>> {
-    let FeatureKind::Extrude { sketch, profiles, operation: Operation::Join, extent, .. } = &f.kind else { return Ok(Vec::new()) };
-    if extent.taper.is_some() || tools.is_empty() || !any_eligible_sheet(f, st, targets) {
-        return Ok(Vec::new());
-    }
-    let Some(ss) = st.sketch(sketch.0).cloned() else { return Ok(Vec::new()) };
-    // The depth the extrude was given, along its sketch's normal: only an untrimmed extrude has one.
-    let Some(c) = constructor.filter(|c| c.plane == ss.plane) else { return Ok(Vec::new()) };
-    let regions = solidcraft_sketch::merge_regions(&select_profiles(&ss, profiles)?);
-    let plane = ss.plane;
-    let n = plane.normal();
-    let (lo, hi) = (c.interval.0.min(c.interval.1), c.interval.0.max(c.interval.1));
-    let roundoff = 128.0 * f64::EPSILON * (plane.origin.len() + lo.abs() + hi.abs()).max(1.0);
-    let mut work = sheet::FlatWork::new();
-    let mut plans = Vec::new();
-    for original in &st.sheets {
-        if !sheet_eligible(f, st, targets, original) {
-            continue;
-        }
-        let Some(sh) = sheet_join_one(original, &plane, n, &regions, (lo, hi, roundoff), &mut work)? else { return Ok(Vec::new()) };
-        let body = sh.solid()?;
-        plans.push((sh, body));
-    }
-    let handled = plans.iter().map(|(sh, _)| sh.body.clone()).collect();
-    for (sh, body) in plans {
-        if let Some(mb) = st.bodies.iter_mut().find(|b| b.name == sh.body) {
-            replace_sheet_body(mb, body);
-        }
-        if let Some(target) = st.sheets.iter_mut().find(|s| s.body == sh.body) {
-            *target = sh;
-        }
-    }
-    Ok(handled)
-}
-
-/// [`sheet_join`] on one sheet: the sheet with each of the join's `regions` (in `plane`, the
-/// depth `span` along its normal `n`) taken into the one panel it fits, or None where one of them
-/// fits none.
-fn sheet_join_one(
-    original: &sheet::SheetBody,
-    plane: &Plane,
-    n: Vec3,
-    regions: &[Region2],
-    span: (f64, f64, f64),
-    work: &mut sheet::FlatWork,
-) -> Result<Option<sheet::SheetBody>> {
-    let (lo, hi, roundoff) = span;
-    let sh = original;
-    let region_of = |pi: Option<usize>| match pi {
-        None => Some(sh.base.clone()),
-        Some(i) => sh.flanges.get(i).map(|f| sh.panel(f)),
-    };
-    let all: Vec<Option<usize>> = std::iter::once(None).chain((0..sh.flanges.len()).map(Some)).collect();
-    // The panels whose faces are the sheet's thickness apart along the sketch's normal, the join
-    // filling exactly that slab.
-    let pieces: Vec<Option<usize>> = all
-        .iter()
-        .copied()
-        .filter(|&pi| {
-            let w = sh.world(pi);
-            let sign = crate::apply_vector(&w, Vec3::Z).dot(n);
-            if sign.abs() < 1.0 - 1e-9 {
-                return false;
-            }
-            let zorigin = (apply_point(&w, Vec3::ZERO) - plane.origin).dot(n);
-            let (a, b) = ((lo - zorigin) / sign, (hi - zorigin) / sign);
-            let tol = 1e-6 + roundoff;
-            a.min(b).abs() <= tol && (a.max(b) - sh.t).abs() <= tol
-        })
-        .collect();
-    let zones: Vec<Region2> = sh.flanges.iter().map(|f| sh.zone(f)).collect();
-    let touches = |a: &Region2, b: &Region2, work: &mut sheet::FlatWork| -> Result<bool> {
-        Ok(sheet::material_boolean(std::slice::from_ref(a), std::slice::from_ref(b), kernel::BoolOp::Union, work)?.len() == 1)
-    };
-    // Each region joins the one panel it is one piece with, apart from every bend zone and the
-    // other panels (touching one along an edge, the flat pattern would lose the cut between them).
-    let mut fits: Vec<(Option<usize>, Region2)> = Vec::new();
-    for r in regions {
-        let mut found = None;
-        for &pi in &pieces {
-            let Some(piece) = region_of(pi) else { continue };
-            let flat = sh.region_to_flat(pi, plane, r)?;
-            if !touches(&piece, &flat, work)? {
-                continue;
-            }
-            let mut apart = true;
-            for other in zones.iter().cloned().chain(all.iter().filter(|&&q| q != pi).filter_map(|&q| region_of(q))) {
-                if touches(&other, &flat, work)? {
-                    apart = false;
-                    break;
-                }
-            }
-            if !apart {
-                continue;
-            }
-            if found.is_some() {
-                // Two panels in the plane both take it.
-                return Ok(None);
-            }
-            found = Some((pi, flat));
-        }
-        let Some(fit) = found else { return Ok(None) };
-        fits.push(fit);
-    }
-    // Pockets, labels, bores and perforations keep their own outlines: not under a join yet.
-    if !sh.bores.is_empty() || !sh.perforations.is_empty() {
-        return Ok(None);
-    }
-    let flats: Vec<Region2> = fits.iter().map(|(_, r)| r.clone()).collect();
-    let covered: f64 = {
-        let kept: Vec<Region2> = sh.pockets.iter().map(|p| p.region.clone()).chain(sh.labels.iter().cloned()).collect();
-        sheet::material_boolean(&kept, &flats, kernel::BoolOp::Intersect, work)?.iter().map(Region2::area).sum()
-    };
-    if covered > 1e-9 {
-        return Ok(None);
-    }
-    let mut sh = original.clone();
-    for &pi in &all {
-        let mine: Vec<Region2> = fits.iter().filter(|(q, _)| *q == pi).map(|(_, r)| r.clone()).collect();
-        if mine.is_empty() {
-            continue;
-        }
-        let Some(piece) = region_of(pi) else { return Ok(None) };
-        let joined = sheet::material_boolean(std::slice::from_ref(&piece), &mine, kernel::BoolOp::Union, work)?;
-        let [one] = joined.as_slice() else { return Ok(None) };
-        match pi {
-            None => sh.base = one.clone(),
-            Some(i) => {
-                if !one.holes.is_empty() {
-                    return Ok(None);
-                }
-                let Some(f) = sh.flanges.get_mut(i) else { return Ok(None) };
-                f.exact = Some(one.outer.clone());
-            }
-        }
-    }
-    // Cut-outs it covers are filled.
-    let mut holes = Vec::with_capacity(sh.holes.len());
-    for h in &sh.holes {
-        holes.extend(sheet::material_boolean(std::slice::from_ref(h), &flats, kernel::BoolOp::Cut, work)?);
-    }
-    sh.holes = holes;
-    Ok(Some(sh))
-}
-
-/// Whether a cut of `f` with these targets (else its participants, else its component's
-/// bodies) machines the sheet `original`.
-fn sheet_eligible(f: &Feature, st: &ModelState, targets: &[String], original: &crate::sheet::SheetBody) -> bool {
-    let targets = if targets.is_empty() { &f.participants } else { targets };
-    let all = targets.len() == 1 && targets.first().is_some_and(|t| t == "*");
-    all || if targets.is_empty() {
-        st.bodies.iter().any(|b| b.name == original.body && (b.component == f.component || b.feature == f.id))
-    } else {
-        targets.contains(&original.body)
-    }
-}
-
-/// Whether a cut of `f` with these targets machines any sheet metal body.
-fn any_eligible_sheet(f: &Feature, st: &ModelState, targets: &[String]) -> bool {
-    st.sheets.iter().any(|original| sheet_eligible(f, st, targets, original))
-}
-
-/// A Box or Cylinder cut (or intersect) whose tool is a straight prism along the normal of
-/// the sheet it meets: machined like the equivalent extrude of its footprint, so the sheet
-/// keeps it as a flat cut-out or pocket. A hole's drill (`drill`) may also be square to a
-/// folded panel of the sheet, a flange's. Returns the sheet bodies it handled; none when the
-/// primitive is not such a prism (the generic preflight then refuses real 3D machining).
-pub(super) fn sheet_primitive_cut(
-    f: &Feature,
-    st: &mut ModelState,
-    tool: &Body,
-    prism: PrimitivePrism,
-    operation: Operation,
-    drill: bool,
-    warning: &mut Option<String>,
-) -> Result<Vec<String>> {
-    if !matches!(operation, Operation::Cut | Operation::Intersect) || !any_eligible_sheet(f, st, &[]) {
-        return Ok(Vec::new());
-    }
-    // The first sheet the primitive meets decides the machining direction. Sheets clear of it
-    // by their exact boxes ([`kernel::apart`]) are passed over; the one sheet left needs no
-    // boolean to show it is met (that boolean came out empty against a sheet carrying a label's
-    // cut-outs, and the hole was then cut into the solid without a place in the flat pattern).
-    let mut near: Vec<&sheet::SheetBody> = Vec::new();
-    for sh in st.sheets.iter().filter(|sh| sheet_eligible(f, st, &[], sh)) {
-        if let Some(mb) = st.body(&sh.body)
-            && !kernel::apart(&mb.body, tool)?
-        {
-            near.push(sh);
-        }
-    }
-    let mut normal = None;
-    for sh in &near {
-        if let Some(mb) = st.body(&sh.body)
-            && (near.len() == 1 || kernel::boolean(&mb.body, tool, kernel::BoolOp::Intersect)?.is_some())
-        {
-            normal = Some(match prism {
-                PrimitivePrism::Cylinder { axis, .. }
-                    if drill && !sh.flat && Plane::from_normal(Vec3::ZERO, axis).is_some_and(|p| !sh.parallel_panels(&p).is_empty()) =>
-                {
-                    axis
-                }
-                _ => sh.frame.normal(),
-            });
-            break;
-        }
-    }
-    let Some(normal) = normal else { return Ok(Vec::new()) };
-    let Some((plane, region, interval)) = prism.along(normal) else { return Ok(Vec::new()) };
-    let tools = kernel::extrude(&plane, std::slice::from_ref(&region), interval.0, interval.1)?;
-    sheet_prism_cut(f, st, &plane, std::slice::from_ref(&region), operation, &tools, &[], None, false, &[], warning)
-}
-
-/// How a hole's straight drill machines the sheets it meets, from the panels it passes through.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Drill {
-    /// Square across every panel it meets: a cut-out or pocket of the flat pattern
-    /// ([`sheet_primitive_cut`]).
-    Across,
-    /// Along every panel it meets, into a rim: a bore of each ([`sheet_bore_cut`]).
-    Along,
-}
-
-/// Which [`Drill`] a hole's straight drill is for the sheets `f` machines; None when it meets
-/// none of them. A box is a prism across its sheet. A drill square to some panels it meets and
-/// along others, or at an angle to one, has no exact place in the flat pattern and is refused.
-pub(super) fn sheet_drill(f: &Feature, st: &ModelState, prism: PrimitivePrism) -> Result<Option<Drill>> {
-    let PrimitivePrism::Cylinder { base, axis, radius, height } = prism else { return Ok(Some(Drill::Across)) };
-    let mut squares = Vec::new();
-    for sh in st.sheets.iter().filter(|sh| sheet_eligible(f, st, &[], sh)) {
-        squares.extend(sh.drilled_panels(base, axis, radius, height)?.into_iter().map(|(_, square)| square));
-    }
-    if squares.is_empty() {
-        Ok(None)
-    } else if squares.iter().all(|s| *s >= 1.0 - 1e-6) {
-        Ok(Some(Drill::Across))
-    } else if squares.iter().all(|s| *s <= 1e-6) {
-        Ok(Some(Drill::Along))
-    } else {
-        Err(DocError::Invalid("this hole crosses a sheet panel at an angle; drill it square to the panel, or along it into a rim".into()))
-    }
-}
-
-/// A hole's straight drill along a panel of a sheet (into its rim), kept as a bore of each
-/// panel it meets (see [`crate::sheet::SheetBore`]), so the sheet still unfolds. Returns the
-/// sheet bodies it machined; None when the drill is not a plain cylinder or meets no sheet.
-pub(super) fn sheet_bore_cut(f: &Feature, st: &mut ModelState, prism: PrimitivePrism) -> Result<Option<Vec<String>>> {
-    let PrimitivePrism::Cylinder { base, axis, radius, height } = prism else { return Ok(None) };
-    // Drilling a sheet builds each of its panels and runs a boolean on it, only to find that a
-    // drill far off meets none (#10226): a sheet whose box lies clear of the drill's is left out.
-    // Both boxes are the exact ones, grown by the bodies' tolerances, as for the other sheet
-    // cuts. A drill a sheet refuses whatever it meets (not a cylinder, or the
-    // sheet holds all the bores it may) is still put to every sheet.
-    let reach = drill_box(base, axis, radius, height);
-    let mut plans = Vec::new();
-    for original in &st.sheets {
-        if !sheet_eligible(f, st, &[], original) {
-            continue;
-        }
-        if !original.bores_full() && st.body(&original.body).is_some_and(|mb| boxes_apart(&exact_box(&mb.body), &reach)) {
-            continue;
-        }
-        let mut sh = original.clone();
-        #[cfg(test)]
-        super::cost_tests::count(|c| c.cut += 1);
-        match sh.add_bore(base, axis, radius, height) {
-            Ok(true) => {}
-            Ok(false) => continue,
-            Err(e) => return Err(e),
-        }
-        let body = sh.solid()?;
-        plans.push((sh, body));
-    }
-    if plans.is_empty() {
-        return Ok(None);
-    }
-    let mut handled = Vec::new();
-    for (sh, body) in plans {
-        if let Some(mb) = st.bodies.iter_mut().find(|b| b.name == sh.body) {
-            replace_sheet_body(mb, body);
-        }
-        handled.push(sh.body.clone());
-        if let Some(slot) = st.sheets.iter_mut().find(|s| s.body == sh.body) {
-            *slot = sh;
-        }
-    }
-    Ok(Some(handled))
-}
-
-/// [`exact_box`] of a hole's drill as [`crate::sheet::SheetBody::add_bore`] makes it; None
-/// (never apart) for a drill it refuses.
+/// [`exact_box`] of a hole's drill, the cylinder from `base` along `axis`; None (never apart) for
+/// a drill that makes no cylinder.
 fn drill_box(base: Vec3, axis: Vec3, radius: f64, height: f64) -> Option<Aabb3> {
     let axis = axis.normalized()?;
     if ![base.x, base.y, base.z, radius, height].iter().all(|v| v.is_finite()) || !(radius > 0.0) || height == 0.0 {
         return None;
     }
     exact_box(&kernel::cylinder(base, axis, radius, height).ok()?)
-}
-
-/// The most hole tools machined in one pass by [`sheet_drill_cuts`].
-const MAX_DRILLS_AT_ONCE: usize = 1000;
-
-/// A hole feature's straight drills (`prisms`, all along one axis), machined into the sheets in
-/// one pass for each depth they share: one rebuild of the sheet and of its flat pattern for all
-/// of them, rather than one per drill, each on a sheet machined by the ones before.
-/// The drills are the cut-outs and pockets [`sheet_primitive_cut`] makes of them one at a time.
-/// None when they can't all be taken this way (they are not all cylinders along one axis that
-/// every sheet they may machine takes square, or a depth of them meets no sheet): the caller then
-/// puts the model back and drills them one by one.
-pub(super) fn sheet_drill_cuts(
-    f: &Feature,
-    st: &mut ModelState,
-    prisms: &[PrimitivePrism],
-    warning: &mut Option<String>,
-) -> Result<Option<Vec<String>>> {
-    if prisms.len() < 2 || prisms.len() > MAX_DRILLS_AT_ONCE || !any_eligible_sheet(f, st, &[]) {
-        return Ok(None);
-    }
-    let Some(PrimitivePrism::Cylinder { base: base0, axis: axis0, .. }) = prisms.first().copied() else { return Ok(None) };
-    let Some(axis) = axis0.normalized() else { return Ok(None) };
-    let Some(plane) = Plane::from_normal(base0, axis) else { return Ok(None) };
-    // Every sheet the drills may machine takes them square: along its normal, or (folded) square
-    // to one of its panels, as a single drill would be taken.
-    for sh in st.sheets.iter().filter(|sh| sheet_eligible(f, st, &[], sh)) {
-        let square = sh.frame.normal().cross(axis).len() <= 1e-12 || (!sh.flat && !sh.parallel_panels(&plane).is_empty());
-        if !square {
-            return Ok(None);
-        }
-    }
-    // Each drill in the one plane: its circle, and its depth interval along the axis.
-    let mut groups: Vec<((f64, f64), Vec<Region2>)> = Vec::new();
-    for prism in prisms {
-        let PrimitivePrism::Cylinder { base, axis: a, radius, height } = *prism else { return Ok(None) };
-        let Some(a) = a.normalized() else { return Ok(None) };
-        if a.cross(axis).len() > 1e-12 || ![base.x, base.y, base.z, radius, height].iter().all(|v| v.is_finite()) || !(radius > 0.0) {
-            return Ok(None);
-        }
-        let (sense, at) = (a.dot(axis).signum(), (base - base0).dot(axis));
-        let (e0, e1) = (at + sense * height.min(0.0), at + sense * height.max(0.0));
-        let interval = (e0.min(e1), e0.max(e1));
-        let circle = Region2 { outer: Loop2::circle(plane.to_local(base), radius), holes: vec![] };
-        let same = |(lo, hi): (f64, f64)| (lo - interval.0).abs() <= 1e-9 * (1.0 + lo.abs()) && (hi - interval.1).abs() <= 1e-9 * (1.0 + hi.abs());
-        match groups.iter_mut().find(|(i, _)| same(*i)) {
-            Some((_, regions)) => regions.push(circle),
-            None => groups.push((interval, vec![circle])),
-        }
-    }
-    let mut handled: Vec<String> = Vec::new();
-    for ((lo, hi), regions) in groups {
-        let tools = kernel::extrude(&plane, &regions, lo, hi)?;
-        let done = sheet_prism_cut(f, st, &plane, &regions, Operation::Cut, &tools, &[], None, false, &[], warning)?;
-        if done.is_empty() {
-            return Ok(None);
-        }
-        for name in done {
-            if !handled.contains(&name) {
-                handled.push(name);
-            }
-        }
-    }
-    Ok(Some(handled))
 }
 
 /// The largest size a cone takes (mm): beyond it the tessellation and booleans lose precision.
@@ -2354,319 +1829,61 @@ pub(super) fn cone(base: Vec3, axis: Vec3, radius: f64, top_radius: f64, height:
     Ok(Traced::made(kernel::transform_matrix(&body, m)?, roles))
 }
 
-/// A primitive tool's exact geometry, for [`sheet_primitive_cut`].
+/// A hole tool's exact geometry, for [`surface_hole_cut`].
 #[derive(Clone, Copy, Debug)]
 pub(super) enum PrimitivePrism {
-    /// An axis-aligned box between two corners.
-    Box { lo: Vec3, hi: Vec3 },
     /// A cylinder: base centre, unit axis, radius and signed height.
     Cylinder { base: Vec3, axis: Vec3, radius: f64, height: f64 },
 }
 
-impl PrimitivePrism {
-    /// The sketch-like plane, footprint region and depth interval of this tool as a prism along
-    /// `normal` (either sense), or None when it is not one.
-    fn along(&self, normal: Vec3) -> Option<(Plane, Region2, (f64, f64))> {
-        let n = normal.normalized()?;
-        match *self {
-            PrimitivePrism::Box { lo, hi } => {
-                let (lo, hi) = (lo.min(hi), lo.max(hi));
-                let s = hi - lo;
-                // Plane axes (x, y) and the depth axis, as a right-handed frame.
-                let (x, y, depth) = if n.cross(Vec3::Z).len() <= 1e-12 {
-                    (Vec3::X, Vec3::Y, s.z)
-                } else if n.cross(Vec3::X).len() <= 1e-12 {
-                    (Vec3::Y, Vec3::Z, s.x)
-                } else if n.cross(Vec3::Y).len() <= 1e-12 {
-                    (Vec3::Z, Vec3::X, s.y)
-                } else {
-                    return None;
-                };
-                let plane = Plane::new(lo, x, y)?;
-                let (w, h) = (s.dot(x), s.dot(y));
-                let outer = Loop2::polygon(&[Vec2::ZERO, Vec2::new(w, 0.0), Vec2::new(w, h), Vec2::new(0.0, h)]);
-                Some((plane, Region2 { outer, holes: vec![] }, (0.0, depth)))
-            }
-            PrimitivePrism::Cylinder { base, axis, radius, height } => {
-                let axis = axis.normalized()?;
-                if axis.cross(n).len() > 1e-12 {
-                    return None;
-                }
-                let plane = Plane::from_normal(base, axis)?;
-                Some((plane, Region2 { outer: Loop2::circle(Vec2::ZERO, radius), holes: vec![] }, (height.min(0.0), height.max(0.0))))
-            }
-        }
-    }
-}
-
-/// The most outline segments of a sketch's text a cut tells letters by, and the most text regions
-/// a sheet keeps (see [`crate::sheet::SheetBody::labels`]).
+/// The most outline segments of a sketch's text a cut tells letters by, and the most letters it
+/// tells (see [`crate::SurfaceSheet::labels`]).
 const MAX_TEXT_CURVES: usize = 20_000;
 const MAX_LABELS: usize = 1000;
 
-/// `text` is the outlines of the text in the cut's sketch (none for a primitive's cut).
-#[allow(clippy::too_many_arguments)]
-fn sheet_prism_cut(
-    f: &Feature,
-    st: &mut ModelState,
+/// Refuses an extrude drawn on `plane` over `interval` (along the plane's normal) that would leave,
+/// in a flat panel it reaches (`reach`: the tools' boxes) of a sheet made from surfaces, a layer
+/// thinner than the extrusion resolution: the material it keeps or takes, or what it leaves
+/// beside either face. Past a rounding of the numbers its depths come from, a cap within a few
+/// units in the last place of a face is on it. The boolean doesn't resolve such a layer, so the
+/// sheet would keep what the cut took or lose what it kept; the extrude's own interval shows it.
+pub(super) fn surface_thin_layer_refused(
+    st: &ModelState,
+    reach: &[Option<Aabb3>],
     plane: &Plane,
-    regions: &[Region2],
-    operation: Operation,
-    tools: &[Body],
+    interval: (f64, f64),
     targets: &[String],
-    constructor: Option<&ExtrudeConstructor>,
-    footprints_bound: bool,
-    text: &[Seg2],
-    warning: &mut Option<String>,
-) -> Result<Vec<String>> {
+) -> Result<()> {
     let n = plane.normal();
-    let mut work = sheet::FlatWork::new();
-    let faces = tools.iter().fold(0usize, |count, body| count.saturating_add(body.face_count()));
-    if tools.len() > 1000 || faces > 16_384 {
-        return Err(DocError::Invalid("sheet machining tools exceed the bounded geometry budget".into()));
-    }
-    work.charge(faces.saturating_mul(5))?;
-    let mut span = (f64::MAX, f64::MIN);
-    let mut cap_roundoff: f64 = 0.0;
-    let mut current_footprints = Vec::new();
-    for tool in tools {
-        let Some((lo, hi, roundoff, footprint)) = sheet_tool_span(tool, plane) else {
-            // Modified tools need a current geometric prism certificate. The generic
-            // sheet preflight permits actual no-change, otherwise refuses stale metadata.
-            return Ok(Vec::new());
-        };
-        if span.0 != f64::MAX && ((span.0 - lo).abs() > cap_roundoff + roundoff || (span.1 - hi).abs() > cap_roundoff + roundoff) {
-            // Different profile tools cannot be represented as one filled depth interval.
-            return Ok(Vec::new());
-        }
-        span = (span.0.min(lo), span.1.max(hi));
-        cap_roundoff = cap_roundoff.max(roundoff);
-        if let Some(footprint) = footprint {
-            current_footprints.push(footprint);
-        }
-    }
-    // Only untrimmed Distance tools may use their exact authored scalar interval.
-    // The cap certificate still qualifies their current physical slab above.
-    let selected_edges =
-        regions.iter().flat_map(|r| std::iter::once(&r.outer).chain(&r.holes)).map(|l| l.segs.len()).fold(0usize, usize::saturating_add);
-    work.charge(faces.saturating_mul(selected_edges).saturating_mul(16))?;
-    let nominal = constructor.filter(|c| c.plane == *plane).and_then(|c| {
-        let placed_basis = Plane::new(c.plane.origin, c.plane.x, c.plane.y)?;
-        (current_footprints.len() == tools.len()
-            && current_footprints.iter().all(|(plane, r)| plane.x == placed_basis.x && plane.y == placed_basis.y && regions.contains(r)))
-        .then_some(c.interval)
-    });
-    // The regions of the cut that are letters, with their counters.
-    let letters: Vec<&Region2> = if operation == Operation::Cut && !text.is_empty() && text.len() <= MAX_TEXT_CURVES {
-        regions.iter().filter(|r| sheet::loop_lies_on(&r.outer, text)).collect()
-    } else {
-        Vec::new()
-    };
-    let mut plans = Vec::new();
-    let mut notes = Vec::new();
-    'sheets: for original in &st.sheets {
-        if !sheet_eligible(f, st, targets, original) {
-            continue;
-        }
-        let Some(mb) = st.body(&original.body) else {
-            continue;
-        };
-        let mut sh = original.clone();
-        if operation == Operation::Intersect && (!sh.flat && !sh.flanges.is_empty()) {
-            super::sheet_boolean_unchanged(&mb.body, tools, operation)?;
-            plans.push((sh.body.clone(), Some((sh, mb.body.clone()))));
-            continue;
-        }
-        // No 3D boolean of each tool with the whole folded sheet first: the flat machining below
-        // is exact, and a cut that machines nothing there is checked against the solid after it.
-        // (That boolean cost each label hundreds of milliseconds, and against a sheet already
-        // carrying a label's cut-outs it came out empty: the next cut was dropped.)
-        // A tool clear of a bend by its exact box (a label's letters against every bend and
-        // flange of a tray) costs no intersection work: the boolean answers it from the boxes.
-        for bends in sh.unmodeled_solids(plane)? {
-            for tool in tools {
-                if kernel::boolean(&bends, tool, kernel::BoolOp::Intersect)?.is_some() {
-                    return Err(DocError::Invalid(
-                        "this machining intersects a folded bend or a nonparallel panel; unfold the sheet before machining that material".into(),
-                    ));
-                }
-            }
-        }
-        let candidates = if sh.flat {
-            if sh.frame.normal().cross(n).len() > 1e-6 { Vec::new() } else { sh.flat_regions()?.into_iter().map(|r| (None, r)).collect() }
-        } else {
-            sh.material_panels(Some(plane), &mut work)?
-        };
-        let mut modeled = false;
-        let mut labels = Vec::new();
-        for (pi, panel) in candidates {
-            let w = if sh.flat { sh.world(None) } else { sh.world(pi) };
-            let zorigin = (apply_point(&w, Vec3::ZERO) - plane.origin).dot(n);
-            let sign = crate::apply_vector(&w, Vec3::Z).dot(n);
-            if sign.abs() < 1e-6 {
+    let (lo, hi) = (interval.0.min(interval.1), interval.0.max(interval.1));
+    let all = targets.len() == 1 && targets.first().is_some_and(|t| t == "*");
+    for sk in st.surface_sheets.iter().filter(|sk| all || targets.is_empty() || targets.contains(&sk.body)) {
+        let Some((panels, boxes)) = sk.pieces_in_space() else { continue };
+        let t = sk.thickness;
+        for (p, frame, _) in &panels {
+            if frame.z.cross(n).len() > 1e-9 {
                 continue;
             }
-            let (a, b) = ((span.0 - zorigin) / sign, (span.1 - zorigin) / sign);
-            let roundoff = (cap_roundoff
-                + 128.0 * f64::EPSILON * (apply_point(&w, Vec3::ZERO).len() + plane.origin.len() + span.0.abs() + span.1.abs() + sh.t).max(1.0))
-                / sign.abs();
-            let nominal_depth = if apply_point(&w, Vec3::ZERO) == plane.origin
-                && let Some((lo, hi)) = nominal
-                && (span.0 - lo).abs() <= roundoff
-                && (span.1 - hi).abs() <= roundoff
-            {
-                // Equality of the two frame origins proves zero origin displacement;
-                // use authored distances, never an inferred endpoint coincidence.
-                let normal = crate::apply_vector(&w, Vec3::X).cross(crate::apply_vector(&w, Vec3::Y));
-                let exact_sign = if normal == n {
-                    1.0
-                } else if normal == -n {
-                    -1.0
-                } else {
-                    sign
-                };
-                Some((lo / exact_sign, hi / exact_sign))
-            } else {
-                None
-            };
-            if nominal_depth.is_none() && roundoff > 1e-7 {
-                super::sheet_boolean_unchanged(&mb.body, tools, operation)?;
-                plans.push((original.body.clone(), Some((original.clone(), mb.body.clone()))));
-                continue 'sheets;
+            // The panel's faces along the normal, and the part of them the extrude spans.
+            let s0 = (frame.shift - plane.origin).dot(n);
+            let s1 = s0 + t * frame.z.dot(n);
+            let (p0, p1) = (s0.min(s1), s0.max(s1));
+            let (z0, z1) = (lo.max(p0), hi.min(p1));
+            if z1 <= z0 {
+                continue;
             }
-            let (a, b) = nominal_depth.unwrap_or((a, b));
-            let (z0, z1) = (a.min(b).max(0.0), a.max(b).min(sh.t));
-            // A depth within a few units in the last place of the numbers it is worked out from
-            // is on the face: a flange panel's frame, turned by the cosine and sine of its angle,
-            // puts its faces an ulp (2e-16 mm) off the tool's cap they meet. A thinner layer is
-            // the tool's own and stays (refused below when under the resolution).
-            let ulps =
-                4.0 * f64::EPSILON * (apply_point(&w, Vec3::ZERO).len() + plane.origin.len() + span.0.abs() + span.1.abs() + sh.t) / sign.abs();
-            let (z0, z1) = (if z0 <= ulps { 0.0 } else { z0 }, if sh.t - z1 <= ulps { sh.t } else { z1 });
-            // Sub-resolution layers must not be silently erased by endpoint snapping.
-            let depth_resolved = ![z0, sh.t - z1, z1 - z0].into_iter().any(|d| d > 0.0 && d < 1e-6);
-            labels.extend(letters.iter().filter_map(|r| sh.region_to_flat(pi, plane, r).ok()));
-            let mapped = if footprints_bound && current_footprints.len() == tools.len() {
-                current_footprints.iter().map(|(plane, r)| sh.region_to_flat(pi, plane, r)).collect::<Result<Vec<_>>>()?
-            } else {
-                regions.iter().map(|r| sh.region_to_flat(pi, plane, r)).collect::<Result<Vec<_>>>()?
-            };
-            if operation == Operation::Intersect {
-                if z1 <= z0 {
-                    sh.holes.push(panel);
-                    modeled = true;
-                    continue;
-                }
-                let tool = sheet::material_union(mapped, &mut work)?;
-                let retained = sheet::material_boolean(std::slice::from_ref(&panel), &tool, kernel::BoolOp::Intersect, &mut work)?;
-                let removed = sheet::material_boolean(std::slice::from_ref(&panel), &retained, kernel::BoolOp::Cut, &mut work)?;
-                if removed.is_empty() && !sh.material_outside_depth(&panel, z0, z1, &mut work)? {
-                    modeled = true;
-                    continue;
-                }
-                if !retained.is_empty() && !depth_resolved {
-                    return Err(DocError::Invalid(
-                        "sheet machining depth is below the supported 0.000001 mm extrusion resolution; increase the layer depth".into(),
-                    ));
-                }
-                sh.holes.extend(removed);
-                // Preserve original stock thickness and prior machining. Intersection
-                // removes the complementary layers above/below every surviving region.
-                for region in retained {
-                    if z0 > 0.0 {
-                        sh.record_pocket(region.clone(), 0.0, z0, &mut work)?;
-                    }
-                    if z1 < sh.t {
-                        sh.record_pocket(region, z1, sh.t, &mut work)?;
-                    }
-                }
-                modeled = true;
-            } else if z1 > z0 {
-                // Each tool meets only the panel's cut-outs near it: arranging every one of a
-                // perforation's holes against every new hole would grow with their square (#732).
-                let near = sheet::NearHoles::new(&panel)?;
-                for flat in mapped {
-                    let local = near.around(&flat)?;
-                    let clipped =
-                        sheet::material_boolean(std::slice::from_ref(&local), std::slice::from_ref(&flat), kernel::BoolOp::Intersect, &mut work)?;
-                    if !clipped.is_empty() && !depth_resolved {
-                        return Err(DocError::Invalid(
-                            "sheet machining depth is below the supported 0.000001 mm extrusion resolution; increase the layer depth".into(),
-                        ));
-                    }
-                    if !clipped.is_empty() && z0 <= 1e-7 && z1 >= sh.t - 1e-7 {
-                        // Keep a single original tool boundary across structural seams.
-                        // Re-clipping notch polygons creates coincident seam endpoints.
-                        if !sh.holes.contains(&flat) {
-                            sh.holes.push(flat);
-                        }
-                        modeled = true;
-                    } else {
-                        for region in clipped {
-                            sh.record_pocket(region, z0, z1, &mut work)?;
-                            modeled = true;
-                        }
-                    }
-                }
+            let ulps = 4.0 * f64::EPSILON * (frame.shift.len() + plane.origin.len() + lo.abs() + hi.abs() + t);
+            if ![z0 - p0, p1 - z1, z1 - z0].into_iter().any(|d| d > ulps && d < 1e-6) {
+                continue;
             }
-        }
-        if modeled {
-            for flat in labels {
-                if !sh.labels.contains(&flat) && sh.labels.len() < MAX_LABELS {
-                    sh.labels.push(flat);
-                }
-            }
-        }
-        if !modeled {
-            super::sheet_boolean_unchanged(&mb.body, tools, operation)?;
-            plans.push((sh.body.clone(), Some((sh, mb.body.clone()))));
-        } else {
-            let material = sh.flat_material()?;
-            if material.is_empty() {
-                if operation == Operation::Intersect && super::boolean_scope(st, f, targets).0 {
-                    return Err(super::empty_intersection(&[sh.body.as_str()]));
-                }
-                // Empty exact material removes geometry and metadata together. Budget or
-                // topology errors propagate; they are never mistaken for an empty blank.
-                plans.push((sh.body.clone(), None));
-            } else {
-                // Every piece the cut leaves stays; the ones it parts from the base are named.
-                notes.extend(parted_note(&sh, &material, original));
-                let body = sh.solid()?;
-                plans.push((sh.body.clone(), Some((sh, body))));
+            if boxes.iter().any(|(k, b)| *k == Some(*p) && reach.iter().any(|r| !boxes_apart(r, &Some(*b)))) {
+                return Err(DocError::Invalid(
+                    "sheet machining depth is below the supported 0.000001 mm extrusion resolution; increase the layer depth".into(),
+                ));
             }
         }
     }
-    if operation == Operation::Intersect {
-        // Flat material is exact: an empty one is a true miss, removed only while some target remains.
-        let (_, scope) = super::boolean_scope(st, f, targets);
-        let emptied: Vec<&str> = plans.iter().filter(|(_, r)| r.is_none()).map(|(name, _)| name.as_str()).collect();
-        if !emptied.is_empty() && scope.iter().all(|b| emptied.contains(&b.as_str())) {
-            return Err(super::empty_intersection(&emptied));
-        }
-    }
-    let handled = plans.iter().map(|(name, _)| name.clone()).collect();
-    if !notes.is_empty() {
-        append_warning(warning, notes.join("; "));
-    }
-    for (name, result) in plans {
-        match result {
-            Some((sh, body)) => {
-                if let Some(mb) = st.bodies.iter_mut().find(|b| b.name == name) {
-                    replace_sheet_body(mb, body);
-                }
-                if let Some(target) = st.sheets.iter_mut().find(|s| s.body == name) {
-                    *target = sh;
-                }
-            }
-            None => {
-                st.bodies.retain(|b| b.name != name);
-                st.sheets.retain(|s| s.body != name);
-                st.threads.retain(|t| t.body != name);
-            }
-        }
-    }
-    Ok(handled)
+    Ok(())
 }
 
 /// The exact box of `body`, grown by twice its tolerance: bodies whose boxes are apart do not
@@ -2701,35 +1918,6 @@ pub(super) fn line_beyond_reach(mb: &ModelBody, at: Vec3, dir: Vec3, reach: f64)
 pub(super) fn boxes_apart(a: &Option<Aabb3>, b: &Option<Aabb3>) -> bool {
     let (Some(a), Some(b)) = (a, b) else { return false };
     a.max.x < b.min.x || b.max.x < a.min.x || a.max.y < b.min.y || b.max.y < a.min.y || a.max.z < b.min.z || b.max.z < a.min.z
-}
-
-/// A cut's note on the pieces it parted from the base of `sh` (see
-/// [`sheet::SheetBody::parted_from_base`]; `material` is the sheet's flat material after the cut,
-/// `before` the sheet before it): how many, their area and where they lie in the flat pattern.
-/// The pieces stay, as every piece a cut leaves does. None when nothing is parted, and when the
-/// pieces can't be worked out: the note is no reason for a cut to fail.
-fn parted_note(sh: &sheet::SheetBody, material: &[Region2], before: &sheet::SheetBody) -> Option<String> {
-    let pieces = sh.parted_from_base(material, before).ok().filter(|p| !p.is_empty())?;
-    let area: f64 = pieces.iter().map(Region2::area).sum();
-    let at: Vec<String> = pieces
-        .iter()
-        .take(4)
-        .map(|r| {
-            let c = r.interior_point();
-            format!("({:.1}, {:.1})", c.x, c.y)
-        })
-        .collect();
-    let at = at.join(", ");
-    let body = &sh.body;
-    Some(match pieces.len() {
-        1 => format!("1 piece of `{body}` is no longer joined to its base ({area:.2} mm², near {at} in the flat pattern); it is kept"),
-        n => {
-            let more = if n > 4 { format!(" and {} more", n - 4) } else { String::new() };
-            format!(
-                "{n} pieces of `{body}` are no longer joined to its base ({area:.2} mm² in all, near {at}{more} in the flat pattern); they are kept"
-            )
-        }
-    })
 }
 
 /// The face that [`FaceSlice::loops`], [`FaceSlice::outline`] and [`FaceSlice::recesses`] measure:
@@ -3139,34 +2327,6 @@ pub(super) fn plastic_eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &F
     }
 }
 
-/// Edge picks of a sheet feature, moved onto their named edges (a name that is gone keeps the
-/// point, with a warning).
-fn sheet_picks(sh: &crate::sheet::SheetBody, f: &Feature, edges: &[Vec3], warning: &mut Option<String>) -> Vec<Vec3> {
-    let mut gone = Vec::new();
-    let out = edges
-        .iter()
-        .enumerate()
-        .map(|(i, p)| match f.edge_names.get(i).filter(|n| !n.is_empty()) {
-            Some(n) => sh.edge_by_name(n, *p).unwrap_or_else(|| {
-                gone.push(n.clone());
-                *p
-            }),
-            None => *p,
-        })
-        .collect();
-    if !gone.is_empty() {
-        *warning = Some(format!("sheet edge(s) {} no longer exist; using the edges at the picked points", gone.join(", ")));
-    }
-    out
-}
-
-/// The values of sheet `i`'s rule for that sheet: `Thickness` in them is the sheet's own
-/// thickness, which a converted body takes from its walls.
-fn sheet_rule_values(doc: &Document, vals: &BTreeMap<String, Value>, st: &ModelState, i: usize) -> Result<sheet::RuleValues> {
-    let sh = st.sheets.get(i).ok_or_else(|| DocError::Invalid("sheet".into()))?;
-    doc.rule_values_at(vals, &doc.sheet_rule(Some(&sh.rule)), Some(sh.t))
-}
-
 /// The sketch line each line of a chain drawn on the sketch lines `ids` (in that order) was
 /// drawn on, and the line's key: the sketch line's id, with the line's place on it (`l3.2`, from
 /// 1) where that sketch line is drawn in several.
@@ -3294,11 +2454,5 @@ fn tag_panels(sk: &mut crate::SurfaceSheet, before: Option<&crate::SurfaceSheet>
         }
         sk.recipes.retain(|(k, _)| *k != key);
         sk.recipes.push((key, recipe));
-    }
-}
-
-fn tag_flanges(sh: &mut crate::sheet::SheetBody, from: usize, feature: u64) {
-    for (k, fl) in sh.flanges.iter_mut().enumerate().skip(from) {
-        fl.tag = format!("F{feature}.{}", k - from);
     }
 }

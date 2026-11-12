@@ -904,7 +904,7 @@ fn convert_takes_the_faces_picked_and_the_bend_edges() {
     let mut app = SolveApp::new(s, Services::default());
     app.start("sheet.convert");
     let mut d = app.dialog.clone().unwrap();
-    assert_eq!(d.inputs.iter().map(|i| i.label).collect::<Vec<_>>(), ["Body", "Bend Edges", "Skip Faces", "Faces"]);
+    assert_eq!(d.inputs.iter().map(|i| i.label).collect::<Vec<_>>(), ["Body", "Bend Edges", "Skip Faces", "Faces", "Engrave Faces"]);
     assert!(apply_commands(&app, &d).is_err(), "nothing to convert without a body");
     // The floor alone: one face, its body, and no `bends`.
     d.inputs[3].items = face_sel(&app.session, Vec3::new(50.0, 30.0, 0.0)).into_iter().collect();
@@ -933,7 +933,7 @@ fn convert_takes_the_faces_picked_and_the_bend_edges() {
     let f = app.session.doc.features.last().unwrap().clone();
     let e = edit_dialog(&app, f.id, None).unwrap();
     assert!(matches!(&e.kind, Kind::Sheet(Sm::Convert { side: 0, .. })));
-    assert_eq!(e.inputs.iter().map(|i| i.items.len()).collect::<Vec<_>>(), [1, 4, 0, 1]);
+    assert_eq!(e.inputs.iter().map(|i| i.items.len()).collect::<Vec<_>>(), [1, 4, 0, 1, 0]);
     let c = apply_commands(&app, &e).unwrap();
     assert_eq!(c[0].0, "timeline.redefine");
     assert_eq!(c[0].1["params"]["bends"].as_array().map(Vec::len), Some(4));
@@ -963,8 +963,13 @@ fn convert_takes_the_body_its_bends_and_the_faces_it_skips() {
     d.inputs[2].items = face_sel(&app.session, Vec3::new(50.0, 30.0, 30.0)).into_iter().collect();
     let c = apply_commands(&app, &d).unwrap();
     let p = &c[0].1;
-    assert!(p.get("face").is_none() && p["direction"] == json!("outside"), "{p}");
+    assert!(p.get("face").is_none() && p.get("engrave").is_none() && p["direction"] == json!("outside"), "{p}");
     assert_eq!((p["bends"].as_array().map(Vec::len), p["skip"].as_array().map(Vec::len)), (Some(4), Some(1)));
+    // Faces picked to engrave go to the command as `engrave`, which reads them; none here.
+    d.inputs[4].items = face_sel(&app.session, Vec3::new(50.0, 0.0, 15.0)).into_iter().collect();
+    let c = apply_commands(&app, &d).unwrap();
+    assert_eq!(c[0].1["engrave"], json!([[50.0, 0.0, 15.0]]), "{}", c[0].1);
+    d.inputs[4].items.clear();
     // Inside is the default, and goes unsaid.
     if let Kind::Sheet(Sm::Convert { side, .. }) = &mut d.kind {
         *side = 0;
@@ -980,7 +985,7 @@ fn convert_takes_the_body_its_bends_and_the_faces_it_skips() {
     app.edit_feature(f.id);
     let e = app.dialog.clone().unwrap();
     assert!(matches!(&e.kind, Kind::Sheet(Sm::Convert { side: 0, .. })));
-    assert_eq!(e.inputs.iter().map(|i| i.items.len()).collect::<Vec<_>>(), [1, 4, 1, 0]);
+    assert_eq!(e.inputs.iter().map(|i| i.items.len()).collect::<Vec<_>>(), [1, 4, 1, 0, 0]);
 }
 
 /// Recognize (#6748) takes a body that is sheet metal already, here a tray shelled 2 thick: it
@@ -1319,9 +1324,10 @@ fn flat_circles(app: &mut SolveApp, dialog: &Dialog, rect: Rect) -> Vec<egui::ep
 #[test]
 fn flat_perforations_match_export_centres_and_cutout_style() {
     let (mut app, dialog) = perforated_flat();
+    // The centres the DXF exports (`surface_dxf`): the sheet's flat as it is read.
     let state = crate::open_meshing::session_world(&app.session);
-    let sheet = state.sheets.last().unwrap();
-    let holes = sheet.perforation_holes(&sheet.perforations[0]).unwrap();
+    let sheet = state.surface_sheets.last().unwrap().shown();
+    let holes = sheet.perforation_holes(&sheet.perforations[0]);
     let rect = Rect::from_min_size(Pos2::ZERO, vec2(1400.0, 900.0));
     let circles = flat_circles(&mut app, &dialog, rect);
     assert_eq!(circles.len(), holes.len());
@@ -1342,8 +1348,8 @@ fn flat_perforations_match_export_centres_and_cutout_style() {
     assert_eq!(app.flat_view.perforations.as_ptr(), cached, "navigation reuses the centres");
     app.run("sheet.perforate", json!({"diameter": 2, "pitch": 10})).unwrap();
     let state = crate::open_meshing::session_world(&app.session);
-    let sheet = state.sheets.last().unwrap();
-    let expected: usize = sheet.perforations.iter().map(|p| sheet.perforation_holes(p).unwrap().len()).sum();
+    let sheet = state.surface_sheets.last().unwrap().shown();
+    let expected: usize = sheet.perforations.iter().map(|p| sheet.perforation_holes(p).len()).sum();
     assert!(expected > 155);
     assert_eq!(flat_circles(&mut app, &dialog, rect).len(), expected, "model changes refresh the centres");
 }
