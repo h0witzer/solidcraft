@@ -48,7 +48,7 @@ use solidcraft_geom::brep::query::Query;
 use solidcraft_kernel::{Body, BoolOp, FaceSurface, face_surface, planar_regions_boolean};
 
 use crate::sheet::FlatWork;
-use crate::sheet_surface::{Piece, holds_clear};
+use crate::sheet_surface::{Piece, boolean_as_drawn, holds_clear};
 use crate::sheet_surface_shadow::{Carrier, Folded, Slab, around, components, reached, shadow, walls as made, within};
 use crate::{DocError, Feature, FeatureKind, ModelState, Result, SurfaceSheet};
 
@@ -103,7 +103,7 @@ fn on_panel(b: &Body, q: &Query, frame: &Rigid3, t: f64, own: &[Region2], tol: f
         let mine = if inside_by_loops(std::slice::from_ref(&region), own, tol) {
             vec![region]
         } else {
-            planar_regions_boolean(&[region], own, BoolOp::Intersect, tol)?
+            boolean_as_drawn(&[region], own, BoolOp::Intersect, tol)?
         };
         if mine.is_empty() {
             continue;
@@ -274,7 +274,7 @@ fn union(regions: Vec<Region2>, tol: f64) -> Result<Vec<Region2>> {
     let mut it = kept.into_iter();
     let Some(first) = it.next() else { return Ok(Vec::new()) };
     let rest: Vec<Region2> = it.collect();
-    Ok(planar_regions_boolean(&[first], &rest, BoolOp::Union, tol)?)
+    Ok(boolean_as_drawn(&[first], &rest, BoolOp::Union, tol)?)
 }
 
 /// Whether no two of `regions` come within `tol` of each other by their boxes: each pair's
@@ -1059,7 +1059,7 @@ fn left(region: &Region2, through: &[Region2], holders: &[Vec2], tol: f64) -> st
             .collect();
         return Ok(Left::Kept(out, parted));
     }
-    let mut left = planar_regions_boolean(std::slice::from_ref(region), through, BoolOp::Cut, tol).map_err(|e| e.to_string())?;
+    let mut left = boolean_as_drawn(std::slice::from_ref(region), through, BoolOp::Cut, tol).map_err(|e| e.to_string())?;
     if left.len() <= 1 {
         return Ok(left.pop().map_or(Left::Apart, |one| Left::Kept(one, Vec::new())));
     }
@@ -1278,7 +1278,7 @@ fn onto_panels(sk: &SurfaceSheet, was: &Body, now: &Body, walls: Option<&[usize]
             if inside_by_loops(&r, &footprint, tol) {
                 return Ok(r);
             }
-            planar_regions_boolean(&r, &footprint, BoolOp::Intersect, tol).map_err(|e| e.to_string())
+            boolean_as_drawn(&r, &footprint, BoolOp::Intersect, tol).map_err(|e| e.to_string())
         };
         let near = within(seen(&after.near, &after.near_floors).map_err(|e| e.to_string())?)?;
         let far = within(seen(&after.far, &after.far_floors).map_err(|e| e.to_string())?)?;
@@ -1315,7 +1315,7 @@ fn onto_panels(sk: &SurfaceSheet, was: &Body, now: &Body, walls: Option<&[usize]
         let through = if square {
             let gone = match gone_by_loops(&footprint, &near, tol) {
                 Some(gone) => gone,
-                None => planar_regions_boolean(&footprint, &near, BoolOp::Cut, tol).map_err(|e| e.to_string())?,
+                None => boolean_as_drawn(&footprint, &near, BoolOp::Cut, tol).map_err(|e| e.to_string())?,
             };
             let mut kept = Vec::with_capacity(gone.len());
             for g in gone {
@@ -1518,7 +1518,7 @@ fn flat_gone(
     }
     Ok(Some(match gone_by_loops(&footprint, &near, tol) {
         Some(gone) => gone,
-        None => planar_regions_boolean(&footprint, &near, BoolOp::Cut, tol).map_err(|e| e.to_string())?,
+        None => boolean_as_drawn(&footprint, &near, BoolOp::Cut, tol).map_err(|e| e.to_string())?,
     }))
 }
 
