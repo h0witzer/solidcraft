@@ -72,3 +72,17 @@ NOT verified yet: do not push it to `fix-6748-develop` until the suites are gree
 CARGO_TARGET_DIR=target-rel), `takerun.sh` (probe, clippy, UI, scenarios, release CLI, kernel
 cases, oracle) are copied here. UI runs skip `progressive_image_controls_route_to_the_registered_host`
 (grows without bound).
+
+## Main since b532aa94b (to take in the next merge, upstream/main 1f74b6834 or later)
+- #15364 (977c7c753): contour curves listed out of order build (`ss.chain_order(curves)` before
+  joining). TAKE IT in our generator: call `ss.chain_order(curves)?` before `contour_profile`
+  in the contour arm of crates/doc/src/eval_more.rs; its test then runs on our generator. Its
+  "lone folded panel's perforations" part is flat-model only (ours are on surfaces); its path
+  flange help text change is fine.
+- #15365 (a4e0a2c11): refines the zero-radius special case in the flat model. Not taken (radius 0
+  is refused); replace its test as #15288's was.
+- #15346 (7c1f81886, khanahmad4527): an Extrude Cut a hair off a flange's corner builds (107
+  lines of flat-model code, not taken). Its 55-line test is main's spec: run it on our surface
+  cuts and fix there if it fails.
+- Open on main, all flat-model: #15357 (segment junction reliefs), #15296 and #14758 (flat
+  pattern cut-out booleans).
