@@ -236,9 +236,6 @@ fn properties(s: &Session, doc: &Document, selected: &[u64], descendants: bool, 
     let spreads = solidcraft_kernel::map_on_threads(&spread_bodies, 16, |&i| {
         let body = state.bodies.get(i)?;
         let mut measured = solidcraft_io::mass_properties(&body.body).ok().flatten()?;
-        if let Some(sheet) = state.sheets.iter().find(|sheet| sheet.body == body.definition_name()) {
-            sheet.correct_perforation_mass_properties(&mut measured, &solidcraft_doc::IDENTITY).ok()?;
-        }
         if let Some(sheet) = state.surface_sheets.iter().find(|sheet| sheet.body == body.definition_name()) {
             sheet.correct_perforation_mass_properties(&mut measured, &solidcraft_doc::IDENTITY).ok()?;
         }
@@ -263,17 +260,7 @@ fn properties(s: &Session, doc: &Document, selected: &[u64], descendants: bool, 
             done += 1;
             let transform: Mat = doc.model_body_offset(body).map(|offset| solidcraft_doc::mat_mul(&transform, offset)).unwrap_or(transform);
             let mut measured = measure_placed(body, transform)?;
-            if let Some(sheet) = state.sheets.iter().find(|sheet| sheet.body == body.definition_name() && !sheet.perforations.is_empty()) {
-                let mut corrected = body.measure()?;
-                corrected.volume = measured.volume;
-                corrected.area = measured.area;
-                corrected.centroid = measured.centroid;
-                sheet.correct_perforation_properties(&mut corrected, &transform)?;
-                measured.volume = corrected.volume;
-                measured.area = corrected.area;
-                measured.centroid = corrected.centroid;
-            }
-            // A sheet made from surfaces (#6748): its perforation fields' holes the same way.
+            // A perforated sheet (#6748): its fields' holes, which aren't cut into its body, come off.
             if let Some(sheet) = state.surface_sheets.iter().find(|sheet| sheet.body == body.definition_name() && !sheet.perforations.is_empty()) {
                 let mut corrected = body.measure()?;
                 corrected.volume = measured.volume;
