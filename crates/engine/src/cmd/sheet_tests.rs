@@ -1437,6 +1437,256 @@ fn a_notch_whose_arc_ends_on_a_grid_border_refolds() {
     assert!((folded - refolded - notch * 2.0).abs() < 0.01, "refolded: {refolded}, {} less", folded - refolded);
 }
 
+/// Runs each step in turn and names the one refused, with its reason, rather than panicking, so
+/// a table's failing cases are reported together.
+fn try_steps(s: &mut Session, steps: Vec<(&str, Value)>) -> Result<(), String> {
+    for (id, p) in steps {
+        s.execute(id, &p).map_err(|e| format!("{id}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// The material of a session's only sheet laid flat (mm²), from the exact regions of its flat.
+fn sheet_area(s: &Session) -> f64 {
+    s.model.state().surface_sheets[0].shown().regions.iter().map(|r| r.area()).sum()
+}
+
+/// What SMLib's check finds wrong with the session's bodies, if anything.
+fn invalid(s: &Session) -> Vec<String> {
+    s.model.state().bodies.iter().flat_map(|b| b.body.validity()).collect()
+}
+
+/// The plate of tangency-labs/solidcraft#12224's notch tests, made from surfaces and unfolded:
+/// 100 x 40, a 2 mm sheet at R 2 and K 0.5 (the folded sheet holds its flat area times the
+/// thickness), with a 30 mm inside flange on its back edge. The base keeps y 0 to 36 (40 less
+/// R + T), the bend zone runs from y 36 to 36 + 3π/2 (its allowance (π/2)(R + K·T)), and the
+/// flange's flat 26 more (30 less R + T), to y 62 + 3π/2: 100 x (62 + 3π/2) in all.
+fn hair_plate() -> Session {
+    let mut s = Session::default();
+    run(&mut s, "sheet.manage_rules", json!({"name": "AL2", "active": true, "thickness": "2 mm", "k_factor": "0.5", "bend_radius": "2 mm"}));
+    base(&mut s, 100.0, 40.0);
+    run(&mut s, "sheet.flange", json!({"edges": [[50, 40, 2]], "height": 30, "radius": 2, "position": "inside"}));
+    run(&mut s, "sheet.unfold", json!({}));
+    s
+}
+
+/// Each side of `hair_plate`'s bend zone: the zone's edge there (y), where a notch run out from
+/// it ends (10 into the base, or past the flange's end), and where the sheet's material ends
+/// that way (y 26 at the notch, or the flange's end).
+fn hair_sides() -> [(&'static str, f64, f64, f64); 2] {
+    [("base", 36.0, 26.0, 26.0), ("flange", 36.0 + 1.5 * PI, 76.0 + 1.5 * PI, 62.0 + 1.5 * PI)]
+}
+
+/// Cuts `curves`, one sketch on XY and all its regions, through `hair_plate`, then refolds it.
+/// The flat must lose `cut` mm² (worked by hand) and the part twice that in mm³, flat and
+/// folded, as one valid solid. A cut within 50 nm of a zone's edge may land on it, as #12224
+/// moves it there on main: 1e-3 mm² along the 20 mm edge, 2e-3 mm³ through the sheet. The 0.01
+/// mm hairs, 0.2 mm², are held. `None` when the case holds, otherwise everything that went
+/// wrong.
+fn hair_cut(what: &str, curves: Vec<(&str, Value)>, cut: f64) -> Option<String> {
+    let want = 6200.0 + 150.0 * PI - cut;
+    let mut s = hair_plate();
+    let mut steps = vec![("sketch.create", json!({"plane": "XY", "name": "Cut"}))];
+    steps.extend(curves);
+    steps.push(("sketch.finish", json!({})));
+    steps.push(("solid.extrude", json!({"sketch": "Cut", "through_all": true, "direction": "symmetric", "operation": "cut"})));
+    if let Err(e) = try_steps(&mut s, steps) {
+        return Some(format!("{what}: {e}"));
+    }
+    let mut wrong = Vec::new();
+    let area = sheet_area(&s);
+    if (area - want).abs() > 1e-3 {
+        wrong.push(format!("the flat holds {area} mm², not {want}"));
+    }
+    let flat = volume(&mut s);
+    if (flat - 2.0 * want).abs() > 2.5e-3 {
+        wrong.push(format!("flat, {flat} mm³, not {}", 2.0 * want));
+    }
+    match try_steps(&mut s, vec![("sheet.refold", json!({}))]) {
+        Err(e) => wrong.push(e),
+        Ok(()) => {
+            let folded = volume(&mut s);
+            if (folded - 2.0 * want).abs() > 2.5e-3 {
+                wrong.push(format!("refolded, {folded} mm³, not {}", 2.0 * want));
+            }
+            let bad = invalid(&s);
+            if !bad.is_empty() {
+                wrong.push(format!("the refolded solid: {bad:?}"));
+            }
+        }
+    }
+    (!wrong.is_empty()).then(|| format!("{what}: {}", wrong.join("; ")))
+}
+
+/// tangency-labs/solidcraft#12224's notch on a sheet made from surfaces: a notch cut from
+/// `hair_plate`'s flat whose edge along the bend lies a hair (0.01 nm to 10 µm) before or past a
+/// bend zone's edge, on either side of the zone, refolds into one valid solid, as one on the
+/// edge and one clearly away from it do. The notch runs 20 along the bend from the plate's side
+/// (it starts 5 past it) and out from its edge: inside the sheet it takes 20 x (10 + the hair)
+/// of the base, or 20 x (26 − the hair) of the flange. On the flat model the sliver it left
+/// between the cut and the zone failed to sew ("ambiguous edge contact").
+#[test]
+fn a_notch_edge_a_hair_beside_a_bend_zone_edge_refolds() {
+    let mut failed = Vec::new();
+    for (side, zone, out, end) in hair_sides() {
+        for hair in [0.0, 1e-8, -1e-8, 1.6e-7, -1.6e-7, 1e-5, -1e-5, 0.01, -0.01] {
+            let edge = zone + hair;
+            let notch = vec![("sketch.rectangle.two_point", json!({"p0": [-5.0, edge], "p1": [20.0, out]}))];
+            let what = format!("notch on the {side} side, {hair} mm beside the zone's edge");
+            failed.extend(hair_cut(&what, notch, 20.0 * (edge - end).abs()));
+        }
+    }
+    assert!(failed.is_empty(), "{} of 18 cases: {failed:#?}", failed.len());
+}
+
+/// As `a_notch_edge_a_hair_beside_a_bend_zone_edge_refolds`, with arcs at the zone's edge, as in
+/// tangency-labs/solidcraft#12224: a notch whose far corner along the edge is rounded R 3, which
+/// spares (1 − π/4)·3² of the sheet, and a square notch with a relief over its edge whose arc
+/// ends on the zone's edge, tangent to it, where the plate's side meets it (a corner relief
+/// drawn to end on the bend line). The relief lies past the plate's side, so the part loses the
+/// notch alone.
+#[test]
+fn rounded_cut_corners_a_hair_beside_a_bend_zone_edge_refold() {
+    let r = 3.0;
+    let mut failed = Vec::new();
+    for (side, zone, out, end) in hair_sides() {
+        // Which way the notch runs from the zone's edge.
+        let sg = (out - zone).signum();
+        for hair in [3e-5, -3e-5, 1e-6, -1e-6, 0.0] {
+            let edge = zone + hair;
+            let notch = 20.0 * (edge - end).abs();
+            let rounded = vec![
+                ("sketch.line", json!({"points": [[20.0, out], [-5.0, out], [-5.0, edge], [20.0 - r, edge]]})),
+                (
+                    "sketch.arc.center_point",
+                    json!({"center": [20.0 - r, edge + sg * r], "start": [20.0 - r, edge], "end": [20.0, edge + sg * r], "clockwise": sg < 0.0}),
+                ),
+                ("sketch.line", json!({"points": [[20.0, edge + sg * r], [20.0, out]]})),
+            ];
+            let what = format!("rounded notch on the {side} side, {hair} mm beside the zone's edge");
+            failed.extend(hair_cut(&what, rounded, notch - r * r * (1.0 - PI / 4.0)));
+            let relief = vec![
+                ("sketch.rectangle.two_point", json!({"p0": [-5.0, edge], "p1": [20.0, out]})),
+                (
+                    "sketch.line",
+                    json!({"points": [[0.0, edge], [0.0, edge + sg * 3.0], [-5.0, edge + sg * 3.0], [-5.0, edge - sg * 2.0], [-2.0, edge - sg * 2.0]]}),
+                ),
+                (
+                    "sketch.arc.center_point",
+                    json!({"center": [0.0, edge - sg * 2.0], "start": [-2.0, edge - sg * 2.0], "end": [0.0, edge], "clockwise": sg > 0.0}),
+                ),
+            ];
+            let what = format!("notch and relief on the {side} side, {hair} mm beside the zone's edge");
+            failed.extend(hair_cut(&what, relief, notch));
+        }
+    }
+    assert!(failed.is_empty(), "{} of 20 cases: {failed:#?}", failed.len());
+}
+
+/// tangency-labs/solidcraft#12224's outline vertex on a sheet made from surfaces: an 80 x 120
+/// plate (1.5 mm sheet, R 2, K 0.5) whose outline has an extra vertex on its bottom edge a hair
+/// (to 0.01 µm) from where a fold's bend zone ends, folded 90° on its centreline x = 30, the
+/// zone (π/2)(2 + 0.75) wide, and unfolded. As without the vertex, it folds into one valid solid
+/// of 80·120·1.5 = 14400 mm³ and unfolds into one region of 9600 mm². This is what a flat from
+/// a DXF split at its bend lines gives. On the flat model the panel's loop kept an edge of the
+/// hair's length, which SMLib's face builder refused ("SMLib failed (status 1001)").
+#[test]
+fn an_outline_vertex_a_hair_from_a_bend_zone_edge_unfolds() {
+    let zone = FRAC_PI_2 * (2.0 + 0.5 * 1.5);
+    let mut failed = Vec::new();
+    for hair in [0.0, 1e-8, 1e-6, -1e-6, 1e-5, -1e-5] {
+        let what = format!("vertex {hair} mm from the zone's edge");
+        let x = 30.0 + zone / 2.0 + hair;
+        let mut s = Session::default();
+        let folded = try_steps(
+            &mut s,
+            vec![
+                ("sheet.manage_rules", json!({"name": "R", "active": true, "thickness": "1.5 mm", "k_factor": "0.5", "bend_radius": "2 mm"})),
+                ("sketch.create", json!({"plane": "XY", "name": "Flat"})),
+                ("sketch.line", json!({"points": [[x, 0.0], [80.0, 0.0], [80.0, 120.0], [0.0, 120.0], [0.0, 0.0]], "closed": true})),
+                ("sketch.finish", json!({})),
+                ("sheet.flange", json!({"sketch": "Flat", "profiles": [{"point": [55, 60]}]})),
+                (
+                    "sheet.fold",
+                    json!({"points": [[30, -200, 1.5], [30, 200, 1.5]], "angle": "90 deg", "radius": "2", "position": "centerline", "fixed": [55, 60, 1.5]}),
+                ),
+            ],
+        );
+        if let Err(e) = folded {
+            failed.push(format!("{what}: {e}"));
+            continue;
+        }
+        let (v, bad) = (volume(&mut s), invalid(&s));
+        if rel(v, 14400.0) > 1e-9 || !bad.is_empty() {
+            failed.push(format!("{what}: folded, {v} mm³, not 14400: {bad:?}"));
+            continue;
+        }
+        if let Err(e) = try_steps(&mut s, vec![("sheet.unfold", json!({}))]) {
+            failed.push(format!("{what}: {e}"));
+            continue;
+        }
+        let regions = s.model.state().surface_sheets[0].shown().regions;
+        let area: f64 = regions.iter().map(|r| r.area()).sum();
+        let v = volume(&mut s);
+        if regions.len() != 1 || rel(area, 9600.0) > 1e-9 || rel(v, 14400.0) > 1e-9 {
+            failed.push(format!("{what}: unfolded, {} regions of {area} mm², {v} mm³", regions.len()));
+        }
+    }
+    assert!(failed.is_empty(), "{} of 6 cases: {failed:#?}", failed.len());
+}
+
+/// tangency-labs/solidcraft#12224's loop: the planar booleans close a loop within 1 nm but can
+/// hand back a free-form one whose pieces end tens of nm apart, which the next boolean refused
+/// ("planar boolean needs closed loops within its geometry budget"). Here the sheet's own
+/// booleans make the loop: a 20 x 30 plate (2 mm sheet, R 2, K 0.5) intersected down to main's
+/// loop, a 10 x 10 square with a half-round top (R 5: 100 + 12.5π mm²), and to the square with
+/// a half-ellipse top (semi-axes 5 and 3: 100 + 7.5π mm²), each the square and a curve centred
+/// on its top edge, tangent to its sides there. Then a fold across the square at y = 4, an
+/// unfold and a refold: K 0.5 keeps the part at its area times the thickness throughout.
+#[test]
+fn a_sheet_cut_to_a_free_form_loop_folds_unfolds_and_refolds() {
+    let tops = [
+        ("half-round top", "sketch.circle.center", json!({"center": [5, 10], "radius": 5}), 100.0 + 12.5 * PI),
+        ("half-ellipse top", "sketch.ellipse", json!({"center": [5, 10], "major": [10, 10], "minor_radius": 3, "axes": false}), 100.0 + 7.5 * PI),
+    ];
+    let mut failed = Vec::new();
+    'tops: for (what, curve, top, area) in tops {
+        let mut s = Session::default();
+        let stages = [
+            (
+                "intersected",
+                vec![
+                    ("sheet.manage_rules", json!({"name": "AL2", "active": true, "thickness": "2 mm", "k_factor": "0.5", "bend_radius": "2 mm"})),
+                    ("sketch.create", json!({"plane": "XY", "name": "Plate"})),
+                    ("sketch.rectangle.two_point", json!({"p0": [-5, -5], "p1": [15, 25]})),
+                    ("sketch.finish", json!({})),
+                    ("sheet.flange", json!({"sketch": "Plate"})),
+                    ("sketch.create", json!({"plane": "XY", "name": "Loop"})),
+                    ("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [10, 10]})),
+                    (curve, top),
+                    ("sketch.finish", json!({})),
+                    ("solid.extrude", json!({"sketch": "Loop", "through_all": true, "direction": "symmetric", "operation": "intersect"})),
+                ],
+            ),
+            ("folded", vec![("sheet.fold", json!({"points": [[-1, 4, 2], [11, 4, 2]], "angle": "90 deg", "fixed": [5, 12, 2]}))]),
+            ("unfolded", vec![("sheet.unfold", json!({}))]),
+            ("refolded", vec![("sheet.refold", json!({}))]),
+        ];
+        for (stage, steps) in stages {
+            if let Err(e) = try_steps(&mut s, steps) {
+                failed.push(format!("{what}, {stage}: {e}"));
+                continue 'tops;
+            }
+            let (v, bad) = (volume(&mut s), invalid(&s));
+            if (v - 2.0 * area).abs() > 1e-6 || !bad.is_empty() {
+                failed.push(format!("{what}, {stage}: {v} mm³, not {}: {bad:?}", 2.0 * area));
+                continue 'tops;
+            }
+        }
+    }
+    assert!(failed.is_empty(), "{} of 2 loops: {failed:#?}", failed.len());
+}
+
 /// An inside flange on a 100 x 60 plate (2 mm sheet, R 1, K 0.5) closes at every whole-degree
 /// turn of the plate. The flange's setback trims the plate at corners rounded to the nanometre,
 /// and the bend zone's corners beside them are not, so the two copies of a corner differ by a
