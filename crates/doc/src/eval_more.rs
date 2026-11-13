@@ -79,7 +79,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
             apply_op(doc, st, f, tools, Operation::Join, &[])
         }
         FeatureKind::ReplaceFace { faces, target, body } => {
-            let tp = doc.resolve_plane_in(vals, target, 0, Some(st))?;
+            let tp = doc.resolve_plane_in(vals, target, 0, f.component, Some(st))?;
             let tn = tp.normal();
             let i = body_at(st, body, &crate::plain(faces))?;
             let Some(mb) = st.bodies.get(i).cloned() else { return Err(DocError::Invalid("body".into())) };
@@ -98,7 +98,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
                 }
             }
             if let Some(slot) = st.bodies.get_mut(i) {
-                *slot = ModelBody::traced_new(mb.name, b, mb.feature);
+                *slot = mb.remade(b);
             }
             Ok(())
         }
@@ -106,7 +106,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
             // A plane on either side is worked out now, so the bodies follow it when it moves.
             let (mut from, mut from_normal) = (from.0, from_normal.and_then(|n| n.normalized()));
             if let Some(p) = from_plane {
-                let pl = doc.resolve_plane_in(vals, p, 0, Some(&*st))?;
+                let pl = doc.resolve_plane_in(vals, p, 0, f.component, Some(&*st))?;
                 (from, from_normal) = (pl.origin, Some(pl.normal()));
             }
             // So is a frame (#6257): its origin and z, found again from the geometry.
@@ -116,7 +116,7 @@ pub(super) fn eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, 
             }
             let target = match to_frame {
                 Some(_) => None,
-                None => to_plane.as_ref().map(|p| doc.resolve_plane_in(vals, p, 0, Some(&*st))).transpose()?,
+                None => to_plane.as_ref().map(|p| doc.resolve_plane_in(vals, p, 0, f.component, Some(&*st))).transpose()?,
             };
             let (to, to_normal) = match (to_frame, &target) {
                 (Some(fr), _) => fr.resolve(doc, st).map(|(o, z)| (o, Some(z)))?,
@@ -293,6 +293,60 @@ fn chain_points(ss: &SolvedSketch, ids: &[String]) -> Result<Vec<Vec2>> {
         }
     }
     Ok(pts)
+}
+
+/// A contour flange's profile, drawn on the sketch curves `ids` end to end in that order: each
+/// curve's exact pieces (a line, an arc, the Béziers and conics of a free-form curve; see
+/// `Sketch::exact_segs`), each curve run the way the profile goes, the first toward the second
+/// and each next one on from where the one before ends, as [`chain_points`] reads a chain; and
+/// for each piece the sketch curve it was drawn on and its key: the curve's id, with the piece's
+/// place on the curve as drawn (`s3.2`, from 1) where the curve is drawn in several.
+fn contour_profile(ss: &SolvedSketch, ids: &[String]) -> Result<(Vec<Seg2>, Vec<(String, String)>)> {
+    let mut curves: Vec<(&String, Vec<Seg2>)> = Vec::with_capacity(ids.len());
+    for id in ids {
+        let ci = ss.sketch.curve_index(id).ok_or_else(|| DocError::Unknown(format!("curve `{id}`")))?;
+        let pieces = match ss.sketch.exact_segs(ci) {
+            Some(pieces) => pieces,
+            // A free-form curve the sketch holds only as points has no exact surface to push out.
+            None if ss.sketch.curves.get(ci).is_some_and(|c| c.kind.is_freeform()) => {
+                return Err(DocError::Invalid(format!(
+                    "not supported yet: the curve `{id}` in a contour flange, a spline of degree above {} or a rational one above degree 2",
+                    solidcore_record::MAX_BEZIER_DEGREE
+                )));
+            }
+            None => ss.sketch.segs(ci),
+        };
+        if pieces.is_empty() {
+            return Err(DocError::Invalid(format!("the curve `{id}` in a contour flange has no length")));
+        }
+        curves.push((id, pieces));
+    }
+    let ends = |pieces: &[Seg2]| pieces.first().map(Seg2::start).zip(pieces.last().map(Seg2::end));
+    let (mut segs, mut drawn): (Vec<Seg2>, Vec<(String, String)>) = (Vec::new(), Vec::new());
+    for (k, (id, pieces)) in curves.iter().enumerate() {
+        let Some((start, end)) = ends(pieces.as_slice()) else { continue };
+        let back = match segs.last().map(Seg2::end) {
+            Some(at) => end.dist(at) < start.dist(at),
+            None => curves.get(k + 1).and_then(|(_, next)| ends(next.as_slice())).is_some_and(|(s, e)| start.dist(s) < 1e-6 || start.dist(e) < 1e-6),
+        };
+        let n = pieces.len();
+        let key = |i: usize| ((*id).clone(), if n == 1 { (*id).clone() } else { format!("{id}.{}", i + 1) });
+        let run: Vec<(Seg2, (String, String))> = if back {
+            pieces.iter().enumerate().rev().map(|(i, s)| (s.reversed(), key(i))).collect()
+        } else {
+            pieces.iter().enumerate().map(|(i, s)| (*s, key(i))).collect()
+        };
+        if let (Some(at), Some((first, _))) = (segs.last().map(Seg2::end), run.first())
+            && first.start().dist(at) > 1e-5
+        {
+            return Err(DocError::Invalid("the contour flange's curves are not connected end to end".into()));
+        }
+        for (s, key) in run {
+            segs.push(s);
+            drawn.push(key);
+        }
+    }
+    Ok((segs, drawn))
 }
 
 /// A rib wall: the band swept from the curves across the plane by `depth` (or to the body),
@@ -580,7 +634,6 @@ fn convert_to_sheet(
     if let Some(b) = st.bodies.iter_mut().find(|b| b.name == *body) {
         replace_traced_sheet_body(b, solid, lineage, &sheet.frames);
     }
-    st.sheets.retain(|s| s.body != sheet.body);
     st.surface_sheets.retain(|s| s.body != sheet.body);
     st.surface_sheets.push(sheet);
     Ok(())
@@ -611,6 +664,139 @@ fn surface_sheet_at(st: &ModelState, body: &Option<crate::BodyName>, name: Optio
     // A sheet that refuses the pick (a bend line, not a free edge) is the pick's, so its reason
     // is the feature's.
     st.surface_sheets.iter().position(|s| !matches!(s.free_edge_at(p), Ok(None)))
+}
+
+/// The sheet made from surfaces an edge flange on `edges` works on: the one [`surface_sheet_at`]
+/// finds at its first pick; else, where no body is named and the first edge is split into
+/// segments, the one with a curved edge at that pick, so that the split is refused for what it
+/// is (a curved edge is no free edge, by which `surface_sheet_at` finds a sheet).
+fn surface_flange_sheet(st: &ModelState, body: &Option<crate::BodyName>, f: &Feature, edges: &[crate::FlangeEdge]) -> Option<usize> {
+    let first = edges.first();
+    surface_sheet_at(st, body, f.edge_names.first().map(String::as_str), first.map(|e| e.point.0)).or_else(|| {
+        let p = first.filter(|e| body.is_none() && !e.segments.is_empty())?.point.0;
+        st.surface_sheets.iter().position(|s| s.curved_edge_at(p))
+    })
+}
+
+/// The stretches the `k`th edge `e` of an edge flange bends in, each `(from, to, height, angle,
+/// flip)`: `from` and `to` fractions of the stretch of the edge the sheet still has, in order
+/// along it. An edge with no segments is one stretch, the whole edge, at `height` and `angle` (its
+/// own, else the feature's) to the feature's side `flip`. A split edge makes one stretch for each
+/// run of its segments that share a height, an angle and a side (a segment's own, else the
+/// edge's; a segment's `flip` replaces the feature's outright): the same bend carries on.
+///
+/// The runs keep this invariant: the first starts at the edge's start (0), the last ends at its
+/// end (1), and each starts where the one before it ends, so they are sorted, contiguous and
+/// non-overlapping, and every stretch the segments give is covered. `sheet.flange` accepts
+/// segments that meet within [`crate::sheet::SEGMENT_JOIN_EPS`], and a junction it accepts is shut
+/// here, on the numbers given, before anything is built: a stretch starts where the edge is
+/// covered so far, and one narrower than that tolerance, or one ending behind the covered end, is
+/// no bend of its own (its angle and height do not build) but goes to the run before it. A list
+/// that does not tile the edge (a design file's: the command refuses it) is refused, naming the
+/// segment, as is a segment's angle outside 0…180° or a height below `least` for its angle (the
+/// least height the feature's bend takes); a list of such narrow stretches only is the whole edge.
+fn segment_runs(
+    k: usize,
+    e: &crate::FlangeEdge,
+    vals: &BTreeMap<String, Value>,
+    (height, angle, flip): (f64, f64, bool),
+    least: &dyn Fn(f64) -> f64,
+) -> Result<Vec<(f64, f64, f64, f64, bool)>> {
+    use crate::sheet::{SEGMENT_JOIN_EPS, WHOLE_EDGE};
+    let (edge_height, edge_angle) = (height, angle);
+    if e.segments.is_empty() {
+        return Ok(vec![(WHOLE_EDGE.0, WHOLE_EDGE.1, edge_height, edge_angle, flip)]);
+    }
+    let mut runs: Vec<(f64, f64, f64, f64, bool)> = Vec::new();
+    // The end of the edge the runs made so far cover. A run starts here, never before it, so the
+    // runs are sorted, contiguous and non-overlapping by construction.
+    let mut covered = WHOLE_EDGE.0;
+    // The `to` of the segment before, as stored: the segments must tile the edge, and a stored
+    // list that does not is refused rather than built past the edge or with part of it bare.
+    let mut prev_to = WHOLE_EDGE.0;
+    for (j, seg) in e.segments.iter().enumerate() {
+        if !(0.0..=1.0).contains(&seg.from) {
+            return Err(DocError::Invalid(format!("edges[{k}].segments[{j}].from must be a fraction from 0 to 1")));
+        }
+        if !(0.0..=1.0).contains(&seg.to) {
+            return Err(DocError::Invalid(format!("edges[{k}].segments[{j}].to must be a fraction from 0 to 1")));
+        }
+        if j == 0 && seg.from > SEGMENT_JOIN_EPS {
+            return Err(DocError::Invalid(format!("edges[{k}].segments[0].from must be 0: the segments cover the whole edge")));
+        }
+        if j > 0 && (seg.from - prev_to).abs() > SEGMENT_JOIN_EPS {
+            return Err(DocError::Invalid(format!(
+                "edges[{k}].segments[{j}].from must equal the to of the segment before it (the segments must meet, with no gap or overlap)"
+            )));
+        }
+        prev_to = seg.to;
+        let height = match &seg.height {
+            Some(x) => val(vals, x, Kind::Length)?,
+            None => edge_height,
+        };
+        let angle = match &seg.angle {
+            Some(x) => val(vals, x, Kind::Angle)?,
+            None => edge_angle,
+        };
+        // A segment's own angle and height are checked here, where its index is known, so a
+        // refusal names the segment the caller wrote.
+        if !(angle > 1e-6 && angle <= std::f64::consts::PI - 1e-6) {
+            return Err(DocError::Invalid(format!("edges[{k}].segments[{j}]: the flange angle must be between 0 and 180°")));
+        }
+        let at_least = least(angle);
+        if !(height >= at_least - 1e-9) {
+            return Err(DocError::Invalid(format!("edges[{k}].segments[{j}]: the flange height must be at least {at_least:.3} mm for this bend")));
+        }
+        let side = seg.flip.unwrap_or(flip);
+        // A junction the command accepts is shut here, whether the two stretches match or not:
+        // the stretch starts where the edge is covered, so no gap or overlap of the junction
+        // tolerance reaches the sheet. The 1e-12 comparison below only says whether they are one
+        // bend.
+        let start = seg.from.max(covered);
+        let start = if start <= covered + SEGMENT_JOIN_EPS { covered } else { start };
+        if seg.to - start <= SEGMENT_JOIN_EPS {
+            // No bend of its own: narrower than the junction tolerance, or ending behind the
+            // covered end. The run before it takes it, its end moving on to the stretch's end but
+            // never back, so the edge stays covered; one taken before any run is covered by the
+            // run that follows, which starts at the edge's start.
+            covered = covered.max(seg.to);
+            if let Some(last) = runs.last_mut() {
+                last.1 = covered;
+            }
+            continue;
+        }
+        let same_bend = runs.last().is_some_and(|last| (last.2 - height).abs() < 1e-12 && (last.3 - angle).abs() < 1e-12 && last.4 == side);
+        if same_bend {
+            // The same bend carries on: the junction closes, and the run takes the stretch's end.
+            if let Some(last) = runs.last_mut() {
+                last.1 = seg.to;
+            }
+        } else {
+            // Another bend starts where the run before it ends; the first starts at the edge's
+            // start however far the stretches taken before it have covered.
+            let start = if runs.is_empty() { WHOLE_EDGE.0 } else { start };
+            runs.push((start, seg.to, height, angle, side));
+        }
+        covered = seg.to;
+    }
+    if !runs.is_empty() && prev_to < WHOLE_EDGE.1 - SEGMENT_JOIN_EPS {
+        // A stored list that stops short of the edge's end leaves part of the edge without a
+        // flange: refused, as the command refuses it.
+        let n = e.segments.len() - 1;
+        return Err(DocError::Invalid(format!("edges[{k}].segments[{n}].to must be 1: the segments cover the whole edge")));
+    }
+    if runs.is_empty() {
+        // A stored list of narrow stretches only (`sheet.flange` cannot write one): the edge
+        // still builds whole, as the feature's own bend.
+        runs.push((WHOLE_EDGE.0, WHOLE_EDGE.1, edge_height, edge_angle, flip));
+    }
+    // A last `to` within the junction tolerance of the edge's end is its end.
+    if let Some(last) = runs.last_mut()
+        && (last.1 - WHOLE_EDGE.1).abs() <= SEGMENT_JOIN_EPS
+    {
+        last.1 = WHOLE_EDGE.1;
+    }
+    Ok(runs)
 }
 
 /// Why a feature found no sheet made from surfaces to work on: the named body is no sheet metal
@@ -735,21 +921,19 @@ fn new_sheet_body(name: String, sheet: &crate::SurfaceSheet, solid: Body, featur
     mb
 }
 
-/// A region mirrored in the sketch x axis (y → −y), exactly: free-form curves through their
-/// control points.
-fn mirror_y(r: &Region2) -> Region2 {
+/// A segment mirrored in the sketch x axis (y → −y), exactly: an arc turns the other way,
+/// free-form curves through their control points.
+fn mirrored_y(s: &Seg2) -> Seg2 {
     let f = |p: Vec2| Vec2::new(p.x, -p.y);
-    let m = |l: &Loop2| {
-        let segs: Vec<Seg2> = l
-            .segs
-            .iter()
-            .map(|s| match *s {
-                Seg2::Arc { center, radius, start, sweep } => Seg2::Arc { center: f(center), radius, start: -start, sweep: -sweep },
-                other => other.map_controls(f),
-            })
-            .collect();
-        Loop2 { segs }.ccw()
-    };
+    match *s {
+        Seg2::Arc { center, radius, start, sweep } => Seg2::Arc { center: f(center), radius, start: -start, sweep: -sweep },
+        other => other.map_controls(f),
+    }
+}
+
+/// A region mirrored in the sketch x axis (y → −y), exactly (see [`mirrored_y`]).
+fn mirror_y(r: &Region2) -> Region2 {
+    let m = |l: &Loop2| Loop2 { segs: l.segs.iter().map(mirrored_y).collect() }.ccw();
     Region2 { outer: m(&r.outer), holes: r.holes.iter().map(|h| m(h).reversed()).collect() }
 }
 
@@ -795,16 +979,10 @@ pub(super) fn sheet_eval(
         }
         FeatureKind::SheetContour { sketch, curves, distance, rule, flip, reverse } => {
             let ss = st.sketch(sketch.0).ok_or_else(|| DocError::Unknown(format!("sketch {sketch}")))?.clone();
-            for id in curves {
-                let ci = ss.sketch.curve_index(id).ok_or_else(|| DocError::Unknown(format!("curve `{id}`")))?;
-                if !ss.sketch.segs(ci).iter().all(|s| matches!(s, Seg2::Line { .. })) {
-                    return Err(DocError::Invalid("not supported yet: arcs in a contour flange (use lines; the bends are made for you)".into()));
-                }
-            }
-            let pts = chain_points(&ss, curves)?;
-            // The sketch line each line of the chain was drawn on, and its key: the line, with its
-            // place on it where it was drawn in several.
-            let lines = drawn_lines(&ss, curves);
+            // The profile as the sketch draws it, exactly, end to end, and the sketch curve each
+            // of its pieces was drawn on with the piece's key, the curves put in chain order first
+            // (main's #15364).
+            let (segs, drawn) = contour_profile(&ss, &ss.chain_order(curves)?)?;
             let w = val(vals, distance, Kind::Length)?;
             if !(w > 0.0) {
                 return Err(DocError::Invalid("the contour flange distance must be positive".into()));
@@ -812,19 +990,23 @@ pub(super) fn sheet_eval(
             let r = doc.sheet_rule(rule.as_deref());
             let rule = convert_rule(&doc.rule_values(vals, &r)?);
             let plane = if *reverse { Plane { origin: ss.plane.origin, x: ss.plane.x, y: ss.plane.y * -1.0 } } else { ss.plane };
-            let pts: Vec<Vec2> = if *reverse { pts.iter().map(|p| Vec2::new(p.x, -p.y)).collect() } else { pts };
-            // Mirroring the sketch swaps the material side too. A sheet made from surfaces (#6748).
+            let segs: Vec<Seg2> = if *reverse { segs.iter().map(mirrored_y).collect() } else { segs };
+            // Mirroring the sketch swaps the material side too. A sheet made from surfaces (#6748):
+            // each piece pushed out along the normal is a panel of it.
             let name = new_name(st, f, 0);
-            let (sheet, solid) = crate::SurfaceSheet::contour(&name, &r.name, &rule, &plane, &pts, w, *flip != *reverse, f.id, &lines)?;
+            let (sheet, solid) = crate::SurfaceSheet::contour(&name, &r.name, &rule, &plane, &segs, w, *flip != *reverse, f.id, &drawn)?;
             st.bodies.push(new_sheet_body(name, &sheet, solid, f.id));
             st.surface_sheets.push(sheet);
             Ok(())
         }
         FeatureKind::SheetFlange { edges, height, angle, radius, position, flip, body, height_from, corner_relief_shape, corner_relief }
-            if surface_sheet_at(st, body, f.edge_names.first().map(String::as_str), edges.first().map(|e| e.point.0)).is_some() =>
+            if surface_flange_sheet(st, body, f, edges).is_some() =>
         {
-            let i = surface_sheet_at(st, body, f.edge_names.first().map(String::as_str), edges.first().map(|e| e.point.0))
-                .ok_or_else(|| DocError::Invalid("sheet".into()))?;
+            // The sheet with a free edge at the first pick; else, for an edge split into
+            // segments, the one with a curved edge there, where the split is refused for what it
+            // is (see `surface_flange_sheet`).
+            let at_free = surface_sheet_at(st, body, f.edge_names.first().map(String::as_str), edges.first().map(|e| e.point.0));
+            let i = at_free.or_else(|| surface_flange_sheet(st, body, f, edges)).ok_or_else(|| DocError::Invalid("sheet".into()))?;
             let (h, a) = (val(vals, height, Kind::Length)?, val(vals, angle, Kind::Angle)?);
             let sk = st.surface_sheets.get(i).ok_or_else(|| DocError::Invalid("sheet".into()))?;
             if sk.unfolded {
@@ -840,10 +1022,12 @@ pub(super) fn sheet_eval(
                     .ok_or_else(|| DocError::Invalid(format!("unknown flange height datum `{name}` (outer, inner or tangent)")))?,
                 None => sheet::HeightFrom::Outer,
             };
-            // Every edge is found on the sheet as it was before any of them.
-            let mut sk = sk.clone();
-            let before = sk.clone();
-            let mut picks = Vec::with_capacity(edges.len());
+            // Each edge's own height and angle, else the feature's, and the stretches it bends in:
+            // the whole edge, or each run of its segments (see `segment_runs`). Every segment is
+            // checked before any edge is looked for, so a refusal names the segment written.
+            let t = sk.sheet.thickness;
+            let least = |angle: f64| from.before_leg(angle, rr, t);
+            let mut runs_of = Vec::with_capacity(edges.len());
             for (k, e) in edges.iter().enumerate() {
                 let height = match &e.height {
                     Some(x) => val(vals, x, Kind::Length)?,
@@ -853,8 +1037,26 @@ pub(super) fn sheet_eval(
                     Some(x) => val(vals, x, Kind::Angle)?,
                     None => a,
                 };
-                let edge = surface_edge_pick(st, &before, f.edge_names.get(k), e.point.0)?;
-                picks.push((edge, height, angle));
+                runs_of.push(segment_runs(k, e, vals, (height, angle, *flip), &least)?);
+            }
+            // Every edge is found on the sheet as it was before any of them.
+            let mut sk = sk.clone();
+            let before = sk.clone();
+            let mut picks = Vec::with_capacity(edges.len());
+            for (k, (e, runs)) in edges.iter().zip(runs_of).enumerate() {
+                let edge = match surface_edge_pick(st, &before, f.edge_names.get(k), e.point.0) {
+                    Ok(edge) => edge,
+                    // A split edge picked on a curved edge: its stretches' fractions would follow
+                    // no straight line.
+                    Err(_) if runs.len() > 1 && before.curved_edge_at(e.point.0) => {
+                        return Err(DocError::Invalid("not supported yet: segments on a curved edge (pick a straight edge of the sheet)".into()));
+                    }
+                    // The sheet was found only by a curved edge at the first pick: no free edge
+                    // lies there.
+                    Err(_) if at_free.is_none() => return Err(no_free_edge(st, body, edges.first().map(|e| e.point.0))),
+                    Err(why) => return Err(why),
+                };
+                picks.push((edge, runs));
             }
             // The corner relief these flanges ask for in place of the rule's, at the corners
             // their bends make.
@@ -889,16 +1091,20 @@ pub(super) fn sheet_eval(
             // the later one's is cut.
             let order = doc.feature_index(f.id).unwrap_or(usize::MAX);
             let mut made = Vec::with_capacity(picks.len());
-            for (k, (edge, height, angle)) in picks.into_iter().enumerate() {
-                let joint = sk.flange_on(edge, height, angle, rr, position, from, *flip).map_err(named(k))?;
+            for (k, (edge, runs)) in picks.into_iter().enumerate() {
+                // One bend for each run: a split edge's butt where its runs meet.
+                let joints = sk.flanges_on(edge, &runs, rr, position, from).map_err(named(k))?;
                 if let Some((relief, size)) = own {
-                    sk.corner_reliefs.push((joint, relief, size, order));
+                    for &joint in &joints {
+                        sk.corner_reliefs.push((joint, relief, size, order));
+                    }
                 }
-                made.push(joint);
+                made.push(joints);
             }
-            for (k, joint) in made.iter().enumerate() {
-                sk.close_flange_corners(std::slice::from_ref(joint)).map_err(named(k))?;
+            for (k, joints) in made.iter().enumerate() {
+                sk.close_flange_corners(joints).map_err(named(k))?;
             }
+            let made: Vec<usize> = made.into_iter().flatten().collect();
             sk.clear_of_neighbours(&made)?;
             tag_panels(&mut sk, Some(&before), n0, f.id, PanelsBy::Bends(&[]));
             if let Some(slot) = st.surface_sheets.get_mut(i) {
@@ -1310,12 +1516,14 @@ pub(super) fn surface_prism_cut(
         .into_iter()
         .map(|(plane, region)| {
             let mut b = Aabb3::EMPTY;
-            for q in &region.outer.polyline(1e-3) {
-                let w = plane.to_world(*q);
-                let off = (w - cut.plane.origin).dot(n);
-                for s in [lo, hi] {
-                    b.add(w + n * (s - off));
-                }
+            for s in [lo, hi] {
+                // The footprint carried along the normal onto the level `s`, an affine map: its box
+                // there holds it (see [`crate::sheet_surface_cuts::loop_box_in`]).
+                let onto = |q: Vec2| {
+                    let w = plane.to_world(q);
+                    w + n * (s - (w - cut.plane.origin).dot(n))
+                };
+                b = b.union(&crate::sheet_surface_cuts::loop_box_in(&region.outer, onto));
             }
             (lo, hi, plane, region, Some(b.inflated(1e-6)))
         })
@@ -1385,7 +1593,7 @@ pub(super) fn surface_prism_cut(
                 return Ok(Vec::new());
             }
             let near = |r: &Region2| {
-                let (a, b) = (r.outer.polyline(1e-3).bounds(), mapped.outer.polyline(1e-3).bounds());
+                let (a, b) = (crate::sheet_surface_cuts::loop_box(&r.outer), crate::sheet_surface_cuts::loop_box(&mapped.outer));
                 !(a.max.x < b.min.x || b.max.x < a.min.x || a.max.y < b.min.y || b.max.y < a.min.y)
             };
             if out.recesses.iter().any(|r| r.panel == p && near(&r.region))
@@ -1450,7 +1658,7 @@ pub(super) fn surface_prism_cut(
 }
 
 /// Refuses a tapered extrude cut (or intersect) that changes a sheet made from surfaces it targets
-/// (#6748) where the sheet can't keep it, as the flat model refuses it:
+/// (#6748) where the sheet can't keep it:
 ///
 /// - a cut that stops inside a flat panel's thickness: a cap of the extrude (an end of the
 ///   interval `constructor` says it was drawn over) lies strictly between the faces of a flat
@@ -1581,8 +1789,35 @@ pub(super) fn surface_hole_cut(f: &Feature, st: &mut ModelState, tools: &[(Trace
             if boxes.iter().any(|(k, bx)| *k != Some(p) && !boxes_apart(&reach, &Some(*bx))) {
                 return Ok(Vec::new());
             }
-            if out.recesses.iter().any(|r| r.panel == p) || !out.sheet.cuts.is_empty() {
+            // What the hole takes from its panel, in the panel's chart: its circle across it, or
+            // the band its bore runs along inside it (as far as the bore runs, a hair past either
+            // end). It goes the general way where that meets a pocket on the panel or a cut
+            // through the sheet, read exactly; clear of them, it is cut here.
+            let footprint = if across {
+                Loop2::circle(Vec2::new(b.x, b.y), radius)
+            } else {
+                let past = t * 1e-2;
+                let (o, d) = (Vec2::new(b.x, b.y), Vec2::new(a.x, a.y));
+                let Some(d) = d.normalized() else { return Ok(Vec::new()) };
+                let side = Vec2::new(-d.y, d.x) * radius;
+                let (s, e) = (o + d * (u0 - past), o + d * (u1 + past));
+                Loop2::polygon(&[s - side, e - side, e + side, s + side])
+            };
+            if out.recesses.iter().any(|r| r.panel == p && !crate::sheet_surface::loop_clear_of(&footprint, &r.region)) {
                 return Ok(Vec::new());
+            }
+            if !out.sheet.cuts.is_empty() {
+                // The cuts are drawn in the chart of a panel each reaches, and may reach this one
+                // across a joint: both are read in the flat, where the development places them.
+                let Ok(dev) = sk.develop() else { return Ok(Vec::new()) };
+                let Some(Some(here)) = dev.placements.get(p) else { return Ok(Vec::new()) };
+                let laid = here.region(&Region2 { outer: footprint, holes: Vec::new() }).outer;
+                for c in &out.sheet.cuts {
+                    let Some(Some(there)) = dev.placements.get(c.panel) else { return Ok(Vec::new()) };
+                    if !crate::sheet_surface::loop_clear_of(&laid, &there.region(&c.region)) {
+                        return Ok(Vec::new());
+                    }
+                }
             }
             let Some(panel) = out.sheet.panels.get_mut(p) else { return Ok(Vec::new()) };
             if across {
@@ -1811,6 +2046,63 @@ const MAX_LABELS: usize = 1000;
 /// beside either face. Past a rounding of the numbers its depths come from, a cap within a few
 /// units in the last place of a face is on it. The boolean doesn't resolve such a layer, so the
 /// sheet would keep what the cut took or lose what it kept; the extrude's own interval shows it.
+/// An extrude cut whose profile passes a hair off a corner of a sheet made from surfaces it cuts
+/// (#15346), nearer it than the body's working tolerance but not through it, is refused. The
+/// kernel's booleans and sew take two points that near for one (the record's tolerance, 10⁻⁶ of
+/// the solid's size and at least 10⁻⁵ mm, as `sew` in crates/kernel/src/sew.rs sets it), so the
+/// cut would build another part than the one drawn, or none; moving the cut onto the corner would
+/// change what was drawn. Read exactly in the sketch plane: each corner the extrude runs past, its
+/// distance from the profile's lines and arcs (other curves are not read here). "Through it" is
+/// within the model's linear resolution, `LINEAR_TOL` (10⁻⁶ mm).
+pub(super) fn surface_corner_graze_refused(f: &Feature, st: &ModelState, targets: &[String], c: &ExtrudeConstructor) -> Result<()> {
+    let FeatureKind::Extrude { sketch, profiles, .. } = &f.kind else { return Ok(()) };
+    let Some(ss) = st.sketch(sketch.0) else { return Ok(()) };
+    if c.plane != ss.plane {
+        return Ok(());
+    }
+    let regions = select_profiles(ss, profiles)?;
+    let plane = ss.plane;
+    let n = plane.normal();
+    let (lo, hi) = (c.interval.0.min(c.interval.1), c.interval.0.max(c.interval.1));
+    for sk in &st.surface_sheets {
+        let Some(mb) = st.body(&sk.body) else { continue };
+        if !takes_part(f, targets, mb) {
+            continue;
+        }
+        let reach = (mb.body.size() * 1e-6).max(1e-5);
+        for v in &mb.body.record().vertices {
+            let p = Vec3::new(v.point[0], v.point[1], v.point[2]);
+            let h = (p - plane.origin).dot(n);
+            if h < lo - reach || h > hi + reach {
+                continue;
+            }
+            let q = plane.to_local(p);
+            let near = regions
+                .iter()
+                .flat_map(|r| std::iter::once(&r.outer).chain(&r.holes))
+                .flat_map(|l| &l.segs)
+                .filter_map(|s| match *s {
+                    Seg2::Line { a, b } => Some(crate::sheet_surface_cuts::to_segment(q, a, b)),
+                    Seg2::Arc { center, radius, start, sweep } => {
+                        Some(crate::sheet_surface_cuts::to_arc(q, (center, radius, start, sweep), [s.start(), s.end()]))
+                    }
+                    _ => None,
+                })
+                .fold(f64::INFINITY, f64::min);
+            // On the corner: within the model's linear resolution (a folded panel's corner lies
+            // where its fold puts it, to a rounding far below that).
+            if near > solidcraft_geom::LINEAR_TOL && near < reach {
+                return Err(DocError::Invalid(format!(
+                    "the cut passes {near:.1e} mm from a corner of `{}` at ({:.4}, {:.4}, {:.4}): nearer than the model's tolerance ({reach:.1e} mm) \
+                     but not through it, so it can't be built as drawn. Draw the cut through the corner, or at least {reach:.1e} mm from it",
+                    sk.body, p.x, p.y, p.z
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn surface_thin_layer_refused(
     st: &ModelState,
     reach: &[Option<Aabb3>],
@@ -1876,6 +2168,26 @@ pub(super) fn line_beyond_reach(mb: &ModelBody, at: Vec3, dir: Vec3, reach: f64)
         hi = hi.min(t0.max(t1));
     }
     lo > hi
+}
+
+/// Whether [`kernel::cylinder_face_at`] is known to find no face of `mb` at `p`. It takes a face
+/// only when its mesh of the body, made to a chord tolerance of `(size * 1e-3).max(1e-3)`, comes
+/// within a twentieth of the body's size of the point. That mesh lies within its tolerance of
+/// the exact faces, so of the body's exact box ([`exact_box`]): a box farther from the point
+/// than a twentieth of the size and twice that tolerance holds no face for it. Working that out
+/// from the exact box spares meshing every body in the design for each tap marking (#10227). A
+/// mesh body, and a body whose box is unknown, are searched as before.
+pub(super) fn beyond_cylinder_reach(mb: &ModelBody, p: Vec3) -> bool {
+    if mb.body.is_mesh() {
+        return false;
+    }
+    let Some(b) = exact_box(&mb.body) else { return false };
+    let size = mb.body.size();
+    let reach = size * 0.05 + 2.0 * (size * 1e-3).max(1e-3);
+    let off = |at: f64, lo: f64, hi: f64| (lo - at).max(at - hi).max(0.0);
+    let (dx, dy, dz) = (off(p.x, b.min.x, b.max.x), off(p.y, b.min.y, b.max.y), off(p.z, b.min.z, b.max.z));
+    let dist = (dx * dx + dy * dy + dz * dz).sqrt();
+    dist.is_finite() && reach.is_finite() && dist > reach
 }
 
 /// Whether two boxes are known to be apart (an unknown box is never apart).
@@ -2126,7 +2438,7 @@ pub(super) fn plastic_eval(doc: &Document, vals: &BTreeMap<String, Value>, f: &F
                 let edges = resolve_edges(&mb.body, &[position.0 + x * r0], &[], &mut warn)?;
                 let nb = mb.traced().then(kernel::fillet(&mb.body, &edges, rf)?);
                 if let Some(slot) = st.bodies.get_mut(i) {
-                    *slot = ModelBody::traced_new(mb.name, nb, mb.feature);
+                    *slot = mb.remade(nb);
                 }
             }
             if let Some(hd) = hole_diameter {
