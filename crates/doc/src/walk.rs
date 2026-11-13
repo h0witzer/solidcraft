@@ -437,7 +437,7 @@ impl PlaneRef {
                 }
             }
             Self::AlongPath { path, .. } => path.walk_feature_refs(f, depth + 1),
-            Self::Origin { .. } | Self::Custom { .. } | Self::Placed { .. } | Self::Face { .. } => {}
+            Self::Origin { .. } | Self::Custom { .. } | Self::Datum { .. } | Self::Placed { .. } | Self::Face { .. } => {}
         }
     }
 
@@ -477,7 +477,7 @@ impl PlaneRef {
                 }
             }
             Self::AlongPath { path, .. } => path.walk_feature_refs_mut(f, depth + 1),
-            Self::Origin { .. } | Self::Custom { .. } | Self::Placed { .. } | Self::Face { .. } => {}
+            Self::Origin { .. } | Self::Custom { .. } | Self::Datum { .. } | Self::Placed { .. } | Self::Face { .. } => {}
         }
     }
 }
@@ -491,7 +491,9 @@ impl GeoRef {
         match self {
             Self::Axis { name } | Self::ConstructPoint { name } => f(Ref::FeatureName(name)),
             Self::Plane { plane } => plane.walk_feature_refs(f, depth + 1),
+            Self::Snap { of, .. } => of.walk_feature_refs(f, depth + 1),
             Self::Point { .. }
+            | Self::Datum { .. }
             | Self::Origin
             | Self::Vertex { .. }
             | Self::Edge { .. }
@@ -509,7 +511,9 @@ impl GeoRef {
         match self {
             Self::Axis { name } | Self::ConstructPoint { name } => f(Ref::FeatureName(name)),
             Self::Plane { plane } => plane.walk_feature_refs_mut(f, depth + 1),
+            Self::Snap { of, .. } => of.walk_feature_refs_mut(f, depth + 1),
             Self::Point { .. }
+            | Self::Datum { .. }
             | Self::Origin
             | Self::Vertex { .. }
             | Self::Edge { .. }
