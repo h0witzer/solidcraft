@@ -9295,6 +9295,7 @@ fn eval_feature(
         | FeatureKind::SheetPerforate { .. }
         | FeatureKind::SheetFold { .. }
         | FeatureKind::SheetPath { .. }
+        | FeatureKind::SheetTab { .. }
         | FeatureKind::SheetUnfold { .. }
         | FeatureKind::SheetConvert { .. }
         | FeatureKind::SheetSurfaceConvert { .. }

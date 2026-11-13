@@ -1,4 +1,4 @@
-//! Sheet metal: rules, Flange (base, edge, contour), Path Flange, Hem, Unfold/Refold, Convert to Sheet Metal,
+//! Sheet metal: rules, Flange (base, edge, contour), Path Flange, Tab, Hem, Unfold/Refold, Convert to Sheet Metal,
 //! the flat pattern (outline, bend lines, bend table) and its DXF export.
 
 use serde_json::{Value, json};
@@ -18,7 +18,7 @@ use crate::schema::features::FeatureResult;
 use crate::schema::sheet::{
     BendTableFormat, BendTableParams, BendTableResult, ConvertParams, FlangeParams, FlatCircle, FlatPatternParams, FlatPatternResult, FlatSegment,
     FlatShape, FoldParams, HemParams, ListedRule, ManageRulesParams, ManageRulesResult, MeasureBodyParams, PathFlangeParams, PerforateParams,
-    RecognizeParams, RuleFeatureError, RuleReply, RulesParams, RulesResult, SheetBodyMeasure, UnfoldParams,
+    RecognizeParams, RuleFeatureError, RuleReply, RulesParams, RulesResult, SheetBodyMeasure, TabParams, UnfoldParams,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{EngineError, Result, Session};
@@ -29,6 +29,7 @@ const HEM_CONTRACT: TypedContract<HemParams> = TypedContract::new();
 const FOLD_CONTRACT: TypedContract<FoldParams> = TypedContract::new();
 const UNFOLD_CONTRACT: TypedContract<UnfoldParams> = TypedContract::new();
 const CONVERT_CONTRACT: TypedContract<ConvertParams> = TypedContract::new();
+const TAB_CONTRACT: TypedContract<TabParams> = TypedContract::new();
 const RECOGNIZE_CONTRACT: TypedContract<RecognizeParams> = TypedContract::new();
 const MEASURE_BODY_CONTRACT: TypedContract<MeasureBodyParams> = TypedContract::new();
 
@@ -72,6 +73,19 @@ pub static COMMANDS: &[CommandSpec] = &[
          that edge, from the edge out (each line one flange as long as the line, to the outer face from the virtual sharp; each \
          corner one bend, turning the way the lines turn); radius? (default: rule); body?. One feature, one body",
     ),
+    CommandSpec::new("sheet.tab", "Tab", crate::checked!("sheet.tab", tab))
+        .at("SHEET METAL", "CREATE")
+        .icon("sheet_tab")
+        .contract(&TAB_CONTRACT)
+        .output(output_schema_for::<FeatureResult>)
+        .params(
+            "sketch?: id|name (default: active or last sketch), drawn on a flat face of a sheet (either side) or in a plane level with one; \
+             profiles? (default: all): closed profiles touching or overlapping that face's outline; exact_regions?: bool (as solid.extrude); body? (default: the sheet whose face \
+             the profile meets). The profile's area joins that panel of the same body through the sheet's thickness (no new body): it \
+             unfolds with its panel, and later flanges, hems and folds can use its edges. Refused when the profile doesn't meet the \
+             face, adds nothing, reaches into a bend zone, would overlap another panel once folded or flat or would join more than one panel, \
+             or the sheet is unfolded",
+        ),
     CommandSpec::new("sheet.perforate", "Perforate", crate::checked!("sheet.perforate", perforate))
         .at("SHEET METAL", "CREATE")
         .icon("perforate")
@@ -765,6 +779,13 @@ fn path_flange(s: &mut Session, p: &Value) -> Result<Value> {
         p,
         FeatureKind::SheetPath { edge: Position(edge), sketch: SketchId(sketch), curves, radius, body: str_(p, "body").map(BodyName::from) },
     )
+}
+
+fn tab(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "sheet.tab";
+    let sketch = feature_sketch(s, p, cmd)?;
+    let profiles = profiles(p, cmd)?;
+    add_feature(s, p, FeatureKind::SheetTab { sketch: SketchId(sketch), profiles, body: str_(p, "body").map(BodyName::from) })
 }
 
 fn unfold(s: &mut Session, p: &Value) -> Result<Value> {
@@ -1583,6 +1604,9 @@ mod face_names_tests;
 #[cfg(test)]
 #[path = "sheet_parity_tests.rs"]
 mod parity_tests;
+#[cfg(test)]
+#[path = "sheet_surface_tab_tests.rs"]
+mod surface_tab_tests;
 #[cfg(test)]
 #[path = "sheet_upgrade_tests.rs"]
 mod upgrade_tests;
