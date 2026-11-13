@@ -152,7 +152,7 @@ impl SurfaceSheet {
         let dev = self.develop().map_err(|e| DocError::Invalid(e.to_string()))?;
         let pieces = crate::sheet_surface::pieces(&dev, &mut crate::sheet::FlatWork::new())?;
         let regions: Vec<Region2> = pieces.into_iter().map(|(_, r)| r).collect();
-        let whole = crate::sheet::material_union(regions.clone(), &mut crate::sheet::FlatWork::new())?;
+        let whole = crate::sheet_surface::planar_union(regions.clone(), &mut crate::sheet::FlatWork::new())?;
         if (area(&regions) - area(&whole)).abs() > 1e-6 * area(&regions).max(1.0) {
             return err(TAB_OVERLAPS);
         }

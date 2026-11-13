@@ -6,13 +6,14 @@
 //! away) and a wall along each of its edges that no other piece shares. A flat edge folds to a
 //! line or a circular arc where it lies along or across a bend or a roll, and to a chain of
 //! Bézier pieces of degree 7 elsewhere, such as a slanted edge across a bend, which folds to a
-//! helix.
+//! helix. A free-form panel straight across one way (a curve pushed out along a line, see
+//! `SurfaceSheet::contour`) has its faces ruled between its two edges along the curve.
 
 use solidcraft_geom::prelude::*;
 use std::sync::Arc;
 
 use solidcore_record::{Loop2, Region2, Seg2, Vec2, Vec3};
-use solidcraft_develop::{Bent, Development, Fold, Rigid3};
+use solidcraft_develop::{Bent, Development, Fold, Rigid3, Surface};
 use solidcraft_geom::LINEAR_TOL;
 use solidcraft_kernel::{self as kernel, Body, EdgeSpec, FaceSpec, SurfSpec};
 
@@ -172,19 +173,16 @@ fn solid_of(
         // The face a thickness into the material (its loops as the flat's, about the normal
         // toward the material), and the surface (the other way round).
         for (side, depth, inside) in [(1, t, t * (1.0 - 1e-3)), (0, 0.0, t * 1e-3)] {
-            let loops = edges
+            let loops: Vec<Vec<EdgeSpec>> = edges
                 .iter()
-                .map(|l| {
+                .map(|l| -> Vec<EdgeSpec> {
                     let v = l.iter().filter_map(|pair| pair.get(side).cloned());
                     if side == 0 { v.rev().map(|e| e.reversed()).collect() } else { v.collect() }
                 })
                 .collect();
             let p = f.at(c.piece, center, depth)?;
-            faces.push(FaceSpec {
-                loops,
-                surface: f.surface(c.piece, &samples, depth, curved)?,
-                probe: Some((p, p - f.at(c.piece, center, inside)?)),
-            });
+            let surface = if f.free_form(c.piece) { ruled(&loops)? } else { f.surface(c.piece, &samples, depth, curved)? };
+            faces.push(FaceSpec { loops, surface, probe: Some((p, p - f.at(c.piece, center, inside)?)) });
             names.push(name(c.piece, FaceRole::Cap { surface: side == 0, at: center }));
         }
         // Walls along runs no other cell shares.
@@ -201,7 +199,11 @@ fn solid_of(
             let mid = run_at(run, 0.5);
             let along = run_at(run, 0.51) - run_at(run, 0.49);
             let pm = f.at(c.piece, mid, t / 2.0)?;
-            let outward = f.at(c.piece, mid + Vec2::new(along.y, -along.x).normalized().unwrap_or_default() * 1e-3, t / 2.0)? - pm;
+            // The way out of the piece, taken from a point a hair inside it: a free-form panel's
+            // flat map holds only its own domain, whose edges are the piece's, and puts no point
+            // past them on the folded sheet.
+            let within = mid - Vec2::new(along.y, -along.x).normalized().unwrap_or_default() * 1e-3;
+            let outward = pm - f.at(c.piece, within, t / 2.0)?;
             faces.push(FaceSpec { loops: vec![vec![bottom.clone(), up_b, top.reversed(), down_a]], surface, probe: Some((pm, outward)) });
             names.push(name(c.piece, FaceRole::Wall { a, b, mid }));
         }
@@ -217,29 +219,16 @@ fn solid_of(
 }
 
 /// The pieces as cells: edges shorter than the model's tolerance dropped (the sew welds their
-/// ends), arcs of more than three quarters of a turn halved (so that an arc's ends stay well
-/// apart, as the kernel's own profiles keep them), and straight edges split where other cells'
-/// corners touch them, so that neighbors share whole edges.
+/// ends), and straight edges split where other cells' corners touch them, so that neighbors share
+/// whole edges. An arc of more than three quarters of a turn comes halved in the pieces
+/// themselves (see `sheet_surface::pieces`), so that its ends stay well apart, as the kernel's
+/// own profiles keep them, and the flat has the solid's two edges there.
 ///
-/// Until the kernel (solidcore, #1597) takes a circular edge round any sweep, a whole circle on
-/// one vertex too, and sews edges that share only part of their length: keep every edge whole.
-/// Both splits here are the kernel's limits, not the sheet's: each makes one edge of the flat
-/// two edges of the solid.
+/// Until the kernel (solidcore, #1597) sews edges that share only part of their length: keep
+/// every edge whole. That split is the kernel's limit, not the sheet's: it makes one edge of the
+/// flat two edges of the solid.
 fn cells(pieces: Vec<(Piece, Region2)>, work: &mut FlatWork) -> Result<Vec<Cell>> {
-    let clean = |l: Loop2| -> Vec<Seg2> {
-        let mut v = Vec::with_capacity(l.segs.len());
-        for e in l.segs.into_iter().filter(|e| e.length() >= LINEAR_TOL) {
-            match e {
-                Seg2::Arc { center, radius, start, sweep } if sweep.abs() > std::f64::consts::PI * 1.5 => {
-                    let half = sweep / 2.0;
-                    v.push(Seg2::Arc { center, radius, start, sweep: half });
-                    v.push(Seg2::Arc { center, radius, start: start + half, sweep: half });
-                }
-                _ => v.push(e),
-            }
-        }
-        v
-    };
+    let clean = |l: Loop2| -> Vec<Seg2> { l.segs.into_iter().filter(|e| e.length() >= LINEAR_TOL).collect() };
     let raw: Vec<Cell> = pieces
         .into_iter()
         .filter_map(|(piece, r)| {
@@ -285,6 +274,16 @@ fn cells(pieces: Vec<(Piece, Region2)>, work: &mut FlatWork) -> Result<Vec<Cell>
 impl Folded<'_> {
     fn bent(&self, zone: usize) -> Option<&Bent> {
         self.dev.zones.get(zone).and_then(|z| self.fold?.bends.get(z.joint)).and_then(Option::as_ref)
+    }
+
+    /// Whether a piece lies on a free-form panel, folded (its faces are [`ruled`]).
+    fn free_form(&self, piece: Piece) -> bool {
+        match piece {
+            Piece::Panel(i) | Piece::Tab(_, i) => {
+                self.flat.is_none() && self.fold.and_then(|f| f.surface(i)).is_some_and(|s| matches!(s, Surface::Spline(_)))
+            }
+            Piece::Zone(_) => false,
+        }
     }
 
     /// Where a point of a piece goes, `depth` into the material: a tab's where its panel puts it,
@@ -541,6 +540,20 @@ fn wall(bottom: &EdgeSpec, top: &EdgeSpec) -> Result<SurfSpec> {
         }
         (EdgeSpec::Chain { .. }, EdgeSpec::Chain { .. }) => Ok(SurfSpec::Ruled { a: bottom.clone(), b: top.clone() }),
         _ => Err(DocError::Invalid("not supported yet: an edge that folds to a line on one side of the sheet and a curve on the other".into())),
+    }
+}
+
+/// The surface of a face of a free-form panel straight across one way, a curve pushed out along
+/// a line (see `SurfaceSheet::contour`), whose edges are `loops` as the face runs round them: the
+/// surface ruled between its two edges along the curve (the panel's edges along it, folded to
+/// chains), the second run back the way the first runs, its other edges the rulings across its
+/// ends. A plane where the curve folds straight.
+fn ruled(loops: &[Vec<EdgeSpec>]) -> Result<SurfSpec> {
+    let chains: Vec<&EdgeSpec> = loops.iter().flatten().filter(|e| matches!(e, EdgeSpec::Chain { .. })).collect();
+    match chains.as_slice() {
+        [a, b] if loops.len() == 1 => Ok(SurfSpec::Ruled { a: (*a).clone(), b: b.reversed() }),
+        [] if loops.iter().flatten().all(|e| matches!(e, EdgeSpec::Line { .. })) => Ok(SurfSpec::Plane),
+        _ => Err(DocError::Invalid("not supported yet: a cut into a free-form panel (a hole, or a notch in its edges along its curve)".into())),
     }
 }
 

@@ -1,186 +1,17 @@
-//! A sheet body as surfaces (#6748): its panels in charts of their own, joined by bends anchored at
-//! their virtual sharps, and laid out flat by `solidcraft-develop`. While the sheet model keeps
-//! the flat pattern as its master, this is a check that its surfaces give the same flat: setting
-//! `SOLIDCRAFT_SURFACE_REPORT` to a file makes every sheet body that is built append one line to it,
-//! naming the thread (a test's name under `cargo test`) and how far the two flats differ.
+//! The flat of a sheet made from surfaces (#6748): the pieces its development lays out (each
+//! placed panel less its trims, the bend zones, and the tabs cuts leave), and the planar booleans
+//! they are cut and joined by. The flat pattern and the folded solid are both made of these
+//! pieces, edge for edge.
 
 use solidcore_record::{Loop2, Region2, Seg2, Vec2};
-use solidcraft_develop::{Anchor, Bend, Datum, Development, Joint, JointKind, Panel, Relief, Rigid2, Sheet, Tail, ZoneEnds, crossings, develop};
+use solidcraft_develop::{Development, crossings};
 use solidcraft_geom::prelude::*;
 use solidcraft_geom::{Aabb2, Ring};
 use solidcraft_kernel::BoolOp;
 
-use crate::sheet::{FlatWork, SheetBody, SheetFlange, material_boolean, material_union};
-use crate::sheet_flat_lineage::{self, Resolution};
+use crate::sheet::FlatWork;
+use crate::sheet_surface_cuts::{holds, near_each_other, region_holds};
 use crate::{DocError, Result};
-
-/// Bends closer to a half turn than this (radians) have no usable sharp: they are anchored at
-/// their tangent lines.
-const HALF_TURN_TOL: f64 = 1e-9;
-
-/// The most the two flats may differ, as the area between them over the length of the sheet's
-/// outline: their mean distance apart (mm).
-const SAME_FLAT: f64 = 1e-6;
-
-/// A sheet body's surfaces, its base panel's chart being the flat frame. Panel `0` is the base
-/// and panel `1 + i` flange `i`'s panel; each panel's material runs on from its tangent line to
-/// the bend's anchor, as the surface model keeps it.
-pub(crate) fn surfaces_of(sh: &SheetBody) -> Result<Sheet> {
-    let n = sh.flanges.len();
-    // Each panel's chart, from the flat frame: the base's is the flat frame itself, and a
-    // flange's is put at the start of its bend's anchor so that nothing of its flat place is
-    // carried over.
-    let mut charts = vec![Rigid2::IDENTITY; n + 1];
-    let mut regions = vec![sh.base.clone()];
-    let mut joints = Vec::with_capacity(n);
-    for (i, f) in sh.flanges.iter().enumerate() {
-        let frame = BendFrame::of(sh, i, f);
-        let chart = Rigid2::onto(frame.b_origin, frame.along, Vec2::ZERO, Vec2::X)
-            .ok_or_else(|| DocError::Invalid(format!("flange {i} has no bend direction")))?;
-        if let Some(c) = charts.get_mut(i + 1) {
-            *c = chart;
-        }
-        regions.push(if f.leg > 1e-9 { sh.panel(f) } else { Region2::default() });
-        joints.push(frame);
-    }
-    // Run each panel's material on to its anchors: the parent's along the zone, the flange's
-    // along its whole edge on the bend.
-    let mut work = FlatWork::new();
-    for frame in &joints {
-        let parent = frame.parent;
-        for (panel, band) in [(parent, frame.parent_band()), (frame.panel, frame.flange_band())] {
-            let Some(band) = band else { continue };
-            let Some(region) = regions.get_mut(panel) else { continue };
-            if region.outer.segs.is_empty() {
-                continue;
-            }
-            if let [one] = material_union(vec![region.clone(), band], &mut work)?.as_slice() {
-                *region = one.clone();
-            }
-        }
-    }
-    let panels = regions
-        .iter()
-        .zip(&charts)
-        .enumerate()
-        .map(|(i, (r, c))| Panel { name: if i == 0 { "base".into() } else { format!("flange {}", i - 1) }, region: c.region(r), ..Panel::default() })
-        .collect();
-    let joints = joints
-        .iter()
-        .map(|f| {
-            let (Some(pa), Some(pb)) = (charts.get(f.parent), charts.get(f.panel)) else { return Err(DocError::Invalid("flange parent".into())) };
-            Ok(Joint {
-                a: Anchor { panel: f.parent, origin: pa.point(f.a_origin), dir: pa.vector(f.along) },
-                b: Anchor { panel: f.panel, origin: pb.point(f.b_origin), dir: pb.vector(f.along) },
-                kind: JointKind::Bend(f.bend.clone()),
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
-    Ok(Sheet { thickness: sh.t, k_factor: sh.k, panels, joints, corners: Vec::new(), cuts: Vec::new() })
-}
-
-/// One flange's bend, in the sheet's flat frame: the anchors run `along` the bend with the
-/// parent's material on their left, so lengths along them are the flange's own lengths along
-/// `d`, turned round when `d` runs the other way.
-struct BendFrame {
-    parent: usize,
-    panel: usize,
-    along: Vec2,
-    toward: Vec2,
-    /// Where the parent's flat material ends (the bend's start line) and the anchors start.
-    tangent: Vec2,
-    a_origin: Vec2,
-    b_origin: Vec2,
-    setback: f64,
-    width: f64,
-    /// The flange panel's edge on the bend, in lengths along the anchors.
-    edge: (f64, f64),
-    bend: Bend,
-}
-
-impl BendFrame {
-    fn of(sh: &SheetBody, i: usize, f: &SheetFlange) -> BendFrame {
-        let angle = f.angle.abs();
-        let datum = if angle < std::f64::consts::PI - HALF_TURN_TOL { Datum::Sharp } else { Datum::Tangent };
-        let mut bend = Bend {
-            angle,
-            radius: f.radius,
-            toward_material: f.angle >= 0.0,
-            datum,
-            length: f.len,
-            ends: ZoneEnds { near: (0.0, 0.0), far: (0.0, 0.0) },
-            tails: (Tail::Keep, Tail::Trim),
-            relief: (Relief::None, Relief::None),
-        };
-        let setback = bend.setback(sh.t);
-        let width = sh.allowance(f);
-        // The zone along the bend from `p`: its start line's span and, at a torn end, its far
-        // edge running on to the panel's end (as the sheet's `zone_ends`).
-        let (u0, u1) = sh.zone_span(f);
-        let (e0, e1) = (if f.tear.0 { -f.ext.0 } else { u0 }, if f.tear.1 { f.len + f.ext.1 } else { u1 });
-        let edge = if f.shape.is_some() || f.exact.is_some() { (e0, e1) } else { (-f.ext.0, f.len + f.ext.1) };
-        // The anchors keep the parent's material on their left, so they run along `d` when the
-        // flange (`n`) lies on its right, and the other way round otherwise.
-        let forward = Vec2::new(f.d.y, -f.d.x).dot(f.n) > 0.0;
-        let flip: fn((f64, f64)) -> (f64, f64) = if forward { |u| u } else { |u| (-u.1, -u.0) };
-        let along = if forward { f.d } else { -f.d };
-        bend.ends = ZoneEnds { near: flip((u0, u1)), far: flip((e0, e1)) };
-        BendFrame {
-            parent: f.parent.map_or(0, |k| k + 1),
-            panel: i + 1,
-            along,
-            toward: f.n,
-            tangent: f.p,
-            a_origin: f.p + f.n * setback,
-            b_origin: f.p + f.n * (width - setback),
-            setback,
-            width,
-            edge: flip(edge),
-            bend,
-        }
-    }
-
-    /// A band across the bend from the line `from` (lengths across, toward the flange) to `to`,
-    /// over `span` along it.
-    fn band(&self, span: (f64, f64), from: f64, to: f64) -> Option<Region2> {
-        if !(span.1 > span.0 && (to - from).abs() > 1e-12) {
-            return None;
-        }
-        let at = |u: f64, v: f64| self.tangent + self.along * u + self.toward * v;
-        let pts = [at(span.0, from), at(span.1, from), at(span.1, to), at(span.0, to)];
-        Some(Region2 { outer: Loop2::polygon(&pts).ccw(), holes: Vec::new() })
-    }
-
-    /// The parent's material from its tangent line on to the sharp, along the zone.
-    fn parent_band(&self) -> Option<Region2> {
-        self.band(self.bend.ends.near, 0.0, self.setback)
-    }
-
-    /// The flange's material from its tangent line, the zone's width from the parent's, back
-    /// to its sharp, along its whole edge.
-    fn flange_band(&self) -> Option<Region2> {
-        self.band(self.edge, self.width - self.setback, self.width)
-    }
-}
-
-/// The sheet's flat material before its cut-outs: its panels and bend zones.
-fn sheet_flat(sh: &SheetBody, work: &mut FlatWork) -> Result<Vec<Region2>> {
-    let mut pieces = vec![sh.base.clone()];
-    for f in &sh.flanges {
-        if f.leg > 1e-9 {
-            pieces.push(sh.panel(f));
-        }
-        pieces.push(sh.zone(f));
-    }
-    material_union(pieces, work)
-}
-
-/// The surface model's flat: each placed panel less its trims, and the zones; with the development it
-/// was joined from.
-fn surface_flat(model: &Sheet, work: &mut FlatWork) -> Result<(Vec<Region2>, Development)> {
-    let dev = develop(model, &[]).map_err(|e| DocError::Invalid(e.to_string()))?;
-    Ok((join(&dev, work)?, dev))
-}
 
 /// A piece of a development's flat: a panel's material less its trims, a bend's zone (by its
 /// place in the development's zones), or a tab: a piece of a zone that the cuts leave joined to
@@ -202,8 +33,9 @@ const ON_LINE: f64 = 1e-7;
 
 /// A development's pieces before they are joined: each placed panel less its trims, and the
 /// zones, all less what the development cuts from the flat (the corners' reliefs and the sheet's
-/// cuts), with each piece of a zone sorted by what still holds it (see [`sort_zones`]). The flat
-/// pattern and the folded solid are both made of them.
+/// cuts), with each piece of a zone sorted by what still holds it (see [`sort_zones`]), and their
+/// longest arcs halved (see [`halved`]). The flat pattern and the folded solid are both made of
+/// them, edge for edge.
 pub(crate) fn pieces(dev: &Development, work: &mut FlatWork) -> Result<Vec<(Piece, Region2)>> {
     #[cfg(test)]
     crate::eval::cost_tests::count_flat();
@@ -225,7 +57,7 @@ pub(crate) fn pieces(dev: &Development, work: &mut FlatWork) -> Result<Vec<(Piec
     }
     pieces.extend(dev.zones.iter().enumerate().map(|(z, zone)| (Piece::Zone(z), on_grid(&zone.region))));
     if dev.cuts.is_empty() {
-        return Ok(pieces);
+        return Ok(halved(pieces));
     }
     // A cut clear inside one piece is a hole of it as it is, its curves kept; the rest are cut
     // from every piece they reach. A cut that came clear of the pieces but meets what the others
@@ -240,7 +72,30 @@ pub(crate) fn pieces(dev: &Development, work: &mut FlatWork) -> Result<Vec<(Piec
             None => late.push(c),
         }
     }
-    sort_zones(dev, cut_from(out, &late, work)?)
+    Ok(halved(sort_zones(dev, cut_from(out, &late, work)?)?))
+}
+
+/// The pieces with each arc of more than three quarters of a turn (a hole's whole circle) halved
+/// at the middle of its own sweep: two arcs of its circle that meet where the one did. Until the
+/// kernel (solidcore, #1597) takes a circular edge round any sweep, and a whole circle on one
+/// vertex, the folded solid's wall along such an arc is two faces, one on each half (see
+/// `sheet_surface_fold::cells`, which takes these pieces' arcs as they are). The flat keeps the
+/// same two edges: an edge of the flat is an edge of the folded sheet.
+fn halved(pieces: Vec<(Piece, Region2)>) -> Vec<(Piece, Region2)> {
+    let halves = |l: Loop2| Loop2 {
+        segs: l
+            .segs
+            .into_iter()
+            .flat_map(|e| match e {
+                Seg2::Arc { center, radius, start, sweep } if sweep.abs() > std::f64::consts::PI * 1.5 => {
+                    let half = sweep / 2.0;
+                    vec![Seg2::Arc { center, radius, start, sweep: half }, Seg2::Arc { center, radius, start: start + half, sweep: half }]
+                }
+                e => vec![e],
+            })
+            .collect(),
+    };
+    pieces.into_iter().map(|(piece, r)| (piece, Region2 { outer: halves(r.outer), holes: r.holes.into_iter().map(halves).collect() })).collect()
 }
 
 /// `pieces` less `cuts`, joined first: what each piece leaves, each a piece of the same kind.
@@ -261,22 +116,24 @@ fn cut_from(pieces: Vec<(Piece, Region2)>, cuts: &[&Region2], work: &mut FlatWor
 /// [`CLEAR`].
 pub(crate) fn holds_clear(region: &Region2, cut: &Region2) -> bool {
     let Some(start) = cut.outer.segs.first().map(Seg2::start) else { return false };
-    if !cut.holes.is_empty() || !region.contains(start) {
+    if !cut.holes.is_empty() || !region_holds(region, start) {
         return false;
     }
     // Chords this far inside the curves: two loops whose chords stay farther apart than twice
     // that and `CLEAR` are clear of each other.
     let sag = 1e-4;
     let ring = cut.outer.polyline(sag);
-    let reach = ring.bounds().inflated(2.0 * sag + CLEAR);
+    // Boxes that hold the loops' curves (see [`loop_box`]): a loop whose box stays farther than
+    // `CLEAR` from the cut's is clear of it.
+    let reach = loop_box(&cut.outer);
     let near = |b: &Aabb2| b.min.x <= reach.max.x && reach.min.x <= b.max.x && b.min.y <= reach.max.y && reach.min.y <= b.max.y;
     let gap = |a: &Ring<Vec2>, b: &Ring<Vec2>| {
         a.iter().map(|p| b.edges().map(|(q0, q1)| segment_distance(*p, *q0, *q1)).fold(f64::INFINITY, f64::min)).fold(f64::INFINITY, f64::min)
     };
     std::iter::once(&region.outer).chain(&region.holes).all(|l| {
         let other = l.polyline(sag);
-        !near(&other.bounds())
-            || (l.segs.first().is_none_or(|s| !cut.outer.contains(s.start()))
+        !near(&crate::sheet_surface_cuts::loop_box(l))
+            || (l.segs.first().is_none_or(|s| !holds(&cut.outer, s.start()))
                 && crossings(&cut.outer.segs, &l.segs).is_empty()
                 && gap(&ring, &other).min(gap(&other, &ring)) > 2.0 * sag + CLEAR)
     })
@@ -316,38 +173,44 @@ fn sort_zones(dev: &Development, pieces: Vec<(Piece, Region2)>) -> Result<Vec<(P
 
 /// Whether an edge of `region`'s outline runs along the line from `a` to `b` for more than a
 /// rounding.
-fn along(region: &Region2, [a, b]: [Vec2; 2]) -> bool {
+pub(crate) fn along(region: &Region2, [a, b]: [Vec2; 2]) -> bool {
     let l = a.dist(b);
     let Some(u) = (b - a).normalized() else { return false };
     let on = |p: Vec2| (p - a).cross(u).abs() <= ON_LINE && (-ON_LINE..=l + ON_LINE).contains(&(p - a).dot(u));
     region.outer.segs.iter().any(|s| matches!(s, Seg2::Line { .. }) && s.length() > ON_LINE && on(s.start()) && on(s.end()))
 }
 
-/// A development's flat: each placed panel less its trims, and the zones, joined.
-pub(crate) fn join(dev: &Development, work: &mut FlatWork) -> Result<Vec<Region2>> {
-    join_pieces(&pieces(dev, work)?, work)
-}
-
 /// A development's pieces (see [`pieces`]) joined into its flat.
 pub(crate) fn join_pieces(pieces: &[(Piece, Region2)], work: &mut FlatWork) -> Result<Vec<Region2>> {
     let regions: Vec<Region2> = pieces.iter().map(|(_, r)| r.clone()).collect();
-    // The holes clear of every other piece stay out of the union, and go back after it.
+    // The holes clear of every other piece, and of their own piece's outline and other holes
+    // (see [`holes_apart`]), stay out of the union, and go back after it. A hole that touches its
+    // piece's outline (a cut-out with a corner on the sheet's edge, which the planar booleans
+    // read so) is the outline there: it goes through the union with it.
     let reach: Vec<Aabb2> = regions.iter().map(|r| loop_box(&r.outer)).collect();
     let mut carried: Vec<Loop2> = Vec::new();
     let mut bare = Vec::with_capacity(regions.len());
     for (i, r) in regions.into_iter().enumerate() {
         let others: Vec<Aabb2> = reach.iter().enumerate().filter(|(k, _)| *k != i).map(|(_, b)| *b).collect();
-        let (clear, near): (Vec<Loop2>, Vec<Loop2>) = r.holes.into_iter().partition(|h| boxes_clear(&loop_box(h), &others));
-        carried.extend(clear);
+        let apart = holes_apart(&r);
+        let mut near = Vec::new();
+        for (h, apart) in r.holes.into_iter().zip(apart) {
+            if apart && boxes_clear(&loop_box(&h), &others) {
+                carried.push(h);
+            } else {
+                near.push(h);
+            }
+        }
         bare.push(Region2 { outer: r.outer, holes: near });
     }
     let joined = stage("joining the sheet's pieces", planar_union(bare, work))?;
     stage("joining the sheet's pieces", put_back(joined, carried))
 }
 
-/// A loop's box, out by [`CLEAR`] and its chords' sag.
+/// A loop's box, out by [`CLEAR`]: the box that holds its segments (see
+/// [`crate::sheet_surface_cuts::loop_box`]).
 fn loop_box(l: &Loop2) -> Aabb2 {
-    l.polyline(1e-4).bounds().inflated(CLEAR + 2e-4)
+    crate::sheet_surface_cuts::loop_box(l).inflated(CLEAR)
 }
 
 /// Whether box `b` meets none of `of`.
@@ -355,58 +218,74 @@ fn boxes_clear(b: &Aabb2, of: &[Aabb2]) -> bool {
     of.iter().all(|o| b.max.x < o.min.x || o.max.x < b.min.x || b.max.y < o.min.y || o.max.y < b.min.y)
 }
 
-/// The holes `carried` back in the regions of `out` that hold them.
+/// Whether loops `h` and `l`, each with its box (see [`loop_box`]), keep farther apart than
+/// [`CLEAR`]: their boxes apart, or no segment of one that near a segment of the other, read
+/// exactly (see [`near_each_other`]). A pair of curves no exact reading is known for is taken as
+/// near: its loop goes through the planar booleans, which read it exactly.
+fn loops_apart((h, hb): (&Loop2, Aabb2), (l, lb): (&Loop2, Aabb2)) -> bool {
+    boxes_clear(&hb, std::slice::from_ref(&lb)) || h.segs.iter().all(|s| l.segs.iter().all(|e| matches!(near_each_other(s, e, CLEAR), Ok(false))))
+}
+
+/// For each hole of `region`, whether it keeps clear of the region's outline and its other holes
+/// (see [`loops_apart`]). A hole that touches one of them, at a point or along an edge, bounds the
+/// region's material with it: the planar booleans read a cut-out with a corner on the outline as
+/// a hole that meets the outline at that corner. Such a hole is not a hole of the region as it
+/// is: a boolean of the region takes it with the outline, never past it (see [`put_back`]).
+fn holes_apart(region: &Region2) -> Vec<bool> {
+    let loops: Vec<(&Loop2, Aabb2)> = std::iter::once(&region.outer).chain(&region.holes).map(|l| (l, loop_box(l))).collect();
+    loops.iter().enumerate().skip(1).map(|(k, h)| loops.iter().enumerate().all(|(j, l)| j == k || loops_apart(*h, *l))).collect()
+}
+
+/// The holes `carried` back in the regions of `out` that hold them: each kept clear of every
+/// other loop (see [`holes_apart`] and [`loop_clear_of`]), so that the region holding a point of
+/// it holds it all, read exactly (see [`holds`]).
 fn put_back(mut out: Vec<Region2>, carried: Vec<Loop2>) -> Result<Vec<Region2>> {
     for h in carried {
         let Some(at) = h.segs.first().map(Seg2::start) else { continue };
         let r = out
             .iter_mut()
-            .find(|r| r.outer.contains(at) && !r.holes.iter().any(|k| k.contains(at)))
+            .find(|r| holds(&r.outer, at) && !r.holes.iter().any(|k| holds(k, at)))
             .ok_or_else(|| DocError::Invalid("a cut-out of the flat lost its piece".into()))?;
         r.holes.push(h);
     }
     Ok(out)
 }
 
-/// Whether loop `h` keeps clear of region `t`: apart from it by their boxes, or outside its
-/// material and holding none of it, its loops crossing none of `t`'s and nowhere nearer them than
-/// [`CLEAR`].
-fn loop_clear_of(h: &Loop2, t: &Region2) -> bool {
+/// Whether loop `h` keeps clear of region `t`: apart from it by their boxes, or farther than
+/// [`CLEAR`] from each of its loops (see [`loops_apart`]), outside its material and holding none
+/// of it. Apart from every loop of `t`, `h` lies all inside or all outside each, and each of them
+/// all inside or all outside `h`: one point of each answers, exactly (see [`holds`]).
+pub(crate) fn loop_clear_of(h: &Loop2, t: &Region2) -> bool {
     let hb = loop_box(h);
     if boxes_clear(&hb, std::slice::from_ref(&loop_box(&t.outer))) {
         return true;
     }
-    let (Some(p), ring) = (h.segs.first().map(Seg2::start), h.ccw()) else { return false };
-    if t.contains(p) {
+    let loops: Vec<&Loop2> = std::iter::once(&t.outer).chain(&t.holes).collect();
+    if !loops.iter().all(|l| loops_apart((h, hb), (*l, loop_box(l)))) {
         return false;
     }
-    let sag = 1e-4;
-    let mine = h.polyline(sag);
-    std::iter::once(&t.outer).chain(&t.holes).all(|l| {
-        let other = l.polyline(sag);
-        if boxes_clear(&hb, std::slice::from_ref(&other.bounds())) {
-            return true;
-        }
-        let gap = |a: &Ring<Vec2>, b: &Ring<Vec2>| {
-            a.iter().map(|p| b.edges().map(|(q0, q1)| segment_distance(*p, *q0, *q1)).fold(f64::INFINITY, f64::min)).fold(f64::INFINITY, f64::min)
-        };
-        l.segs.first().is_none_or(|s| !ring.contains(s.start()))
-            && crossings(&h.segs, &l.segs).is_empty()
-            && gap(&mine, &other).min(gap(&other, &mine)) > 2.0 * sag + CLEAR
-    })
+    let Some(p) = h.segs.first().map(Seg2::start) else { return false };
+    let within = holds(&t.outer, p) && !t.holes.iter().any(|k| holds(k, p));
+    !within && !loops.iter().any(|l| l.segs.first().is_some_and(|s| holds(h, s.start())))
 }
 
 /// `op` of `a` with `b` ([`planar_boolean`]), the holes of `a` clear of every region of `b`
-/// (see [`loop_clear_of`]) left out of it and put back in the region of the result that holds
-/// them.
+/// (see [`loop_clear_of`]) and of their own region's other loops (see [`holes_apart`]) left out
+/// of it and put back in the region of the result that holds them.
 pub(crate) fn boolean_past_holes(a: &[Region2], b: &[Region2], op: BoolOp, work: &mut FlatWork) -> Result<Vec<Region2>> {
     let clear_of_tools = |h: &Loop2| b.iter().all(|t| loop_clear_of(h, t));
     let mut carried: Vec<Loop2> = Vec::new();
     let bare: Vec<Region2> = a
         .iter()
         .map(|r| {
-            let (clear, near): (Vec<Loop2>, Vec<Loop2>) = r.holes.iter().cloned().partition(|h| clear_of_tools(h));
-            carried.extend(clear);
+            let mut near = Vec::new();
+            for (h, apart) in r.holes.iter().zip(holes_apart(r)) {
+                if apart && clear_of_tools(h) {
+                    carried.push(h.clone());
+                } else {
+                    near.push(h.clone());
+                }
+            }
             Region2 { outer: r.outer.clone(), holes: near }
         })
         .collect();
@@ -421,10 +300,8 @@ pub(crate) fn boolean_past_holes(a: &[Region2], b: &[Region2], op: BoolOp, work:
 const CLOSE: f64 = 1e-7;
 
 /// `op` of `a` with `b` by the kernel's planar booleans, as the regions are: every edge of the
-/// result is a piece of an edge of `a` or `b`, however short, and no corner moves. (The flat
-/// model's `material_boolean` first welds each gap of up to 50 nm between a loop's segments,
-/// which moved a corner a hair from a bend's tangent line.) The work is charged to `work`, which
-/// bounds the flat's.
+/// result is a piece of an edge of `a` or `b`, however short, and no corner moves. The work is
+/// charged to `work`, which bounds the flat's.
 pub(crate) fn planar_boolean(a: &[Region2], b: &[Region2], op: BoolOp, work: &mut FlatWork) -> Result<Vec<Region2>> {
     let edges =
         |rs: &[Region2]| rs.iter().flat_map(|r| std::iter::once(&r.outer).chain(&r.holes)).fold(0usize, |n, l| n.saturating_add(l.segs.len()));
@@ -451,10 +328,9 @@ pub(crate) fn planar_union(regions: Vec<Region2>, work: &mut FlatWork) -> Result
     Ok(groups.pop().unwrap_or_default())
 }
 
-/// A region with its points on the sheet's nanometre grid, as the sheet model rounds its
-/// corners. Until the kernel's planar booleans weld edges that nearly coincide (#6748): the
-/// development is exact, but a corner it reaches by another sum than the sheet model does can
-/// land a rounding from the sheet's, and the planar booleans take two edges that nearly
+/// A region with its points on a nanometer grid. Until the kernel's planar booleans weld edges
+/// that nearly coincide (#6748): the development is exact, but two pieces can reach one corner by
+/// different sums and land a rounding apart, and the planar booleans take two edges that nearly
 /// coincide for two, where on the grid they coincide.
 fn on_grid(r: &Region2) -> Region2 {
     let g = |v: Vec2| Vec2::new((v.x * 1e9).round() / 1e9, (v.y * 1e9).round() / 1e9);
@@ -474,182 +350,7 @@ fn on_grid(r: &Region2) -> Region2 {
     Region2 { outer: lp(&r.outer), holes: r.holes.iter().map(lp).collect() }
 }
 
-/// Names the step of the round trip an error came from.
+/// Names the step of making the flat an error came from.
 fn stage<T>(what: &str, r: Result<T>) -> Result<T> {
     r.map_err(|e| DocError::Invalid(format!("{what}: {e}")))
-}
-
-/// A sheet's flat laid out again from its surfaces.
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RoundTrip {
-    /// How far the surfaces' flat is from the sheet's: the area between them over the length of
-    /// the sheet's outline (mm).
-    pub apart: f64,
-    /// How many joints close loops.
-    pub loops: usize,
-    /// How the surfaces' flat edges resolve to the surfaces.
-    pub edges: Resolution,
-}
-
-pub(crate) fn round_trip(sh: &SheetBody) -> Result<RoundTrip> {
-    compare(sh, &stage("building its surfaces", surfaces_of(sh))?)
-}
-
-fn compare(sh: &SheetBody, model: &Sheet) -> Result<RoundTrip> {
-    let mut work = FlatWork::new();
-    let mine = stage("joining the sheet's pieces", sheet_flat(sh, &mut work))?;
-    let (theirs, dev) = surface_flat(model, &mut work)?;
-    let area = |rs: &[Region2]| rs.iter().map(Region2::area).sum::<f64>();
-    let apart = area(&stage("comparing", material_boolean(&mine, &theirs, BoolOp::Cut, &mut work))?)
-        + area(&stage("comparing", material_boolean(&theirs, &mine, BoolOp::Cut, &mut work))?);
-    let outline: f64 = mine.iter().flat_map(|r| std::iter::once(&r.outer).chain(&r.holes)).flat_map(|l| &l.segs).map(|s| s.length()).sum();
-    let edges = sheet_flat_lineage::resolve(&theirs, &sheet_flat_lineage::sources(&dev));
-    Ok(RoundTrip { apart: apart / outline.max(1e-9), loops: dev.loops.len(), edges })
-}
-
-/// Appends this sheet's round trip to the file `SOLIDCRAFT_SURFACE_REPORT` names, when it is set.
-pub(crate) fn report(sh: &SheetBody) {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        use std::io::Write;
-        let Some(path) = std::env::var_os("SOLIDCRAFT_SURFACE_REPORT") else { return };
-        let what = sh
-            .flanges
-            .iter()
-            .map(|f| {
-                let mut s = String::new();
-                for (on, c) in [
-                    (f.parent.is_some(), 'r'),
-                    (f.angle.abs() >= std::f64::consts::PI - HALF_TURN_TOL, 'h'),
-                    (f.tear.0 || f.tear.1, 't'),
-                    (f.slope != (0.0, 0.0), 's'),
-                    (f.ext != (0.0, 0.0), 'e'),
-                    (f.shape.is_some(), 'f'),
-                    (f.exact.is_some(), 'x'),
-                ] {
-                    if on {
-                        s.push(c);
-                    }
-                }
-                if s.is_empty() { "-".to_string() } else { s }
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        let result = match round_trip(sh) {
-            Ok(rt) => {
-                let e = rt.edges;
-                let same = if rt.apart <= SAME_FLAT { "same" } else { "differs" };
-                format!("{same}\t{:.3e}\t{}\t{}\t{}\t{}\t{}", rt.apart, rt.loops, e.exact, e.merged, e.pieces, e.geometry_only)
-            }
-            Err(e) => format!("error\t{}", e.to_string().replace(['\t', '\n'], " ")),
-        };
-        let thread = std::thread::current().name().unwrap_or("main").to_string();
-        let line = format!("{thread}\t{}\t{}\t{what}\t{result}\n", sh.body, sh.flanges.len());
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-            let _ = file.write_all(line.as_bytes());
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::f64::consts::FRAC_PI_2;
-
-    use solidcore_record::{Plane, Vec3};
-    use solidcraft_geom::prelude::*;
-
-    use super::{SAME_FLAT, round_trip};
-    use crate::sheet::{AngleDisplay, ReliefShape, RuleValues, SheetBody, base_flange};
-
-    const T: f64 = 2.0;
-    const R: f64 = 2.0;
-
-    /// A 100 x 60 plate of 2 mm sheet bent R 2 at K 0.44, under a rule with `corner`.
-    fn plate(corner: ReliefShape) -> SheetBody {
-        let rv = RuleValues {
-            thickness: T,
-            k_factor: 0.44,
-            bend_radius: R,
-            relief_width: 1.0,
-            relief_depth: 0.5,
-            corner_relief: 6.0,
-            corner_relief_shape: corner,
-            hem_gap: 0.01,
-            gap: 0.5,
-            angle_display: AngleDisplay::Bend,
-        };
-        let pts = [(0.0, 0.0), (100.0, 0.0), (100.0, 60.0), (0.0, 60.0)].map(|(x, y)| solidcore_record::Vec2::new(x, y));
-        let region = solidcore_record::Region2 { outer: solidcore_record::Loop2::polygon(&pts).ccw(), holes: Vec::new() };
-        base_flange("Plate", "Rule", &rv, Plane::XY, region)
-    }
-
-    const EDGES: [Vec3; 4] = [Vec3::new(50.0, 0.0, T), Vec3::new(100.0, 30.0, T), Vec3::new(50.0, 60.0, T), Vec3::new(0.0, 30.0, T)];
-
-    /// The surfaces' flat is the sheet's, closes no loop, and every edge of it is something in
-    /// the surfaces.
-    fn same(sh: &SheetBody) {
-        let rt = match round_trip(sh) {
-            Ok(rt) => rt,
-            Err(e) => panic!("{e}"),
-        };
-        assert!(rt.apart <= SAME_FLAT && rt.loops == 0, "the surfaces' flat is {:e} mm from the sheet's ({} loops)", rt.apart, rt.loops);
-        assert!(rt.edges.geometry_only == 0 && rt.edges.exact > 0, "{:?}", rt.edges);
-    }
-
-    #[test]
-    fn a_bracket_and_a_tray_develop_from_their_surfaces() {
-        let mut bracket = plate(ReliefShape::Notch);
-        assert!(bracket.add_flange(Vec3::new(50.0, 0.0, T), 20.0, FRAC_PI_2, R, "inside", false).is_ok());
-        same(&bracket);
-        let mut tray = plate(ReliefShape::Notch);
-        assert!(tray.add_flanges(&EDGES, 20.0, FRAC_PI_2, R, "inside", false).is_ok());
-        same(&tray);
-    }
-
-    /// Bends that turn away from the material, past 90 degrees, and from other positions on the
-    /// edge, and a hem, whose anchors are its tangent lines.
-    #[test]
-    fn bends_either_way_and_a_hem_develop_from_their_surfaces() {
-        let mut sh = plate(ReliefShape::Notch);
-        assert!(sh.add_flange(Vec3::new(50.0, 0.0, T), 20.0, 2.0, R, "tangent", false).is_ok());
-        assert!(sh.add_flange(Vec3::new(100.0, 30.0, T), 15.0, 1.0, R, "outside", true).is_ok());
-        assert!(sh.add_hem(Vec3::new(50.0, 60.0, T), 10.0, 0.5, false).is_ok());
-        same(&sh);
-    }
-
-    /// Torn corners slant the zones' ends, and a return stands on a flange.
-    #[test]
-    fn torn_corners_and_a_return_develop_from_their_surfaces() {
-        let mut sh = plate(ReliefShape::Tear);
-        assert!(sh.add_flanges(&EDGES, 20.0, FRAC_PI_2, R, "inside", false).is_ok());
-        assert!(sh.flanges.iter().any(|f| f.tear.0 || f.tear.1));
-        let Some(top) = sh.far_edge_pick(0) else { panic!("the first flange has a far edge") };
-        assert!(sh.add_flange(top, 10.0, FRAC_PI_2, R, "inside", false).is_ok());
-        same(&sh);
-    }
-
-    /// A flap on the end of a wall: the wall's panel loses a band to its own bend and one to
-    /// the flap's, which meet at its corner.
-    #[test]
-    fn a_flap_on_the_end_of_a_wall_develops_from_its_surfaces() {
-        let mut sh = plate(ReliefShape::Notch);
-        assert!(sh.add_flange(Vec3::new(0.0, 30.0, T), 40.0, FRAC_PI_2, R, "inside", false).is_ok());
-        assert!(sh.add_flange(Vec3::new(1.0, 0.0, 20.0), 40.0, std::f64::consts::FRAC_PI_4, R, "inside", false).is_ok());
-        assert!(sh.flanges.get(1).is_some_and(|f| f.parent == Some(0)), "the flap stands on the wall");
-        same(&sh);
-    }
-
-    /// The check sees wrong surfaces: one whose K-factor is off by 0.1 puts the flange 0.1 x T x
-    /// pi / 2 from where the sheet has it.
-    #[test]
-    fn surfaces_with_another_k_factor_do_not_give_the_sheets_flat() {
-        let mut sh = plate(ReliefShape::Notch);
-        assert!(sh.add_flange(Vec3::new(50.0, 0.0, T), 20.0, FRAC_PI_2, R, "inside", false).is_ok());
-        let Ok(mut model) = super::surfaces_of(&sh) else { panic!("its surfaces") };
-        model.k_factor += 0.1;
-        let apart = super::compare(&sh, &model).map_or(0.0, |rt| rt.apart);
-        // The flange and its far edge shift 0.1 pi mm: 100 mm long, over a 2 x (100 + 80.something)
-        // outline, a fraction of that on average.
-        assert!(apart > 0.01, "{apart}");
-    }
 }

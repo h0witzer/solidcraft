@@ -83,8 +83,8 @@ impl Flatten {
     }
 
     /// The parameters of a point of the neutral surface laid flat: [`Flatten::point`] undone. A
-    /// cone's angle is the one nearest `near` (radians round its axis). `None` for a free-form
-    /// panel, whose map is not undone yet.
+    /// cone's angle is the one nearest `near` (radians round its axis); a free-form panel's map is
+    /// undone on its own spline (see [`FlatMap::param`]).
     pub(crate) fn param(&self, p: Vec2, near: f64) -> Option<Vec2> {
         match *self {
             Flatten::Same => Some(p),
@@ -94,7 +94,7 @@ impl Flatten {
                 let turn = turn + ((near * scale - turn) / TAU).round() * TAU;
                 Some(Vec2::new(p.len() - shift, turn / scale))
             }
-            Flatten::Fitted(_) => None,
+            Flatten::Fitted(ref m) => m.param(p),
         }
     }
 
@@ -118,7 +118,8 @@ impl Flatten {
     pub(crate) fn region(&self, r: &Region2) -> Result<(Region2, Vec<Vec<usize>>), &'static str> {
         if let Flatten::Cone { shift, .. } = *self {
             for lp in std::iter::once(&r.outer).chain(&r.holes) {
-                if (&lp.polyline(CHORD_TOL)).into_iter().any(|p| !(p.x + shift > 0.0)) {
+                // Its least x by a box that holds it (see [`crate::develop::loop_box`]).
+                if !(crate::develop::loop_box(lp).min.x + shift > 0.0) {
                     return Err("the cone's neutral surface would pass its apex inside the panel");
                 }
             }
