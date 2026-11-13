@@ -3130,6 +3130,14 @@ mod tests {
         s.execute("sheet.flange", &json!({"sketch": "Base"})).unwrap();
         let saved = saved_geometry(&s, &s.doc).unwrap();
         assert!(solidcraft_doc::Model::adopt(&s.doc, &saved).is_ok());
+        // The sheet as built, about 1,250 bytes, listed 4,000 times in one state reads back: what
+        // refuses the large one below is what the state would hold, not how often it lists it.
+        let size = serde_json::to_vec(&saved.records["surface_sheets"][0]).unwrap().len();
+        assert!(size < 2_000, "{size} bytes");
+        let mut often = solidcraft_doc::SavedModel { records: saved.records.clone(), bodies: saved.bodies.clone() };
+        let last = often.records["states"].as_array().unwrap().len() - 1;
+        often.records["states"][last]["surface_sheets"] = Value::Array(vec![json!(0); 4000]);
+        assert!(solidcraft_doc::Model::adopt(&s.doc, &often).is_ok());
         // A large sheet listed where it is held reads back.
         let mut large = solidcraft_doc::SavedModel { records: saved.records.clone(), bodies: saved.bodies.clone() };
         large.records["surface_sheets"][0]["body"] = json!("S".repeat(1 << 20));

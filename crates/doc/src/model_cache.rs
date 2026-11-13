@@ -494,14 +494,13 @@ impl SavedModel {
             }
             model_bodies.push(b);
         }
-        // Sheets made from surfaces: none in a model that holds none. Each one's weight is what it
-        // costs to clone (its items and text), as a marking's is.
+        // Sheets made from surfaces, a list every model has (`[]` where it holds none), as it has
+        // its markings. Each one's weight is what it costs to clone (its items and text), as a
+        // marking's is.
         let (mut surface_sheets, mut surface_weight) = (Vec::new(), Vec::new());
-        if records.get("surface_sheets").is_some() {
-            for s in list("surface_sheets")? {
-                surface_sheets.push(serde_json::from_value::<crate::SurfaceSheet>(s.clone()).map_err(|_| bad("saved model: sheet"))?);
-                surface_weight.push(1usize.saturating_add(serde_json::to_vec(s).map_or(usize::MAX, |b| b.len()) / 64));
-            }
+        for s in list("surface_sheets")? {
+            surface_sheets.push(serde_json::from_value::<crate::SurfaceSheet>(s.clone()).map_err(|_| bad("saved model: sheet"))?);
+            surface_weight.push(1usize.saturating_add(serde_json::to_vec(s).map_or(usize::MAX, |b| b.len()) / 64));
         }
         let mut threads = Vec::new();
         for t in list("threads")? {

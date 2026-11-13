@@ -1332,7 +1332,7 @@ mod tests {
             records: json!({
                 "features": [{"id": 1, "fingerprint": "0000000000000000", "ms": 0.0, "skipped": false, "state": 0}],
                 "states": [state], "model_bodies": records, "names": [{"faces": [], "info": []}], "sketches": [], "sheets": [],
-                "threads": [], "rounds": [], "sketch_key_sets": [{"set": [], "drop": []}],
+                "surface_sheets": [], "threads": [], "rounds": [], "sketch_key_sets": [{"set": [], "drop": []}],
             }),
             bodies,
         }
@@ -1617,7 +1617,7 @@ mod tests {
         solidcraft_doc::SavedModel {
             records: json!({
                 "features": features, "states": states, "model_bodies": records, "names": [{"faces": [], "info": []}], "sketches": [],
-                "threads": [], "validation": "each_feature", "rounds": [], "sketch_key_sets": [{"set": [], "drop": []}],
+                "surface_sheets": [], "threads": [], "validation": "each_feature", "rounds": [], "sketch_key_sets": [{"set": [], "drop": []}],
             }),
             bodies,
         }

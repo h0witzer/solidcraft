@@ -720,16 +720,18 @@ fn a_tab_cut_while_unfolded_is_the_tab_the_flat_makes() {
 }
 
 /// A notch 20 along the bend from its end: from 3 into the plate to 3 into the flange, and on
-/// past the flat's edge. Its box in space, the flat lying in the plane of the plate's face.
+/// past the flat's edge. Its box in space, in the sheet's own flat frame (`flat`), which lies in
+/// the plane of the plate's face; the box holds the notch only where the flat runs along x or y.
 fn edge_notch(f: &Flanged) -> (Vec3, Vec3) {
-    let Some(place) = f.sheet.places.first().copied().flatten() else { panic!("the plate has a place") };
-    [(-10.0, -3.0), (20.0, -3.0), (20.0, f.width + 3.0), (-10.0, f.width + 3.0)]
+    let (lo, hi) = [(-10.0, -3.0), (20.0, -3.0), (20.0, f.width + 3.0), (-10.0, f.width + 3.0)]
         .iter()
-        .map(|(a, b)| place.point(Vec3::new(f.at(*a, *b).x, f.at(*a, *b).y, 0.0)))
+        .map(|(a, b)| f.sheet.flat.point(Vec3::new(f.at(*a, *b).x, f.at(*a, *b).y, 0.0)))
         .fold(
             (Vec3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY), Vec3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY)),
             |(lo, hi), p| (lo.min(p), hi.max(p)),
-        )
+        );
+    assert!((hi.x - lo.x - 30.0).abs() < 1e-9 || (hi.y - lo.y - 30.0).abs() < 1e-9, "the flat runs along x or y: {lo:?} {hi:?}");
+    (lo, hi)
 }
 
 /// A notch cut across a bend from the flat's edge while the sheet is unfolded is a cut of the
@@ -758,7 +760,8 @@ fn a_notch_cut_across_a_bend_from_the_flats_edge_folds_with_the_sheet() {
 #[test]
 fn a_cut_across_a_bend_from_the_flats_edge_at_a_slant_or_short_of_through_is_refused() {
     let f = Flanged::new();
-    let Some(place) = f.sheet.places.first().copied().flatten() else { panic!("the plate has a place") };
+    // The flat's coordinates are in the sheet's own flat frame.
+    let place = f.sheet.flat;
     // Ø6 across the bend's zone (about 4.5 wide), 1 in from its end, leaning 30° along the bend.
     let c = place.point(Vec3::new(f.at(1.0, f.width / 2.0).x, f.at(1.0, f.width / 2.0).y, 0.0));
     let tilt = 30f64.to_radians();

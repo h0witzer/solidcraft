@@ -4395,9 +4395,10 @@ fn flanges_go_on_a_curved_outline_folded_across_its_straight_part() {
 }
 
 /// A cut through a free-form rim leaves the rest of the rim as drawn, and the cut's own curves
-/// too: the outline holds the sketch's cubics and conics, not splines fitted to them, and the
-/// wall is a face per curve, far from the cut as well as beside it. It folds the same, and a
-/// piece the cut parts stays, a loose piece, as the cut says.
+/// too: the outline holds the sketch's cubics and conics, not splines fitted to them. It folds
+/// the same, and a piece the cut parts stays, a loose piece, as the cut says. The faces are
+/// counted exactly: a smooth run of curves is one wall, and the base flange builds the closed
+/// spline's rim as two (`face:2` and `face:3`).
 #[test]
 fn a_cut_across_a_free_form_rim_keeps_its_curves() {
     use solidcore_record::Seg2;
@@ -4430,18 +4431,23 @@ fn a_cut_across_a_free_form_rim_keeps_its_curves() {
     };
     let rectangle = ("sketch.rectangle.two_point", json!({"p0": [50.18, -45], "p1": [70.68, 27]}));
     let ellipse = ("sketch.ellipse", json!({"center": [-2, -13], "major": [18, -13], "minor_radius": 8}));
-    // Top, bottom, the 7 cubics and one straight edge of the cut.
+    // The cut takes all of the rim's `face:2`: top, bottom, the cut's straight edge, and the rest of
+    // the rim, its 7 cubics one smooth wall.
     let mut s = Session::default();
     t2_curved_blank(&mut s, std::slice::from_ref(&spline), "0.4");
     cut(&mut s, rectangle);
     assert_eq!(kinds(&s), [1, 0, 7, 0], "lines, conics, cubics, other");
-    assert!(faces(&mut s).0 <= 2 + 7 + 1, "{} faces", faces(&mut s).0);
+    assert_eq!(faces(&mut s).0, 4, "faces");
     let (v, f) = (volume(&mut s), flat(&mut s));
     assert!(rel(v, t2_volume_from_flat(&f)) < 3e-4, "volume {v} vs the flat's {}", t2_volume_from_flat(&f));
     assert!((bbox(&mut s)["max"][0].as_f64().unwrap_or(f64::NAN) - 50.18).abs() < 1e-6, "the cut's edge");
     // Folded after, where the fold's lines cut two curves.
     run(&mut s, "sheet.fold", json!({"points": [[-20, -300, 2], [-20, 300, 2]], "fixed": [40, 0, 2]}));
-    assert!(faces(&mut s).0 <= 2 + 7 + 1 + 12, "folded: {} faces", faces(&mut s).0);
+    // Folded: the caps of the panel that stays and of the one that folds (4), the bend's inside and
+    // outside (2) and its zone's two ends (2), the cut's straight edge (1), and the rim's wall,
+    // which the fold parts into three: one on the panel that folds, and on the one that stays the
+    // stretches from the zone to either end of the cut (3).
+    assert_eq!(faces(&mut s).0, 4 + 2 + 2 + 1 + 3, "folded: faces");
     let (v, f) = (volume(&mut s), flat(&mut s));
     assert!(rel(v, t2_volume_from_flat(&f)) < 3e-4, "folded: volume {v} vs the flat's {}", t2_volume_from_flat(&f));
     // An ellipse through the rim's narrow waist: its 4 conics as drawn, two on each side, and the
@@ -4450,7 +4456,10 @@ fn a_cut_across_a_free_form_rim_keeps_its_curves() {
     t2_curved_blank(&mut s, std::slice::from_ref(&spline), "0.4");
     cut(&mut s, ellipse);
     assert_eq!(kinds(&s), [0, 4, 7, 0], "lines, conics, cubics, other");
-    assert!(faces(&mut s).0 <= 2 + 7 + 4 + 2, "{} faces", faces(&mut s).0);
+    // The rest of the sheet: its top and bottom, the ellipse's wall and the rim's (4). The lobe the
+    // cut parts: its top and bottom, the ellipse's wall in two stretches, and the rim's in three,
+    // `face:2` whole and two pieces of `face:3` (7).
+    assert_eq!(faces(&mut s).0, 4 + 7, "faces");
     assert_eq!(s.model.state().surface_sheets[0].loose.len(), 1);
     let (v, f) = (volume(&mut s), flat(&mut s));
     assert!(rel(v, t2_volume_from_flat(&f)) < 3e-4, "volume {v} vs the flat's {}", t2_volume_from_flat(&f));

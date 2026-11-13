@@ -1524,6 +1524,11 @@ pub(super) fn surface_prism_cut(
                 let clear = crate::sheet_surface::holds_clear(own, &outline);
                 if !clear {
                     match kernel::planar_regions_boolean(std::slice::from_ref(own), std::slice::from_ref(&outline), kernel::BoolOp::Intersect, tol) {
+                        // A zero test on a computed area (a sliver the boolean leaves where the
+                        // footprint only touches this panel), not a geometric tolerance. Taking
+                        // such a near miss for a miss is safe: a footprint that touches this panel
+                        // while it cuts another fails the box check below and goes to the body's
+                        // cut, and one that cuts no panel goes there anyway.
                         Ok(on) if on.iter().map(Region2::area).sum::<f64>() > 1e-9 => {}
                         Ok(_) => continue,
                         // The boolean failing leaves the cut to the body's own, the 3D path, as
