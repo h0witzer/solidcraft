@@ -1,0 +1,8094 @@
+{
+ "commands": [
+  {
+   "command": "sheet.manage_rules",
+   "params": {
+    "name": "Steel",
+    "thickness": "1.5 mm",
+    "active": true,
+    "bend_radius": "1.5 mm",
+    "k_factor": 0.5
+   }
+  },
+  {
+   "command": "sketch.create",
+   "params": {
+    "plane": "XY",
+    "name": "Base"
+   }
+  },
+  {
+   "command": "sketch.rectangle.two_point",
+   "params": {
+    "p0": [
+     0,
+     0
+    ],
+    "p1": [
+     1200,
+     600
+    ]
+   }
+  },
+  {
+   "command": "sketch.finish",
+   "params": {}
+  },
+  {
+   "command": "sheet.flange",
+   "params": {
+    "type": "base",
+    "sketch": "Base"
+   }
+  },
+  {
+   "command": "sheet.flange",
+   "params": {
+    "type": "edge",
+    "height": 40.0,
+    "angle": 90,
+    "position": "inside",
+    "edges": [
+     [
+      600,
+      0,
+      1.5
+     ],
+     [
+      600,
+      600,
+      1.5
+     ]
+    ]
+   }
+  },
+  {
+   "command": "sketch.create",
+   "params": {
+    "plane": "XY",
+    "name": "Holes"
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     40,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     68,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     96,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     124,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     152,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     180,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     208,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     236,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     264,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     292,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     320,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     348,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     376,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     404,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     432,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     460,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     488,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     516,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     544,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     572,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     600,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     628,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     656,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     684,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     712,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     740,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     768,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     796,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     824,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     852,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     880,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     908,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     936,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     964,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     992,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1020,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1048,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1076,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1104,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     30
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     58
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     86
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     114
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     142
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     170
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     198
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     226
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     254
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     282
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     310
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     338
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     366
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     394
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     422
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     450
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     478
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     506
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     534
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.circle.center",
+   "params": {
+    "center": [
+     1132,
+     562
+    ],
+    "diameter": 3
+   }
+  },
+  {
+   "command": "sketch.finish",
+   "params": {}
+  },
+  {
+   "command": "solid.extrude",
+   "params": {
+    "sketch": "Holes",
+    "through_all": true,
+    "direction": "symmetric",
+    "operation": "cut"
+   }
+  },
+  {
+   "command": "inspect.measure",
+   "params": {}
+  },
+  {
+   "command": "sheet.flat_pattern",
+   "params": {}
+  }
+ ]
+}
