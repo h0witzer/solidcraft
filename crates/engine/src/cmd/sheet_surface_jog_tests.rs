@@ -336,3 +336,21 @@ fn a_jog_stores_the_side_that_stays_and_takes_the_other_when_asked() {
     let (lo, hi) = x(&mut o);
     assert!(lo.abs() < 1e-6 && hi < 119.0, "{lo} {hi}");
 }
+
+/// As for a fold, a side given wins over a fixed point: with `stays`, `fixed` is neither read nor
+/// kept, so even a point off the sheet is no reason to refuse the jog, and the jog is the one made
+/// with `stays` alone.
+#[test]
+fn a_jog_given_a_side_ignores_its_fixed_point() {
+    let line = json!([[50, 0, 2], [50, 60, 2]]);
+    let mut s = Session::default();
+    jog_plate(&mut s);
+    run(&mut s, "sheet.jog", json!({"points": line, "offset": 20, "stays": "left", "fixed": [500, 500, 500]}));
+    let mut o = Session::default();
+    jog_plate(&mut o);
+    run(&mut o, "sheet.jog", json!({"points": line, "offset": 20, "stays": "left"}));
+    let kind = |s: &Session| s.doc.features.last().map(|f| f.kind.clone());
+    assert!(matches!(kind(&s), Some(solidcraft_doc::FeatureKind::SheetJog { fixed: None, stays: Some(_), .. })), "{:?}", kind(&s));
+    assert_eq!(kind(&s), kind(&o));
+    assert_eq!(bbox(&mut s), bbox(&mut o));
+}
