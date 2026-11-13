@@ -181,6 +181,19 @@ They are listed together in the browser's *Construction* folder.
 - **Elsewhere:** construction plane, reference plane, datum plane (and axis, point).
 - **For translators:** not a sketch's construction entity.
 
+### cross break
+
+Two shallow diagonal creases pressed corner to corner across a flat sheet metal panel so that it
+bows a little and stiffens; a marking on the panel and its flat pattern, not a change of its shape.
+
+- **In SolidCraft:** `sheet.cross_break`, its `inset`, `depth` and `direction` parameters; the
+  `sheet_cross_break` design-file feature; the flat pattern's `cross_breaks`; the DXF layers
+  `CROSS_BREAK_UP` and `CROSS_BREAK_DOWN`.
+- **Don't use:** cross brake, X-break, bead (a bead is a raised rib of its own).
+- **Elsewhere:** cross break, cross breaking, diagonal break.
+- **For translators:** not a bend: it has no bend line and no bend allowance, and the panel stays
+  flat in the flat pattern.
+
 ### curve
 
 A sketch entity that is not a point: a line, an arc, a circle, an ellipse, a spline or a conic.

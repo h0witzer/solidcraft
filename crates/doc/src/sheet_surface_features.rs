@@ -1220,13 +1220,14 @@ impl SurfaceSheet {
         let moved_cuts = beyond(self.sheet.cuts.iter().map(|c| starts(c.panel == i, &c.region.outer)).collect(), None)?;
         let recesses = beyond(self.recesses.iter().map(|r| starts(r.panel == i, &r.region.outer)).collect(), Some("a pocket"))?;
         let loose = beyond(self.loose.iter().map(|l| starts(l.panel == i, &l.region.outer)).collect(), Some("a loose piece of the sheet"))?;
-        Ok(Ok(FoldPlan { n, u, s0, ba, stays, moves, cuts, anchors, rips, moved_cuts, recesses, loose }))
+        let cross_breaks = self.fold_cross_breaks(i, side, ba, tol, piece_at)?;
+        Ok(Ok(FoldPlan { n, u, s0, ba, stays, moves, cuts, anchors, rips, moved_cuts, recesses, loose, cross_breaks }))
     }
 
     /// Makes the fold `plan` of panel `i` (see [`SurfaceSheet::add_fold`]). Returns the fold's
     /// first joint.
     fn apply_fold(&mut self, i: usize, plan: FoldPlan) -> usize {
-        let FoldPlan { n, u, s0, ba, stays, moves, cuts, anchors, rips, moved_cuts, recesses, loose } = plan;
+        let FoldPlan { n, u, s0, ba, stays, moves, cuts, anchors, rips, moved_cuts, recesses, loose, cross_breaks } = plan;
         for (k, on_a, p) in anchors {
             if let Some(joint) = self.sheet.joints.get_mut(k) {
                 if on_a {
@@ -1254,6 +1255,11 @@ impl SurfaceSheet {
         for (k, p) in loose {
             if let Some(l) = self.loose.get_mut(k) {
                 l.panel = p;
+            }
+        }
+        for (k, p) in cross_breaks {
+            if let Some(c) = self.cross_breaks.get_mut(k) {
+                c.panel = p;
             }
         }
         self.sheet.cuts.extend(cuts.into_iter().map(|region| Cut { panel: i, region }));
@@ -1431,6 +1437,12 @@ impl SurfaceSheet {
             if let Some(o) = &mut p.outline {
                 *o = o.iter().map(r).collect();
             }
+        }
+        for c in &mut self.cross_breaks {
+            c.lines = c.lines.map(|(a, b)| (f(a), f(b)));
+        }
+        for c in &mut self.flat_cross_breaks {
+            c.lines = crate::sheet_surface_cross_break::left_to_right(c.lines.map(|(a, b)| (f(a), f(b))));
         }
         for b in &mut self.bores {
             b.base.x = -b.base.x;
@@ -2131,6 +2143,8 @@ struct FoldPlan {
     moved_cuts: Vec<(usize, usize)>,
     recesses: Vec<(usize, usize)>,
     loose: Vec<(usize, usize)>,
+    /// The cross breaks that go with a piece that folds: each one's index, and the piece's panel.
+    cross_breaks: Vec<(usize, usize)>,
 }
 
 /// A piece of a panel that a fold folds: its panel to be, its material, its bend, where its

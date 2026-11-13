@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Cross Break</title>
+  <path d="M3 28L35.78 46.92L35.78 50.56L3 31.64Z" fill="#b8c3cf"/>
+  <path d="M61 32.36L35.78 46.92L35.78 50.56L61 36Z" fill="#8e9faf"/>
+  <path d="M28.22 13.44L61 32.36L35.78 46.92L3 28Z" fill="#e2e8ef"/>
+  <path d="M28.22 13.44L61 32.36L61 36L35.78 50.56L3 31.64L3 28Z" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M3 28L35.78 46.92L61 32.36" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M35.78 46.92L35.78 50.56" fill="none" stroke="#34465b" stroke-width="2.55" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M28.67 15.45L35.33 44.91" fill="none" stroke="#236ead" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M6.48 28.26L57.52 32.1" fill="none" stroke="#236ead" stroke-width="4.25" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

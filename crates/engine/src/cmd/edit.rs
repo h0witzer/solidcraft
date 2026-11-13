@@ -2038,6 +2038,7 @@ fn redefine(s: &mut Session, p: &Value) -> Result<Value> {
             spec.id,
             "sheet.flange"
                 | "sheet.hem"
+                | "sheet.cross_break"
                 | "sheet.perforate"
                 | "sheet.fold"
                 | "sheet.path_flange"

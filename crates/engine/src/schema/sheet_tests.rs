@@ -2,8 +2,8 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use super::{
-    BendTableFormatParam, BendTableParams, BendTableResult, ConvertParams, FixedPoint, FlangeEdges, FlangeParams, FlangePosition, FlangeTypeParam,
-    FlatPatternParams, FlatPatternResult, FoldParams, FoldPoints, FoldPosition, FoldStays, HeightFromParam, HemParams, MaterialSide,
+    BendTableFormatParam, BendTableParams, BendTableResult, ConvertParams, CrossBreakParams, FixedPoint, FlangeEdges, FlangeParams, FlangePosition,
+    FlangeTypeParam, FlatPatternParams, FlatPatternResult, FoldParams, FoldPoints, FoldPosition, FoldStays, HeightFromParam, HemParams, MaterialSide,
     MeasureBodyParams, PathFlangeParams, PerforateParams, PerforationPattern, RecognizeParams, ReliefShapeParam, SheetEdgePoint, SheetPoints,
     ThenSteps, UnfoldParams,
 };
@@ -699,4 +699,63 @@ fn bend_table_replies_match_the_output_schema() {
     let r = s.execute("sheet.export_bend_table", &json!({"formatt": "json"})).unwrap_or_else(|e| panic!("{e}"));
     assert!(r.get("param_warnings").is_some(), "{r}");
     assert!(conforms(schema, schema, &r), "{r}");
+}
+
+// ---- Cross Break (#8345) ----
+
+#[test]
+fn cross_break_schema_and_the_key_check_agree() {
+    assert_keys(input_schema_for::<CrossBreakParams>(), &keys(&["body", "depth", "direction", "face", "inset"]));
+}
+
+#[test]
+fn cross_break_strict_keeps_todays_errors() {
+    assert_strict_keeps_todays_errors(&[
+        ("sheet.cross_break", json!({"face": [0, 0, 0], "direction": "sideways"})),
+        ("sheet.cross_break", json!({"face": [0, 0, 0], "direction": 3})),
+        ("sheet.cross_break", json!({"face": [0, 0, 0], "inset": "nowhere + 1"})),
+    ]);
+}
+
+/// Every form the command takes answers with a `FeatureResult` and, in Warn, no warnings.
+#[test]
+fn cross_break_replies_with_feature_result() {
+    let schema = output_schema_for::<FeatureResult>();
+    let schema = schema.as_value();
+    for p in [
+        json!({"face": [50, 30, 0]}),
+        json!({"face": {"x": 50, "y": 30, "z": 0}, "inset": 5, "depth": "1.5 mm", "direction": "up"}),
+        json!({"face": [50, 30, 2.5], "direction": "down", "body": "Body1", "name": "Lid stiffener"}),
+        json!({"face": [50, 30, 0], "inset": null, "depth": null, "direction": null}),
+    ] {
+        let mut s = sheet();
+        s.param_check = ParamCheck::Warn;
+        let r = s.execute("sheet.cross_break", &p).unwrap_or_else(|e| panic!("{p}: {e}"));
+        assert!(conforms(schema, schema, &r), "{r} doesn't match {schema}");
+        assert!(r.get("param_warnings").is_none(), "{p}: {r}");
+        assert_eq!(r["created_bodies"], json!([]), "{p}: no new body");
+    }
+    let mut s = sheet();
+    s.param_check = ParamCheck::Strict;
+    let e = s.execute("sheet.cross_break", &json!({"face": [50, 30, 0], "angle": 5})).err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(e.contains("angle"), "{e}");
+    assert!(matches!(s.execute("sheet.cross_break", &json!({"face": [50, 30, 0]})), Ok(Value::Object(_))));
+}
+
+/// A flat pattern with a cross break still matches its output schema, and lists the cross break
+/// by its feature, panel, way and depth, with its two creases.
+#[test]
+fn a_flat_pattern_with_a_cross_break_matches_the_output_schema() {
+    let schema = output_schema_for::<FlatPatternResult>();
+    let schema = schema.as_value();
+    let mut s = sheet();
+    s.param_check = ParamCheck::Warn;
+    quiet(&mut s, "sheet.cross_break", json!({"face": [50, 30, 0], "depth": 1.5, "direction": "down"}));
+    let f = quiet(&mut s, "sheet.flat_pattern", json!({}));
+    assert!(conforms(schema, schema, &f), "{f} doesn't match {schema}");
+    let c = &f["cross_breaks"][0];
+    assert_eq!(f["cross_breaks"].as_array().map(Vec::len), Some(1), "{f}");
+    assert_eq!((&c["direction"], &c["depth"]), (&json!("down"), &json!(1.5)), "{f}");
+    assert!(c["feature"].is_u64() && c["panel"].as_str().is_some_and(|p| !p.is_empty()), "{f}");
+    assert_eq!(c["lines"].as_array().map(Vec::len), Some(2), "{f}");
 }

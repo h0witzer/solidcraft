@@ -10,6 +10,8 @@ and selected when the active body is a sheet), and builds parts from a sheet of 
   would make has no closed-form flat, so the flange is refused, naming the curve.
 - [**Hem**](../reference/commands.md#command-sheet.hem) returns a sheet edge back toward the sheet; no new sketch is required.
 - **Fold** (`sheet.fold`) bends the sheet along a sketch line.
+- **Cross Break** (`sheet.cross_break`) marks two diagonal creases across a flat panel, so a large
+  panel bows a little and stiffens; it changes no geometry (see below).
 - **Unfold / Refold** (`sheet.unfold`, `sheet.refold`) for working on the flat part.
 - **Convert** (`sheet.convert`) turns surfaces into sheet metal: the faces of a solid or of a
   surface body. Every face becomes a panel, however thin the body (a thin plate's six faces are
@@ -441,6 +443,7 @@ index) and, for the bends, a linetype that the file defines.
 | `BEND_NOTES` | 8 grey | continuous | the note beside each bend line, only with `"bend_notes": true` |
 | `POCKET_…` | 3 green | continuous | pockets, a layer for each depth (see below) |
 | `PERFORATION` | 3 green | continuous | the holes of a perforation field |
+| `CROSS_BREAK_UP`, `CROSS_BREAK_DOWN` | 1 red, 5 blue | `DASHED` | a cross break's creases, by the way the panel bows; left out with `"bend_lines": false`, as the bend lines are |
 
 `OUTLINE`, `CUT`, `BEND_UP` and `BEND_DOWN` are always in the layer table, the others when the
 sheet has something for them. The inner contours (`CUT`, `TEXT`) are written before the outline,
@@ -595,3 +598,26 @@ stays with its face while the sheet's sizes change and other flanges come and go
 reports a part for is named from its geometry, as a body without history is. A
 `sheet:<body>:<panel>:<side>` name that designs saved before used finds no face: a sketch
 attached by one reports a lost attachment, and Redefine Sketch Plane attaches it again.
+
+**Cross Break** (`sheet.cross_break`) marks a large flat panel to be pressed with two shallow
+creases from corner to corner, so that it bows a little and stops drumming or sagging (a lid, a
+cabinet back, the side of a duct). Pick a point on the panel's top or bottom face (`face`), on the
+base or on any flat wall; the creases are the diagonals of the smallest rectangle round the
+panel's material in the flat, kept on the panel where a corner relief or a notch cuts a corner
+off, and each stops `inset` short of the panel's edge, measured along the crease (default 0).
+`direction` says which face the panel bows toward, `up` (its top face, the sheet's surface, the
+side up bends turn to) or `down` (the default), and `depth` how far its middle bows (default
+1 mm), for the drawing and the press. It is a marking, like a perforation field: the body, its
+outline and its volume do not change. The creases are drawn on the panel in the view, listed in
+Create Flat Pattern (`cross_breaks`, in flat coordinates with their panel's key, direction and
+depth),
+drawn dashed on the flat pattern page, and written to the DXF as lines on `CROSS_BREAK_UP` or
+`CROSS_BREAK_DOWN`. They stay with their panel when the sheet is unfolded and refolded, and when
+a fold elsewhere moves the panel. A panel takes one cross break; a pick off every flat panel face
+(on a bend, a rim or off the sheet) is refused, and so is a later fold whose bend zone would run
+through the creases. With no `body`, a pick on the faces of two sheets at once is refused too:
+name the body.
+
+```json
+{"command":"sheet.cross_break","params":{"face":[150,100,2],"inset":"5 mm","direction":"down"}}
+```

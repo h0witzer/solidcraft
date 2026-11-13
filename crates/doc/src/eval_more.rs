@@ -1264,6 +1264,49 @@ pub(super) fn sheet_eval(
                 _ => no_sheet(body),
             })
         }
+        FeatureKind::SheetCrossBreak { face, inset, depth, up, body } => {
+            let inset = match inset {
+                Some(e) => val(vals, e, Kind::Length)?,
+                None => 0.0,
+            };
+            let depth = match depth {
+                Some(e) => val(vals, e, Kind::Length)?,
+                None => 1.0,
+            };
+            // The named sheet, else the one sheet with a flat panel face under the pick: which is
+            // never a matter of the sheets' order, so a pick on two sheets' faces at once is
+            // refused. Marks only: the body stays as it is.
+            let candidates: Vec<usize> = match body {
+                Some(n) => vec![
+                    st.surface_sheets
+                        .iter()
+                        .position(|s| &s.body == n)
+                        .ok_or_else(|| DocError::Invalid(format!("`{n}` is not a sheet metal body")))?,
+                ],
+                None => (0..st.surface_sheets.len()).collect(),
+            };
+            let mut why = None;
+            let mut took = Vec::new();
+            for i in candidates {
+                let Some(mut sk) = st.surface_sheets.get(i).cloned() else { continue };
+                match sk.add_cross_break(f.id, face.0, inset, depth, *up) {
+                    Ok(_) => took.push((i, sk)),
+                    // A sheet the pick is on says why before one it is not on.
+                    Err(e) if why.is_none() || !e.to_string().contains(crate::CROSS_BREAK_OFF_PANEL) => why = Some(e),
+                    Err(_) => {}
+                }
+            }
+            match <[(usize, crate::SurfaceSheet); 1]>::try_from(took) {
+                Ok([(i, sk)]) => {
+                    if let Some(slot) = st.surface_sheets.get_mut(i) {
+                        *slot = sk;
+                    }
+                    Ok(())
+                }
+                Err(took) if !took.is_empty() => Err(DocError::Invalid(crate::CROSS_BREAK_SEVERAL.into())),
+                Err(_) => Err(why.unwrap_or_else(|| DocError::Invalid(crate::CROSS_BREAK_OFF_PANEL.into()))),
+            }
+        }
         FeatureKind::SheetUnfold { body, refold } => {
             let i = surface_sheet_for(st, body, |s| s.unfolded == *refold).ok_or_else(|| match body {
                 Some(_) => no_sheet(body),

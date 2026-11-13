@@ -92,6 +92,7 @@ fn table(id: &str) -> &'static [(&'static str, K)] {
         }
         "plastic.lip" => &[("face", Pick), ("body", Body)],
         "sheet.convert" => &[("face", Pick), ("faces", Picks), ("skip", Picks), ("engrave", Picks), ("bends", Picks), ("body", Body)],
+        "sheet.cross_break" => &[("face", Pick), ("body", Body)],
         "sheet.recognize" => &[("face", Pick), ("skip", Picks), ("bends", Picks), ("body", Body)],
         "sheet.measure_body" => &[("face", Pick), ("body", Body)],
         "sheet.flange" | "sheet.hem" => &[("edges", Picks), ("body", Body)],
