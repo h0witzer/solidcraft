@@ -462,6 +462,9 @@ impl DxfFile<DxfShape> {
         // its actual source style before the normal layer-handle remap.
         let zero = self.layer(self.default_layer())?;
         let mut output = Self::with_layer_zero(zero.color(), zero.linetype(), zero.weight())?;
+        output.max_layers = self.max_layers;
+        output.max_entities = self.max_entities;
+        output.compatibility = self.compatibility;
         let mut layers = Vec::new();
         layers.try_reserve(self.layers().len()).map_err(|_| invalid("DXF layer remap allocation failed"))?;
         for layer in self.layers() {
@@ -478,6 +481,17 @@ impl DxfFile<DxfShape> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn identity_copy_retains_current_view_producer_admission() {
+        use super::super::super::write_dxf_file;
+        use super::*;
+        let mut file = DxfFile::for_current_view_export(1, 0, 0).unwrap();
+        file.push(file.default_layer(), DxfShape::Line(Vec2::ZERO, Vec2::ZERO), None).unwrap();
+        let copied = file.translated_scaled(Vec2::ZERO, 1.0).unwrap();
+        assert_eq!(write_dxf_file(&file).unwrap(), write_dxf_file(&copied).unwrap());
+        assert!(copied.layer(file.default_layer()).is_err(), "copy owns fresh layer identities");
+    }
+
     use super::super::super::DxfLinetype;
     use super::super::super::{DxfTextHorizontalAlignment, DxfTextVerticalAlignment};
 

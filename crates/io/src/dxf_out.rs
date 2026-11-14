@@ -958,12 +958,29 @@ fn shape_emission_preflight(shape: &DxfShape) -> Result<()> {
     match shape {
         // Fields use X1's round-trip spelling, not the legacy12decimal rule.
         DxfShape::BulgedPolyline { .. } => {}
-        DxfShape::LwPolyline { verts, .. } => {
+        DxfShape::LwPolyline { verts, closed } => {
+            let mut first = None;
+            let mut previous = None;
             for (point, bulge) in verts {
-                emitted_point(*point)?;
+                let emitted = emitted_point(*point)?;
+                if let Some((old, last)) = previous
+                    && old != *point
+                    && last == emitted
+                {
+                    return Err(collapse());
+                }
+                first.get_or_insert((*point, emitted));
+                previous = Some((*point, emitted));
                 if *bulge != 0.0 && (bulge.abs() <= 1e-12 || emitted_number(*bulge)? == 0.0) {
                     return Err(collapse());
                 }
+            }
+            if *closed
+                && let (Some((a, encoded_a)), Some((b, encoded_b))) = (first, previous)
+                && a != b
+                && encoded_a == encoded_b
+            {
+                return Err(collapse());
             }
         }
         DxfShape::Point(point) => {
@@ -1468,6 +1485,21 @@ fn bezier_spline(pts: &[Vec2], weights: Option<Vec<f64>>) -> DxfShape {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn owned_lwpolyline_refuses_distinct_vertices_lost_at_wire_precision() {
+        use super::*;
+        for (verts, closed) in [
+            (vec![(Vec2::ZERO, 0.0), (Vec2::new(1e-20, 0.0), 0.0)], false),
+            (vec![(Vec2::ZERO, 0.0), (Vec2::new(1.0, 0.0), 0.0), (Vec2::new(1e-20, 0.0), 0.0)], true),
+        ] {
+            let mut file = DxfFile::new().unwrap();
+            file.push(file.default_layer(), DxfShape::LwPolyline { verts, closed }, None).unwrap();
+            assert!(write_dxf_file(&file).unwrap_err().to_string().contains("distinct point"));
+        }
+        let shape = DxfShape::LwPolyline { verts: vec![(Vec2::ZERO, 0.0), (Vec2::ZERO, 0.0), (Vec2::new(1.0, 0.0), 0.0)], closed: false };
+        assert!(shape_emission_preflight(&shape).is_ok(), "intentional repeated vertices remain distinct from encoding collapse");
+    }
+
     use std::f64::consts::{FRAC_1_SQRT_2, FRAC_PI_2, PI};
 
     use solidcore_record::{Loop2, Seg2};
