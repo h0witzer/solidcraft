@@ -1211,18 +1211,26 @@ pub struct DxfOptions {
 /// The layer of a role: its AutoCAD colour index (1 red, 2 yellow, 3 green, 4 cyan, 5 blue,
 /// 6 magenta, 7 white or black, 8 grey) and, for the bend lines, a dashed line. The pocket layers
 /// and PERFORATION are green.
-fn dxf_layer(name: &str) -> solidcraft_io::DxfLayer {
-    use solidcraft_io::DxfLayer;
-    match name {
-        "OUTLINE" => DxfLayer::new(name, 7),
-        "CUT" => DxfLayer::new(name, 4),
-        "TEXT" => DxfLayer::new(name, 2),
-        "ETCH" => DxfLayer::new(name, 6),
-        "BEND_UP" => DxfLayer::new(name, 1).dashed(),
-        "BEND_DOWN" => DxfLayer::new(name, 5).dashed(),
-        "BEND_NOTES" => DxfLayer::new(name, 8),
-        _ => DxfLayer::new(name, 3),
+fn dxf_layer(
+    file: &mut solidcraft_io::DxfFile<solidcraft_io::DxfShape>,
+    name: &str,
+    one_layer: bool,
+) -> solidcraft_io::Result<solidcraft_io::DxfLayerId> {
+    use solidcraft_io::DxfLinetype;
+    if one_layer {
+        return Ok(file.default_layer());
     }
+    let (color, linetype) = match name {
+        "OUTLINE" => (7, DxfLinetype::Continuous),
+        "CUT" => (4, DxfLinetype::Continuous),
+        "TEXT" => (2, DxfLinetype::Continuous),
+        "ETCH" => (6, DxfLinetype::Continuous),
+        "BEND_UP" => (1, DxfLinetype::Dashed),
+        "BEND_DOWN" => (5, DxfLinetype::Dashed),
+        "BEND_NOTES" => (8, DxfLinetype::Continuous),
+        _ => (3, DxfLinetype::Continuous),
+    };
+    file.declare_layer(name, color, linetype, None)
 }
 
 /// A number in a bend note: at most three decimals, none when they are zeros (`90`, `2.5`).
@@ -1296,7 +1304,7 @@ struct FlatDrawing {
 
 impl FlatDrawing {
     fn dxf(&self, o: &DxfOptions) -> Result<String> {
-        use solidcraft_io::{DxfEntity, DxfPathStyle, DxfShape};
+        use solidcraft_io::{DxfFile, DxfPathStyle, DxfShape};
         let (regions, pockets, letters) = (&self.regions, &self.pockets, &self.letters);
         let pocket_layer = |p: &solidcraft_doc::sheet::SheetPocket| {
             let side = if p.z0 == 0.0 {
@@ -1354,7 +1362,17 @@ impl FlatDrawing {
             }
         }
         loops.sort_by_key(|(pass, ..)| *pass);
-        let mut entities = Vec::new();
+        // Slits (two lines each) and rolls (one line each) are planned like bends: at most two
+        // entities and a bend's few values apiece.
+        let lines = self.bends.len().saturating_add(self.rolls.len()).saturating_add(self.slits.len().saturating_mul(2));
+        let mut file = DxfFile::for_flat_pattern_export(loops.len(), lines, self.perforation.len())?;
+        if !o.one_layer {
+            // These four baseline roles exist even without matching geometry. The
+            // compatibility writer keeps their historical sorted table order.
+            for name in ["BEND_DOWN", "BEND_UP", "CUT", "OUTLINE"] {
+                dxf_layer(&mut file, name, false)?;
+            }
+        }
         for (i, (_, h, layer)) in loops.into_iter().enumerate() {
             let style = match o.curves {
                 DxfCurves::Exact => DxfPathStyle::Exact,
@@ -1362,44 +1380,45 @@ impl FlatDrawing {
             };
             let shapes = flat_loop_shapes(h, style)
                 .map_err(|e| EngineError::Other(format!("flat-pattern body {:?}, layer {layer:?}, contour {}: {e}", self.body, i + 1)))?;
-            entities.extend(shapes.into_iter().map(|shape| DxfEntity { layer: layer.clone(), shape }));
+            if !shapes.is_empty() {
+                let layer = dxf_layer(&mut file, &layer, o.one_layer)?;
+                for shape in shapes {
+                    file.push(layer, shape, None)?;
+                }
+            }
         }
         // Each junction's cut is cut with the outline, on its layer: out along the junction and
         // back, as the outline would run round a cut with no width.
         for (a, b) in &self.slits {
-            entities.push(DxfEntity { layer: "OUTLINE".into(), shape: DxfShape::Line(*a, *b) });
-            entities.push(DxfEntity { layer: "OUTLINE".into(), shape: DxfShape::Line(*b, *a) });
+            let layer = dxf_layer(&mut file, "OUTLINE", o.one_layer)?;
+            file.push(layer, DxfShape::Line(*a, *b), None)?;
+            file.push(layer, DxfShape::Line(*b, *a), None)?;
         }
         for b in &self.bends {
             if !o.no_bend_lines {
-                entities.push(DxfEntity { layer: if b.up { "BEND_UP" } else { "BEND_DOWN" }.into(), shape: DxfShape::Line(b.start, b.end) });
+                let layer = dxf_layer(&mut file, if b.up { "BEND_UP" } else { "BEND_DOWN" }, o.one_layer)?;
+                file.push(layer, DxfShape::Line(b.start, b.end), None)?;
             }
             if let Some(height) = o.bend_notes {
-                entities.push(DxfEntity { layer: "BEND_NOTES".into(), shape: bend_note(b, height, self.display) });
+                let layer = dxf_layer(&mut file, "BEND_NOTES", o.one_layer)?;
+                file.push(layer, bend_note(b, height, self.display), None)?;
             }
         }
-        for (c, r) in &self.perforation {
-            entities.push(DxfEntity { layer: "PERFORATION".into(), shape: DxfShape::Circle { c: *c, r: *r } });
+        if !self.perforation.is_empty() {
+            let layer = dxf_layer(&mut file, "PERFORATION", o.one_layer)?;
+            for (c, r) in &self.perforation {
+                file.push(layer, DxfShape::Circle { c: *c, r: *r }, None)?;
+            }
         }
         // A roll's lines on a layer of their own, so that a reader of the bend layers doesn't
         // take a roll for bends.
-        if !o.no_bend_lines {
+        if !o.no_bend_lines && !self.rolls.is_empty() {
+            let layer = dxf_layer(&mut file, "ROLL", o.one_layer)?;
             for (a, b) in &self.rolls {
-                entities.push(DxfEntity { layer: "ROLL".into(), shape: DxfShape::Line(*a, *b) });
+                file.push(layer, DxfShape::Line(*a, *b), None)?;
             }
         }
-        // One layer: every entity on layer 0, which every drawing has.
-        if o.one_layer {
-            for e in &mut entities {
-                e.layer = "0".into();
-            }
-            return Ok(solidcraft_io::write_dxf_drawing(&[], &entities)?);
-        }
-        // The four layers of every flat pattern, and those the rest is on.
-        let mut names: std::collections::BTreeSet<String> = ["OUTLINE", "CUT", "BEND_UP", "BEND_DOWN"].map(String::from).into();
-        names.extend(entities.iter().map(|e| e.layer.clone()));
-        let layers: Vec<_> = names.iter().map(|name| dxf_layer(name)).collect();
-        Ok(solidcraft_io::write_dxf_drawing(&layers, &entities)?)
+        Ok(solidcraft_io::write_dxf_file(&file)?)
     }
 }
 

@@ -50,6 +50,7 @@ pub mod curve_plane;
 pub mod cylinder_wall;
 pub mod develop;
 pub mod error;
+pub mod export_geometry;
 pub mod extend;
 pub mod face_surface;
 pub mod file;
