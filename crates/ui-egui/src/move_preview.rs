@@ -129,6 +129,8 @@ impl MovePreview {
             stopped: None,
             placed: None,
             tapered: Vec::new(),
+            flange_corners: Vec::new(),
+            flange_faces: Vec::new(),
             replaced: if copy { Vec::new() } else { bodies },
             error: None,
             bounds,

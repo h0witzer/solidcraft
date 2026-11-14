@@ -162,6 +162,8 @@ impl StraightPreview {
             stopped: None,
             placed: None,
             tapered: Vec::new(),
+            flange_corners: Vec::new(),
+            flange_faces: Vec::new(),
             replaced: Vec::new(),
             error: crate::preview::extrusion_target_error(&app.session, commands, &app.session.model.state()),
             bounds,
