@@ -1623,3 +1623,45 @@ fn a_mirrored_sheet_copy_keeps_its_junction_relief() {
     assert!((len(source[0]) - len(copy[0])).abs() < 1e-9, "{source:?} vs {copy:?}");
     assert!((len(copy[0]) - (1.0 + PI + 17.0)).abs() < 1e-9, "the tear is 1 mm deeper than the bend line: {copy:?}");
 }
+
+/// A split edge with a relief at its junction still closes its outer corner against another
+/// edge's flange in the same feature: the relief is a cut at the junction, it does not reshape the
+/// stretch's panel, so the corner at (100, 0) is the corner the same design has with no relief.
+///
+/// Closed forms. Both stretches of y = 0 bend up, 20 mm and 15 mm high (so they are two bends), and
+/// the notch is x 49 to 51 from 1 mm past the bend line (y = 4) out to the nearer far edge, the
+/// 15 mm stretch's at y = 3 - (pi + 12): 2 x (pi + 13) less flat. Every outline
+/// line at x > 60, the closed corner included, is the same with and without the relief.
+#[test]
+fn a_relieved_split_edge_still_closes_its_outer_corner() {
+    let design = |relief: Value| {
+        let mut s = plate_in(sheet_of_2mm(), &[]);
+        run(
+            &mut s,
+            "sheet.flange",
+            json!({"type":"edge","edges":[
+                {"point":[50,0,2],"segments":[
+                    {"from":0,"to":0.5,"angle":"90 deg","height":"20 mm","flip":false,"relief":relief},
+                    {"from":0.5,"to":1,"angle":"90 deg","height":"15 mm","flip":false}]},
+                {"point":[100,30,2]}],
+                "height":"20 mm","angle":"90 deg"}),
+        );
+        assert!(s.model.results.iter().all(|r| r.error.is_none()), "{:?}", s.model.results);
+        s
+    };
+    let plain = design(Value::Null);
+    let relieved = design(json!({"shape":"rectangular"}));
+    let took = flat_area(&plain) - flat_area(&relieved);
+    assert!((took - 2.0 * (PI + 13.0)).abs() < 1e-6, "the relief took {took}");
+    let east = |s: &Session| {
+        let mut l: Vec<(Vec2, Vec2)> = flat_lines(s).into_iter().filter(|(a, b)| a.x > 60.0 && b.x > 60.0).collect();
+        l.sort_by(|p, q| (p.0.x, p.0.y, p.1.x, p.1.y).partial_cmp(&(q.0.x, q.0.y, q.1.x, q.1.y)).unwrap_or(std::cmp::Ordering::Equal));
+        l
+    };
+    let (a, b) = (east(&plain), east(&relieved));
+    assert!(!a.is_empty());
+    assert_eq!(a.len(), b.len(), "{a:?} vs {b:?}");
+    for (p, q) in a.iter().zip(&b) {
+        assert!(p.0.dist(q.0) < 1e-9 && p.1.dist(q.1) < 1e-9, "the corner moved: {p:?} vs {q:?}");
+    }
+}
