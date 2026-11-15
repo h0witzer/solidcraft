@@ -415,7 +415,7 @@ pub(crate) fn flange_segments(i: usize, v: &Value) -> std::result::Result<Vec<Fl
                 };
                 // Refused here, where the segment is known, rather than at the build: neither name is
                 // one a junction takes.
-                if !solidcraft_doc::sheet::ReliefShape::JUNCTION.contains(&shape.trim().to_ascii_lowercase().as_str()) {
+                if solidcraft_doc::sheet::JunctionShape::parse(&shape).is_none() {
                     if shape.trim().eq_ignore_ascii_case("round") {
                         return Err(format!(
                             "edges[{i}].segments[{j}].relief.shape: a round relief is a closed hole and does not part the junction; use obround with a depth of half its width"

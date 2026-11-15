@@ -78,15 +78,27 @@ impl JsonSchema for FlangeEdges {
         let point = generator.subschema_for::<Point3>();
         let angle = generator.subschema_for::<AngleExpr>();
         let height = generator.subschema_for::<LengthExpr>();
+        let relief = json_schema!({
+            "description": "The bend relief asked for at the junction after this segment (never the last segment of an edge, nor a junction the next segment merges across): a notch `width` across the junction, centred on it, from `depth` before the deeper bend line out to the nearer far edge; width and depth default to the rule's relief_width and relief_depth. `notch` is no relief; `tear` is the junction's own cut with no width, started `depth` deeper; `round` is refused.",
+            "type": "object",
+            "properties": {
+                "shape": {"enum": ["straight", "rectangular", "obround", "tear", "notch"]},
+                "width": {"anyOf": [height.clone(), {"type": "null"}]},
+                "depth": {"anyOf": [height.clone(), {"type": "null"}]}
+            },
+            "required": ["shape"],
+            "additionalProperties": false
+        });
         let segment = json_schema!({
-            "description": "One stretch of the edge: from and to are fractions 0…1 of the stretch the sheet still has there (the first from is 0, the last to is 1, and each from is the to of the one before); angle, height and flip are its own where given.",
+            "description": "One stretch of the edge: from and to are fractions 0…1 of the stretch the sheet still has there (the first from is 0, the last to is 1, and each from is the to of the one before); angle, height, flip and relief are its own where given.",
             "type": "object",
             "properties": {
                 "from": {"type": "number", "minimum": 0, "maximum": 1},
                 "to": {"type": "number", "minimum": 0, "maximum": 1},
                 "angle": {"anyOf": [angle, {"type": "null"}]},
                 "height": {"anyOf": [height, {"type": "null"}]},
-                "flip": {"anyOf": [{"type": "boolean"}, {"type": "null"}]}
+                "flip": {"anyOf": [{"type": "boolean"}, {"type": "null"}]},
+                "relief": {"anyOf": [relief, {"type": "null"}]}
             },
             "required": ["from", "to"],
             "additionalProperties": false

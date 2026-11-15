@@ -232,6 +232,76 @@ impl ReliefShape {
     }
 }
 
+/// The narrowest bend relief that is cut: a narrower one would leave hairline edges.
+pub const MIN_BEND_RELIEF: f64 = 0.01;
+
+/// The shape of the relief a segment of an edge flange asks for at the junction after it
+/// (`sheet.flange`'s `segments[].relief.shape`). It is not a [`ReliefShape`]: a corner relief has
+/// no `straight` or `obround`, and a junction has no `round`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum JunctionShape {
+    /// No relief: the two bends butt, and only stretches that bend to opposite sides are parted.
+    #[default]
+    Notch,
+    /// A notch with straight sides running along the junction and a straight inner end square to
+    /// them.
+    Straight,
+    /// The same rectangle as [`JunctionShape::Straight`]: the junction's frame makes both so.
+    Rectangular,
+    /// A notch with straight sides closed by a half round of half its width, open at the far edge.
+    Obround,
+    /// Nothing cut out: the junction's own zero-width slit, started `depth` deeper into the parent
+    /// panel and made whichever sides the two stretches bend to.
+    Tear,
+}
+
+impl JunctionShape {
+    /// The names a junction relief takes, in the order its refusals list them.
+    pub const NAMES: [&'static str; 5] = ["straight", "rectangular", "obround", "tear", "notch"];
+
+    /// The shape named `s` (any case, spaces round it); none for a name a junction does not take.
+    pub fn parse(s: &str) -> Option<JunctionShape> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "notch" => Some(JunctionShape::Notch),
+            "straight" => Some(JunctionShape::Straight),
+            "rectangular" => Some(JunctionShape::Rectangular),
+            "obround" => Some(JunctionShape::Obround),
+            "tear" => Some(JunctionShape::Tear),
+            _ => None,
+        }
+    }
+
+    /// Its name, as `parse` reads it.
+    pub fn name(self) -> &'static str {
+        match self {
+            JunctionShape::Notch => "notch",
+            JunctionShape::Straight => "straight",
+            JunctionShape::Rectangular => "rectangular",
+            JunctionShape::Obround => "obround",
+            JunctionShape::Tear => "tear",
+        }
+    }
+
+    /// Whether the relief takes material out of the flat (a notch of some width).
+    pub fn cuts_material(self) -> bool {
+        matches!(self, JunctionShape::Straight | JunctionShape::Rectangular | JunctionShape::Obround)
+    }
+}
+
+/// The bend relief a segment asks for at the junction after it, as the build takes it: `width`
+/// across the junction, centred on it, `depth` before the deeper of the two bend lines out to the
+/// nearer far edge (`sheet.flange`'s `segments[].relief`, with the rule's values where the
+/// segment gave none).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct JunctionRelief {
+    /// Its shape.
+    pub shape: JunctionShape,
+    /// How far across the junction the notch is (mm).
+    pub width: f64,
+    /// How far past the deeper bend line the notch reaches into the parent panel (mm).
+    pub depth: f64,
+}
+
 /// How a rule's bend angles read in the DXF bend notes (a rule's `angle_display`). The bend
 /// table gives both angles, and a flange's `angle` is always the bend angle.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

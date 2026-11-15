@@ -196,6 +196,7 @@ The refusals are the contract; quote them when a call fails:
 | obround too shallow | `edges[i].segments[j].relief: an obround relief needs a depth of at least half its width (W mm)` |
 | width wider than the narrower stretch | `edges[i].segments[j].relief is W mm wide, wider than segment n (L mm); make the segment wider or the relief narrower` |
 | the notch splits the blank | `edges[i].segments[j].relief would cut the sheet apart; reduce its depth` |
+| a tear that parts the blank | `edges[i].segments[j].relief: a depth of D mm runs the tear from one edge of the blank to another, together with the junction cuts already there; it would part the blank` |
 
 ## Bend arithmetic
 
