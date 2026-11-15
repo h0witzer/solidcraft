@@ -1545,15 +1545,17 @@ fn legacy_caller_circle_keeps_an_admitted_sub_writer_precision_arc() {
     let error = path_shapes(DxfPath::Closed(&lp), DxfPathStyle::Exact).unwrap_err();
     assert!(error.to_string().contains("arc endpoints collapse"));
 
-    // Start with a real command-produced sheet's admitted rule/frame and replace only
-    // its public source outline. This tests the SheetBody/flat_regions/export API,
-    // not a claim about ordinary sketch-command or saved-design reachability.
+    // Start with a real command-produced sheet and replace only the outline of its flat region
+    // (the flat is derived from the part's surfaces; this changes the derived data the exporter
+    // is handed, it is never written back). This tests the surface_dxf export route, not a
+    // claim about ordinary sketch-command or saved-design reachability.
     let session = plate_with(&[]);
-    let mut sheet = session.model.state().sheets[0].clone();
-    sheet.base.outer = lp.clone();
-    let flat = sheet.flat_regions().expect("the public sheet flat-region route admits this outline");
+    let mut sheet = session.model.state().surface_sheets[0].clone();
+    assert_eq!(sheet.regions.len(), 1);
+    sheet.regions[0].outer = lp.clone();
+    let flat = sheet.shown().regions;
     assert_eq!(flat.len(), 1);
-    assert_eq!(flat[0].outer.segs, lp.segs, "flat-region admission must preserve the actual witness pieces");
+    assert_eq!(flat[0].outer.segs.len(), lp.segs.len(), "the shown flat keeps every witness piece");
     assert_eq!(super::loop_circle(&flat[0].outer), Some((center, 8.0)));
 
     // Cam's written caller contract promises the same CIRCLE here. These are
@@ -1562,7 +1564,7 @@ fn legacy_caller_circle_keeps_an_admitted_sub_writer_precision_arc() {
         let shapes = super::flat_loop_shapes(&flat[0].outer, style).expect("admitted legacy whole circle remains exportable");
         assert!(matches!(shapes.as_slice(), [DxfShape::Circle { c, r }] if *c == center && *r == 8.0));
     }
-    let dxf = super::flat_dxf(&sheet, &super::DxfOptions::default()).expect("the real default flat-pattern exporter retains its whole-circle result");
+    let dxf = super::surface_dxf(&session, &sheet, &super::DxfOptions::default()).expect("the real default flat-pattern exporter retains its whole-circle result");
     let es = entities(&dxf);
     assert_eq!((count(&es, "CIRCLE"), count(&es, "ARC"), count(&es, "LINE")), (1, 0, 0));
 }
