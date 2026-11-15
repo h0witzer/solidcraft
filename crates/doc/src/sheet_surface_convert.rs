@@ -1043,7 +1043,7 @@ enum Reading {
 /// side, the side of the face at `face` or else of its largest face. A body that is no sheet of
 /// one thickness is refused, naming the thicknesses found.
 pub fn measure_sheet_body(mb: &ModelBody, face: Option<Vec3>, skip: &[Vec3], to_world: &crate::Mat) -> Result<SheetMeasure> {
-    match read_surfaces(mb, None, &[], SheetFaces::Sheet { face, skip }, &[], false, to_world)? {
+    match read_surfaces(mb, None, &[], SheetFaces::Sheet { face, skip }, &[], false, to_world, &[], false)? {
         Reading::Measured(m) => Ok(m),
         Reading::Converted(_) => err("the body was converted, not measured"),
     }
@@ -1067,7 +1067,26 @@ pub fn convert_surfaces(
     outward: bool,
     to_world: &crate::Mat,
 ) -> Result<SurfaceConversion> {
-    match read_surfaces(mb, Some(rule), bends, faces, engrave, outward, to_world)? {
+    convert_surfaces_joined(mb, rule, bends, faces, engrave, outward, to_world, &[], false)
+}
+
+/// [`convert_surfaces`] with the edges at `joins` cut open all the same, but joining the faces on
+/// either side of each to the sheet, as a bend does (a foldable print is made of parts that hang
+/// on the others by no bend, `sheet_print_fold`): the faces picked, every face a bend or a join
+/// reaches from them, and the edges between those that are no bends cut open.
+#[allow(clippy::too_many_arguments)]
+pub fn convert_surfaces_joined(
+    mb: &ModelBody,
+    rule: &dyn Fn(Option<f64>) -> Result<ConvertRule>,
+    bends: &[Vec3],
+    faces: SheetFaces,
+    engrave: &[Vec3],
+    outward: bool,
+    to_world: &crate::Mat,
+    joins: &[Vec3],
+    print: bool,
+) -> Result<SurfaceConversion> {
+    match read_surfaces(mb, Some(rule), bends, faces, engrave, outward, to_world, joins, print)? {
         Reading::Converted(c) => Ok(*c),
         Reading::Measured(_) => err("the body was measured, not converted"),
     }
@@ -1075,6 +1094,7 @@ pub fn convert_surfaces(
 
 /// [`convert_surfaces`]; with no rule, the body measured (see [`measure_sheet_body`]) once its
 /// sheet's faces and modelled bends are read.
+#[allow(clippy::too_many_arguments)]
 fn read_surfaces(
     mb: &ModelBody,
     rule: Option<&dyn Fn(Option<f64>) -> Result<ConvertRule>>,
@@ -1083,6 +1103,8 @@ fn read_surfaces(
     engrave: &[Vec3],
     outward: bool,
     to_world: &crate::Mat,
+    joins: &[Vec3],
+    print: bool,
 ) -> Result<Reading> {
     let at = |p: Vec3| at(crate::apply_point(to_world, p));
     let b = &mb.body;
@@ -1526,6 +1548,12 @@ fn read_surfaces(
             _ => bent.extend(on_side_edge(e)),
         }
     }
+    // The edges that join the faces on either side to the sheet and are cut open (a foldable
+    // print's parts, see `convert_surfaces_joined`).
+    let mut joined_edges: BTreeSet<usize> = BTreeSet::new();
+    for e in (0..edge_count).filter(|e| picked(joins, *e)) {
+        joined_edges.extend(on_side_edge(e));
+    }
     // The planes a cylinder meets smoothly along its edges.
     let planes_beside = |g: usize| -> BTreeSet<usize> {
         let Ok(sg) = shape(g) else { return BTreeSet::new() };
@@ -1660,7 +1688,7 @@ fn read_surfaces(
             }
             loop {
                 let before = faces.len();
-                for &e in &bent {
+                for &e in bent.iter().chain(&joined_edges) {
                     let Some((x, y)) = pair(e) else { continue };
                     if faces.contains(&x) || faces.contains(&y) {
                         faces.extend([x, y]);
@@ -2394,7 +2422,7 @@ fn read_surfaces(
     // behind it, so two panels' material may meet (a thin block's two sides, each the rule's
     // thickness in): refused, naming them, from the folded parts themselves (see
     // `SurfaceConversion::overlap`). Recognize reads one side of a sheet of one thickness.
-    if !recognizing {
+    if !recognizing && !print {
         let (shared, unchecked) = conversion.overlap()?;
         let name = |p: Part| match p {
             Part::Panel(i) => {
@@ -3268,6 +3296,11 @@ pub struct SurfaceSheet {
     /// The holes cuts made in its panels (see [`HoleRecord`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub holes: Vec<HoleRecord>,
+    /// The sheet is a foldable 3D print (see [`crate::sheet::PrintSpec`]): its body is the flat
+    /// print while it is unfolded, and the print folded back up while it is not. The sheet stays
+    /// the definition, its faces the print's, and no sheet metal feature works on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub print: Option<crate::sheet::PrintSpec>,
 }
 
 /// What a face of a sheet's body was made for, by its builder: the sheet's own structure, never a
@@ -3554,6 +3587,17 @@ impl SurfaceSheet {
     /// and its folded solid. `feature` is the Convert: each panel's key is its and the face of the
     /// body the panel was (see [`PanelMade::Converted`]).
     pub fn converted(body: &str, rule: &str, c: &SurfaceConversion, feature: u64) -> Result<(SurfaceSheet, Body)> {
+        let mut sheet = Self::keyed(body, rule, c, feature)?;
+        sheet.laid_out(&c.development, c.pieces()?, c.flat()?)?;
+        let (solid, parts, frames) = c.parted_solid(&sheet)?;
+        sheet.parts = parts;
+        sheet.frames = frames;
+        Ok((sheet, solid))
+    }
+
+    /// The sheet of a conversion as [`SurfaceSheet::converted`] keeps it, its flat not laid out
+    /// and its body not built (a foldable print makes its own).
+    pub(crate) fn keyed(body: &str, rule: &str, c: &SurfaceConversion, feature: u64) -> Result<SurfaceSheet> {
         let mut recipes = Vec::with_capacity(c.sheet.panels.len());
         let mut keyed = c.sheet.clone();
         for (panel, face) in keyed.panels.iter_mut().zip(&c.faces) {
@@ -3563,7 +3607,7 @@ impl SurfaceSheet {
         // The flat lies where the conversion's development laid it out (see `made_flat`).
         let placed: Vec<Option<Rigid3>> = c.places.iter().copied().map(Some).collect();
         let flat = made_flat(&c.sheet, &placed).ok_or_else(|| DocError::Invalid("the converted body gives the sheet no flat face".into()))?;
-        let mut sheet = SurfaceSheet {
+        let sheet = SurfaceSheet {
             body: body.into(),
             rule: rule.into(),
             sheet: keyed,
@@ -3596,12 +3640,9 @@ impl SurfaceSheet {
             parts: Vec::new(),
             recipes,
             holes: Vec::new(),
+            print: None,
         };
-        sheet.laid_out(&c.development, c.pieces()?, c.flat()?)?;
-        let (solid, parts, frames) = c.parted_solid(&sheet)?;
-        sheet.parts = parts;
-        sheet.frames = frames;
-        Ok((sheet, solid))
+        Ok(sheet)
     }
 
     /// A sheet of one flat panel, `region` in `plane`, its material the rule's thickness along the
@@ -3787,6 +3828,7 @@ impl SurfaceSheet {
             parts: Vec::new(),
             recipes,
             holes: Vec::new(),
+            print: None,
         };
         let solid = sheet.build()?;
         Ok((sheet, solid))
@@ -4072,6 +4114,9 @@ impl SurfaceSheet {
     /// Lays the sheet out again after a change to it, and builds its body: the folded sheet, or
     /// its flat while it is unfolded.
     pub fn build(&mut self) -> Result<Body> {
+        if self.print.is_some() {
+            return self.build_print();
+        }
         let dev = self.develop().map_err(|e| DocError::Invalid(e.to_string()))?;
         if let Some(m) = dev.loops.first() {
             let panel = self.sheet.joints.get(m.joint).map_or(0, |j| j.a.panel);

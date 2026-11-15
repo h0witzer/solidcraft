@@ -340,7 +340,7 @@ pub(crate) fn planar_union(regions: Vec<Region2>, work: &mut FlatWork) -> Result
 /// that nearly coincide (#6748): the development is exact, but two pieces can reach one corner by
 /// different sums and land a rounding apart, and the planar booleans take two edges that nearly
 /// coincide for two, where on the grid they coincide.
-fn on_grid(r: &Region2) -> Region2 {
+pub(crate) fn on_grid(r: &Region2) -> Region2 {
     let g = |v: Vec2| Vec2::new((v.x * 1e9).round() / 1e9, (v.y * 1e9).round() / 1e9);
     let seg = |s: &Seg2| match *s {
         Seg2::Line { a, b } => Seg2::Line { a: g(a), b: g(b) },

@@ -680,6 +680,83 @@ fn convert_to_sheet(
     Ok(())
 }
 
+/// Convert to a foldable print (see `sheet_print_fold`): the sheet is made from the faces picked
+/// as Convert makes it, at the wall's thickness, and what the body becomes is its print: the flat
+/// pattern as one body to print, hinged on a film at each bend, which folds back into the faces.
+/// The sheet is kept, its faces the definition and its flat derived from them.
+#[allow(clippy::too_many_arguments)]
+fn convert_to_print(
+    doc: &Document,
+    vals: &BTreeMap<String, Value>,
+    f: &Feature,
+    st: &mut ModelState,
+    warning: &mut Option<String>,
+    body: &crate::BodyName,
+    picked: &[Vec3],
+    bends: &[crate::Position],
+    print: (&Option<crate::Expr>, &Option<crate::Expr>, &Option<crate::Expr>),
+    joint: Option<sheet::PrintJoint>,
+    splits: &[crate::Position],
+    filament: &[sheet::PrintFilament],
+    mitres: &[crate::Position],
+    sockets: &[sheet::PrintSocket],
+) -> Result<()> {
+    let len = |e: &Option<crate::Expr>| e.as_ref().map(|e| val(vals, e, Kind::Length)).transpose();
+    let wall = len(print.0)?.ok_or_else(|| DocError::Invalid("a foldable print needs a wall thickness (`print_wall`)".into()))?;
+    if !(wall.is_finite() && wall > 0.0 && wall < 1e4) {
+        return Err(DocError::Invalid("the wall thickness must be more than 0 and less than 10000 mm".into()));
+    }
+    let fold =
+        sheet::PrintFold { film: len(print.2)?.unwrap_or(sheet::DEFAULT_FILM), clearance: len(print.1)?.unwrap_or(sheet::DEFAULT_PRINT_CLEARANCE) };
+    sheet::check_print_fold(wall, fold)?;
+    let mb = st.body(body).cloned().ok_or_else(|| DocError::Unknown(format!("body `{body}`")))?;
+    let picks = edge_picks(f, &mb, bends, &mut None)?;
+    let split: Vec<Vec3> = splits.iter().map(|p| p.0).collect();
+    let placement = doc.component_transform(doc.model_body_component(&mb));
+    let to_world = doc.model_body_offset(&mb).map(|offset| crate::mat_mul(&placement, offset)).unwrap_or(placement);
+    // A print has no rule: its sheet is made at the wall's thickness, the bends sharp (the print
+    // hinges at the outer skin, where the faces meet) and nothing relieved, the rips' laps its
+    // own (see `sheet_print_fold`).
+    let rule = crate::ConvertRule {
+        thickness: wall,
+        k_factor: 0.5,
+        bend_radius: wall * 0.05,
+        gap: wall * 0.5,
+        corner_relief: sheet::ReliefShape::Notch,
+        corner_relief_size: 0.0,
+        relief_width: 0.0,
+        relief_depth: 0.0,
+    };
+    let conversion =
+        crate::convert_surfaces_joined(&mb, &|_| Ok(rule), &picks, crate::SheetFaces::Picked(picked), &[], false, &to_world, &split, true)?;
+    let mut sheet = crate::SurfaceSheet::keyed(&mb.name, "print", &conversion, f.id)?;
+    sheet.print = Some(sheet::PrintSpec {
+        fold,
+        joint: joint.unwrap_or_default(),
+        filament: filament.to_vec(),
+        mitres: mitres.iter().map(|p| p.0).collect(),
+        sockets: sockets.to_vec(),
+    });
+    // The print lies on the fixed face, the first panel: that is where its flat is.
+    if let Some(first) = sheet.places.first().copied().flatten()
+        && matches!(sheet.sheet.panels.first().map(|p| &p.surface), Some(solidcraft_develop::Surface::Plane))
+    {
+        sheet.flat = first;
+    } else {
+        return Err(DocError::Invalid("the fixed face of a foldable print must be flat".into()));
+    }
+    // The flat print takes the body's place; it refolds and unfolds like sheet metal.
+    sheet.unfolded = true;
+    let solid = sheet.build()?;
+    if let Some(b) = st.bodies.iter_mut().find(|b| b.name == *body) {
+        replace_traced_sheet_body(b, solid, None, &sheet.frames);
+    }
+    let _ = warning;
+    st.surface_sheets.retain(|s| s.body != sheet.body);
+    st.surface_sheets.push(sheet);
+    Ok(())
+}
+
 /// The sheet made from surfaces (#6748) a feature works on: the named body's, or with none named,
 /// the last one `fits`.
 fn surface_sheet_for(st: &ModelState, body: &Option<crate::BodyName>, fits: impl Fn(&crate::SurfaceSheet) -> bool) -> Option<usize> {
@@ -929,6 +1006,15 @@ impl Document {
 /// Builds a sheet made from surfaces again after a change to it, and puts its body in place, its
 /// faces named from what the sheet says each was made for (see `lineage::sheet_lineage`).
 fn rebuild_surface_sheet(st: &mut ModelState, i: usize) -> Result<()> {
+    if let Some(sk) = st.surface_sheets.get(i).filter(|s| s.print.is_some()) {
+        return Err(DocError::Invalid(format!("`{}` is a foldable print: only Unfold and Refold work on it", sk.body)));
+    }
+    rebuild_print_or_sheet(st, i)
+}
+
+/// [`rebuild_surface_sheet`] for a foldable print too (the flat print and the folded one are the
+/// two states of its sheet, which Unfold and Refold change).
+fn rebuild_print_or_sheet(st: &mut ModelState, i: usize) -> Result<()> {
     let mut sk = st.surface_sheets.get(i).cloned().ok_or_else(|| DocError::Invalid("sheet".into()))?;
     // What the body's faces were made for, as the sheet last built it.
     let prev = std::mem::take(&mut sk.parts);
@@ -1050,6 +1136,9 @@ pub(super) fn sheet_eval(
             let i = at_free.or_else(|| surface_flange_sheet(st, body, f, edges)).ok_or_else(|| DocError::Invalid("sheet".into()))?;
             let (h, a) = (val(vals, height, Kind::Length)?, val(vals, angle, Kind::Angle)?);
             let sk = st.surface_sheets.get(i).ok_or_else(|| DocError::Invalid("sheet".into()))?;
+            if sk.print.is_some() {
+                return Err(DocError::Invalid(format!("`{}` is a foldable print: only Unfold and Refold work on it", sk.body)));
+            }
             if sk.unfolded {
                 return Err(DocError::Invalid("refold the sheet before adding flanges".into()));
             }
@@ -1175,6 +1264,9 @@ pub(super) fn sheet_eval(
             let lines = drawn_lines(&ss, &order);
             let i = surface_sheet_at(st, body, None, Some(edge.0)).ok_or_else(|| DocError::Invalid("sheet".into()))?;
             let sk = st.surface_sheets.get(i).ok_or_else(|| DocError::Invalid("sheet".into()))?;
+            if sk.print.is_some() {
+                return Err(DocError::Invalid(format!("`{}` is a foldable print: only Unfold and Refold work on it", sk.body)));
+            }
             if sk.unfolded {
                 return Err(DocError::Invalid("refold the sheet before adding flanges".into()));
             }
@@ -1237,6 +1329,9 @@ pub(super) fn sheet_eval(
                 .ok_or_else(|| DocError::Invalid("sheet".into()))?;
             let l = val(vals, length, Kind::Length)?;
             let mut sk = st.surface_sheets.get(i).cloned().ok_or_else(|| DocError::Invalid("sheet".into()))?;
+            if sk.print.is_some() {
+                return Err(DocError::Invalid(format!("`{}` is a foldable print: only Unfold and Refold work on it", sk.body)));
+            }
             if sk.unfolded {
                 return Err(DocError::Invalid("refold the sheet before adding hems".into()));
             }
@@ -1265,6 +1360,9 @@ pub(super) fn sheet_eval(
         {
             let (i, a, b) = surface_fold_sheet(st, body, sketch, curve, a, b).ok_or_else(|| DocError::Invalid("sheet".into()))?;
             let sk = st.surface_sheets.get(i).ok_or_else(|| DocError::Invalid("sheet".into()))?;
+            if sk.print.is_some() {
+                return Err(DocError::Invalid(format!("`{}` is a foldable print: only Unfold and Refold work on it", sk.body)));
+            }
             if sk.unfolded {
                 return Err(DocError::Invalid("refold the sheet before folding it".into()));
             }
@@ -1319,7 +1417,7 @@ pub(super) fn sheet_eval(
             if let Some(sk) = st.surface_sheets.get_mut(i) {
                 sk.unfolded = !*refold;
             }
-            rebuild_surface_sheet(st, i)
+            rebuild_print_or_sheet(st, i)
         }
         // Convert (#6748): the body becomes the folded sheet, and the model keeps the sheet.
         // Convert takes every face of the body but the skipped ones, or the faces picked and
@@ -1331,8 +1429,39 @@ pub(super) fn sheet_eval(
             let engrave: Vec<Vec3> = engrave.iter().map(|p| p.0).collect();
             convert_to_sheet(doc, vals, f, st, warning, body, rule, bends, crate::SheetFaces::AllBut(&skip), &engrave, direction)
         }
-        FeatureKind::SheetConvert { print_fold: true, .. } => {
-            Err(DocError::Invalid("a foldable print is not made from the surface sheet yet (see sheet_print_fold)".into()))
+        FeatureKind::SheetConvert {
+            body,
+            face,
+            faces,
+            bends,
+            print_fold: true,
+            print_wall,
+            print_clearance,
+            print_film,
+            print_joint,
+            print_splits,
+            print_filament,
+            print_mitres,
+            print_sockets,
+            ..
+        } => {
+            let picked: Vec<Vec3> = std::iter::once(face.0).chain(faces.iter().map(|p| p.0)).collect();
+            convert_to_print(
+                doc,
+                vals,
+                f,
+                st,
+                warning,
+                body,
+                &picked,
+                bends,
+                (print_wall, print_clearance, print_film),
+                *print_joint,
+                print_splits,
+                print_filament,
+                print_mitres,
+                print_sockets,
+            )
         }
         FeatureKind::SheetConvert { body, face, faces, rule, bends, engrave, direction, .. } => {
             let picked: Vec<Vec3> = std::iter::once(face.0).chain(faces.iter().map(|p| p.0)).collect();

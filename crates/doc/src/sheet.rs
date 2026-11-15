@@ -24,12 +24,13 @@ pub use crate::sheet_surface_convert::bend_edge_names;
 pub use face_names::body_sheet_face_names;
 #[path = "sheet_print_fold.rs"]
 mod print_fold;
+pub(crate) use face_names::{FaceNamer, FaceRole, carried, ranked, rims};
 pub use print_fold::{
     CRUMB, DEFAULT_CHANNEL_TOLERANCE, DEFAULT_FILAMENT, DEFAULT_FILM, DEFAULT_JOINT_WALL, DEFAULT_NUB_HEIGHT, DEFAULT_NUB_RADIUS,
-    DEFAULT_PRINT_CLEARANCE, DEFAULT_SEGMENTS, FIN, FINGER_FLAT_GAP, FOLD_JOINT_ANGLES, FilamentCut, FoldCore, FoldEnd, FoldFilament, MIN_FINGER_WIDTH,
-    PressFit, PrintFilament, PrintFold, PrintJoint, PrintSocket, finger_count, fold_core, socket_fingers,
+    DEFAULT_PRINT_CLEARANCE, DEFAULT_SEGMENTS, FIN, FINGER_FLAT_GAP, FOLD_JOINT_ANGLES, FilamentCut, FoldCore, FoldEnd, FoldFilament,
+    MIN_FINGER_WIDTH, PressFit, PrintFilament, PrintFold, PrintJoint, PrintSocket, PrintSpec, check_print_fold, finger_count, fold_core,
+    socket_fingers,
 };
-pub(crate) use face_names::{FaceNamer, FaceRole, carried, ranked, rims};
 
 /// The most work one sheet's flat may take (see [`FlatWork`]).
 const MAX_FLAT_WORK: usize = 500_000_000;

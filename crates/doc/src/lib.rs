@@ -92,6 +92,7 @@ pub mod render_settings;
 pub mod render_surface;
 pub mod render_texture_resources;
 pub mod sheet;
+mod sheet_print_layout;
 mod sheet_surface;
 mod sheet_surface_convert;
 mod sheet_surface_cuts;
@@ -102,7 +103,7 @@ mod sheet_surface_shadow;
 pub mod sketch_equation;
 pub use sheet_surface_convert::{
     ConvertRule, RollEdge, RollInfo, RollLine, SheetFaces, SheetMeasure, SurfaceBendLine, SurfaceConversion, SurfaceSheet, convert_surfaces,
-    measure_sheet_body,
+    convert_surfaces_joined, measure_sheet_body,
 };
 pub use sheet_surface_cuts::{Loose, Recess};
 pub mod text_params;
