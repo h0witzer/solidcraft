@@ -6994,7 +6994,14 @@ mod tests {
             WINDOW_PAGES.iter().map(host_page).enumerate().filter_map(|(i, p)| p.group.map(|g| (i, solidcraft_ui_text::tr(g)))).collect();
         assert_eq!(
             groups,
-            [(PAGE_APPEARANCE, "Look"), (PAGE_DESIGN, "Work"), (PAGE_SECURITY, "Work"), (PAGE_SHEET_METAL, "Work"), (PAGE_NAVIGATION, "Input"), (PAGE_ASSISTANT, "Extend")]
+            [
+                (PAGE_APPEARANCE, "Look"),
+                (PAGE_DESIGN, "Work"),
+                (PAGE_SECURITY, "Work"),
+                (PAGE_SHEET_METAL, "Work"),
+                (PAGE_NAVIGATION, "Input"),
+                (PAGE_ASSISTANT, "Extend")
+            ]
         );
         let mut fields = std::collections::BTreeSet::new();
         for (field, page) in FIELD_PAGES {
@@ -7028,7 +7035,17 @@ mod tests {
         for (alias, index) in PAGE_ALIASES {
             open_at(&mut h.app, *index);
             h.frames(4);
-            h.step(&json!({"click":{"handle":format!("prefs:page:{alias}")}})).unwrap();
+            // The page list overflows the sidebar, so reopening a page scrolls to it with an
+            // animation: click once its row has stopped moving.
+            let handle = format!("prefs:page:{alias}");
+            for _ in 0..60 {
+                let before = crate::scenario::rect_of(&handle);
+                h.frames(1);
+                if crate::scenario::rect_of(&handle) == before {
+                    break;
+                }
+            }
+            h.step(&json!({"click":{"handle":handle}})).unwrap();
             assert_eq!(h.app.prefs_window.shell.section, *index, "{alias} is clickable");
         }
     }
