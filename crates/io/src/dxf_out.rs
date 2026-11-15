@@ -1171,7 +1171,7 @@ where
         o.code(62, l.color);
         o.code(6, l.linetype.name());
         // Lineweight: the layer's own, else -3 (the default); and the Normal plot style.
-        o.code(370, l.weight.map_or(-3, |weight| weight.code()));
+        o.code(370, l.weight.map_or(-3, |weight| i32::from(weight.code())));
         o.code(390, &normal);
     }
     o.code(0, "ENDTAB");
