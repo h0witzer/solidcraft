@@ -107,8 +107,8 @@ pub struct Layer {
     name: String,
     color: i16,
     linetype: DxfLinetype,
-    /// None preserves legacy omission of group370; its semantic default is
-    /// unresolved here, never silently replaced with a numeric weight.
+    /// None is written as group 370 `-3` (default), which a layer record always carries;
+    /// it is never silently replaced with a physical weight.
     weight: Option<StandardWeight>,
 }
 
@@ -626,13 +626,14 @@ mod tests {
         let layers: Vec<_> = records.iter().filter(|(kind, _)| *kind == "LAYER").collect();
         assert_eq!(layers.len(), 4);
         for ((_, record), (name, color, kind, weight)) in layers.iter().zip([
-            ("0", "7", "Continuous", None),
-            ("CUT", "1", "Continuous", Some("50")),
-            ("HIDDEN", "8", "HIDDEN", Some("0")),
-            ("UNUSED", "3", "DASHED", None),
+            ("0", "7", "Continuous", "-3"),
+            ("CUT", "1", "Continuous", "50"),
+            ("HIDDEN", "8", "HIDDEN", "0"),
+            ("UNUSED", "3", "DASHED", "-3"),
         ]) {
+            // A layer record always carries 370; an omitted weight is spelled -3 (default).
             x2_wire_fields(record, &[(2, &[name]), (62, &[color]), (6, &[kind])]);
-            assert_eq!(x2_wire_values(record, 370), weight.into_iter().collect::<Vec<_>>());
+            assert_eq!(x2_wire_values(record, 370), [weight]);
         }
         let entities = x2_wire_entities(&written);
         assert_eq!(entities.iter().map(|(kind, _)| *kind).collect::<Vec<_>>(), ["LINE", "CIRCLE", "ARC", "LINE"]);
@@ -728,12 +729,12 @@ mod tests {
             Some("211"),
         ];
         for (style_index, (name, color, kind, weight)) in
-            [("MEASURED", "1", "Continuous", Some("50")), ("OMITTED", "3", "DASHED", None), ("ZERO_WEIGHT", "8", "HIDDEN", Some("0"))]
+            [("MEASURED", "1", "Continuous", "50"), ("OMITTED", "3", "DASHED", "-3"), ("ZERO_WEIGHT", "8", "HIDDEN", "0")]
                 .into_iter()
                 .enumerate()
         {
             x2_wire_fields(&layers[style_index + 1].1, &[(2, &[name]), (62, &[color]), (6, &[kind])]);
-            assert_eq!(x2_wire_values(&layers[style_index + 1].1, 370), weight.into_iter().collect::<Vec<_>>());
+            assert_eq!(x2_wire_values(&layers[style_index + 1].1, 370), [weight]);
             for (index, expected_weight) in wire_weights.iter().enumerate() {
                 let (entity, record) = &entities[style_index * 28 + index];
                 assert_eq!(*entity, "LINE");

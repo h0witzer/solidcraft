@@ -1244,7 +1244,7 @@ mod tests {
             assert_eq!(values(layers[0], 62), ["3"]);
             assert_eq!(values(layers[0], 6), ["HIDDEN"]);
             let expected_weight = match weight_code {
-                None => vec![],
+                None => vec!["-3"],
                 Some(0) => vec!["0"],
                 Some(50) => vec!["50"],
                 _ => panic!("unexpected fixture weight"),

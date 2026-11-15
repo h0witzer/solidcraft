@@ -2572,7 +2572,8 @@ mod tests {
         let records = table_records(&p, "LAYER");
         assert_eq!(records.iter().map(|r| field(r, 2)).collect::<Vec<_>>(), ["0", "CUT", "ZERO", "NOTES"]);
         let weights: Vec<Vec<_>> = records.iter().map(|r| r.iter().filter(|(c, _)| *c == 370).map(|(_, v)| v.as_str()).collect()).collect();
-        assert_eq!(weights, [vec![], vec!["50"], vec!["0"], vec![]]);
+        // A layer with no weight is written `370 -3` (default), still distinct from a physical 0.
+        assert_eq!(weights, [vec!["-3"], vec!["50"], vec!["0"], vec!["-3"]]);
         assert_eq!(records.iter().map(|r| field(r, 6)).collect::<Vec<_>>(), ["Continuous", "DASHED", "HIDDEN", "Continuous"]);
         assert!(table_records(&p, "LTYPE").iter().any(|r| field(r, 2) == "HIDDEN"));
         let layer_table = p.windows(2).position(|w| w[0] == (0, "TABLE".into()) && w[1] == (2, "LAYER".into())).unwrap();
@@ -2808,8 +2809,9 @@ mod tests {
         let layers = table_records(&p, "LAYER");
         assert_eq!(layers.iter().map(|r| field(r, 2)).collect::<Vec<_>>(), ["0", "中", "cut", "CUT"]);
         assert_eq!(layers.iter().map(|r| field(r, 62)).collect::<Vec<_>>(), ["7", "3", "1", "2"]);
-        assert!(!p.iter().any(|(code, _)| *code == 370));
+        assert!(layers.iter().all(|r| r.iter().filter(|(c, _)| *c == 370).map(|(_, v)| v.as_str()).eq(["-3"])));
         let records = entities(&output);
+        assert!(records.iter().all(|r| !r.1.iter().any(|(code, _)| *code == 370)));
         assert_eq!(field(&records[0].1, 8), "0");
         assert_eq!(values(&records[0], 10), [0.0]);
     }
@@ -2856,7 +2858,7 @@ mod tests {
     #[test]
     fn layer_zero_physical_zero_and_omission_keep_distinct_table_and_entity_spellings() {
         let zero = DxfStandardWeight::from_code(0).unwrap();
-        for (layer_weight, layer_raw, inherited) in [(None, "", DxfEntityWeight::Default), (Some(zero), "0", DxfEntityWeight::Explicit(zero))] {
+        for (layer_weight, layer_raw, inherited) in [(None, "-3", DxfEntityWeight::Default), (Some(zero), "0", DxfEntityWeight::Explicit(zero))] {
             let mut file = DxfFile::with_layer_zero(5, DxfLinetype::Dashed, layer_weight).unwrap();
             let override_weight = DxfStandardWeight::from_code(13).unwrap();
             let weights = [
@@ -2880,7 +2882,7 @@ mod tests {
             assert_eq!(layers.len(), 1);
             let layer = layers.first().unwrap();
             assert_eq!((field(layer, 2), field(layer, 62), field(layer, 6), field(layer, 370)), ("0", "5", "DASHED", layer_raw));
-            assert_eq!(layer.iter().filter(|(code, _)| *code == 370).count(), usize::from(layer_weight.is_some()));
+            assert_eq!(layer.iter().filter(|(code, _)| *code == 370).count(), 1);
             let linetypes = table_records(&groups, "LTYPE");
             assert_eq!(linetypes.iter().filter(|record| field(record, 2) == "DASHED").count(), 1);
             assert!(!linetypes.iter().any(|record| field(record, 2) == "HIDDEN"));
@@ -2918,8 +2920,8 @@ mod tests {
         let layers = table_records(&groups, "LAYER");
         assert_eq!(layers.len(), 1);
         let layer = layers.first().unwrap();
-        assert_eq!((field(layer, 2), field(layer, 62), field(layer, 6), field(layer, 370)), ("0", "7", "Continuous", ""));
-        assert!(!layer.iter().any(|(code, _)| *code == 370));
+        assert_eq!((field(layer, 2), field(layer, 62), field(layer, 6), field(layer, 370)), ("0", "7", "Continuous", "-3"));
+        assert_eq!(layer.iter().filter(|(code, _)| *code == 370).count(), 1);
         assert!(entities(&explicit_output).iter().all(|record| !record.1.iter().any(|(code, _)| *code == 370)));
         let linetypes = table_records(&groups, "LTYPE");
         assert_eq!(linetypes.iter().map(|record| field(record, 2)).collect::<Vec<_>>(), ["ByBlock", "ByLayer", "Continuous", "DASHED"]);
