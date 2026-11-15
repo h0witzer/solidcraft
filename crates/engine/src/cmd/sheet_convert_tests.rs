@@ -2605,7 +2605,10 @@ fn a_foldable_prints_press_fits_on_a_hexagonal_prism_fold_back_into_it() {
     let flat_volume = volume(&mut s);
     run(&mut s, "sheet.refold", json!({}));
     let folded = volume(&mut s);
-    assert!((folded - flat_volume).abs() < 0.006 * flat_volume, "{folded} vs {flat_volume}");
+    // Folding can only lose material: where two sides' fingers share a 60° corner the folded
+    // print holds that material once. On the surface sheet's layout that is 94 mm³ of 23650 mm³
+    // (0.40 %, measured); the old flat model's fingers lost under 0.3 %. Bound it just above.
+    assert!(folded < flat_volume && flat_volume - folded < 0.0042 * flat_volume, "{folded} vs {flat_volume}");
     let (lo, hi) = bbox(&mut s);
     let (want_lo, want_hi) = ([-25.0, -h, 0.0], [25.0, h, 40.0]);
     assert!((0..3).all(|i| (lo[i] - want_lo[i]).abs() < 1e-3 && (hi[i] - want_hi[i]).abs() < 1e-3), "{lo:?} {hi:?}");
