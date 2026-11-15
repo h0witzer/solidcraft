@@ -209,6 +209,10 @@ pub enum ReliefShape {
     /// No relief: both bends run to their corner, and each one's end is cut straight, in the
     /// flat, from that corner to where its flange's closed end starts.
     Tear,
+    /// A laser-weld corner: the bends run to their corner and close tight against the seam
+    /// between their flanges, as at a tear, and a round hole the relief's size is cut where the
+    /// bends cross, so the seam can be welded shut without the corner tearing.
+    LaserWeld,
 }
 
 impl ReliefShape {
@@ -218,6 +222,7 @@ impl ReliefShape {
             "round" => Some(ReliefShape::Round),
             "rectangular" => Some(ReliefShape::Rectangular),
             "tear" => Some(ReliefShape::Tear),
+            "laser_weld" => Some(ReliefShape::LaserWeld),
             _ => None,
         }
     }
@@ -228,6 +233,7 @@ impl ReliefShape {
             ReliefShape::Round => "round",
             ReliefShape::Rectangular => "rectangular",
             ReliefShape::Tear => "tear",
+            ReliefShape::LaserWeld => "laser_weld",
         }
     }
 }
@@ -334,7 +340,7 @@ impl Document {
             relief_depth: with_t(&r.relief_depth, Kind::Length)?,
             corner_relief: with_t(&r.corner_relief, Kind::Length)?,
             corner_relief_shape: ReliefShape::parse(&r.corner_relief_shape).ok_or_else(|| {
-                DocError::Invalid(format!("unknown corner relief shape `{}` (notch, round, rectangular or tear)", r.corner_relief_shape))
+                DocError::Invalid(format!("unknown corner relief shape `{}` (notch, round, rectangular, tear or laser_weld)", r.corner_relief_shape))
             })?,
             hem_gap: with_t(&r.hem_gap, Kind::Length)?,
             gap: with_t(&r.gap, Kind::Length)?,
@@ -761,8 +767,13 @@ mod tests {
         assert_eq!(SheetRule::steel().corner_relief_shape, "notch");
         let (doc, vals) = (Document::default(), std::collections::BTreeMap::new());
         assert_eq!(doc.rule_values(&vals, &old).unwrap().corner_relief_shape, ReliefShape::Notch);
-        let shapes =
-            [("round", ReliefShape::Round), (" Rectangular ", ReliefShape::Rectangular), ("NOTCH", ReliefShape::Notch), ("Tear", ReliefShape::Tear)];
+        let shapes = [
+            ("round", ReliefShape::Round),
+            (" Rectangular ", ReliefShape::Rectangular),
+            ("NOTCH", ReliefShape::Notch),
+            ("Tear", ReliefShape::Tear),
+            (" Laser_Weld ", ReliefShape::LaserWeld),
+        ];
         for (text, shape) in shapes {
             let rule = SheetRule { corner_relief_shape: text.into(), ..old.clone() };
             assert_eq!(doc.rule_values(&vals, &rule).unwrap().corner_relief_shape, shape);
@@ -771,7 +782,7 @@ mod tests {
         // No other name is a shape.
         for text in ["square", "circle", "rip", ""] {
             let err = doc.rule_values(&vals, &SheetRule { corner_relief_shape: text.into(), ..old.clone() }).unwrap_err().to_string();
-            assert!(err.contains(&format!("unknown corner relief shape `{text}` (notch, round, rectangular or tear)")), "{err}");
+            assert!(err.contains(&format!("unknown corner relief shape `{text}` (notch, round, rectangular, tear or laser_weld)")), "{err}");
         }
     }
 

@@ -242,7 +242,7 @@ word!(
     ["left", "right"]
 );
 
-/// A corner relief's shape: notch, round, rectangular or tear, in any case and with blanks
+/// A corner relief's shape: notch, round, rectangular, tear or laser_weld, in any case and with blanks
 /// around it (read by `ReliefShape::parse`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReliefShapeParam(pub solidcraft_doc::sheet::ReliefShape);
@@ -253,7 +253,7 @@ impl<'de> Deserialize<'de> for ReliefShapeParam {
             .as_str()
             .and_then(solidcraft_doc::sheet::ReliefShape::parse)
             .map(ReliefShapeParam)
-            .ok_or_else(|| D::Error::custom("must be notch, round, rectangular or tear"))
+            .ok_or_else(|| D::Error::custom("must be notch, round, rectangular, tear or laser_weld"))
     }
 }
 
@@ -263,9 +263,9 @@ impl JsonSchema for ReliefShapeParam {
     }
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({
-            "description": "notch, round, rectangular or tear, in any case (blanks around it are ignored).",
+            "description": "notch, round, rectangular, tear or laser_weld, in any case (blanks around it are ignored).",
             "type": "string",
-            "pattern": format!("^{blank}({words}){blank}$", blank = blanks(), words = "[Nn][Oo][Tt][Cc][Hh]|[Rr][Oo][Uu][Nn][Dd]|[Rr][Ee][Cc][Tt][Aa][Nn][Gg][Uu][Ll][Aa][Rr]|[Tt][Ee][Aa][Rr]")
+            "pattern": format!("^{blank}({words}){blank}$", blank = blanks(), words = "[Nn][Oo][Tt][Cc][Hh]|[Rr][Oo][Uu][Nn][Dd]|[Rr][Ee][Cc][Tt][Aa][Nn][Gg][Uu][Ll][Aa][Rr]|[Tt][Ee][Aa][Rr]|[Ll][Aa][Ss][Ee][Rr]_[Ww][Ee][Ll][Dd]")
         })
     }
 }

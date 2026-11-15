@@ -122,6 +122,7 @@ pub fn corner_relief(shape: ReliefShape) -> CornerRelief {
         ReliefShape::Tear => CornerRelief::Tear,
         ReliefShape::Round => CornerRelief::Round,
         ReliefShape::Rectangular => CornerRelief::Square,
+        ReliefShape::LaserWeld => CornerRelief::Weld,
     }
 }
 
@@ -2514,6 +2515,40 @@ pub(crate) fn settle(
                     notched()
                 }
             },
+            CornerRelief::Weld => {
+                // Closed tight against the seam, as a tear, with the round hole where the bends
+                // cross; where no seam parts the flanges there is nothing to weld, and the corner
+                // keeps its notch.
+                let torn = match tear(&bent, &sheet.joints, &rips, places, k, t, near) {
+                    Ok(Some(torn)) => Some(torn),
+                    Ok(None) => {
+                        notes.push(format!(
+                            "the corner at {} keeps its notch: a laser-weld corner needs its flanges closed toward each other",
+                            at(k.v)
+                        ));
+                        None
+                    }
+                    Err(why) => {
+                        notes.push(format!("the corner at {} keeps its notch: {why}", at(k.v)));
+                        None
+                    }
+                };
+                match torn {
+                    Some(torn) if size >= MIN_RELIEF => {
+                        corners.push(Corner { joints, relief, size });
+                        torn
+                    }
+                    Some(torn) => {
+                        notes.push(format!("no laser-weld hole at {}: the relief size {size:.4} mm is below {MIN_RELIEF} mm", at(k.v)));
+                        corners.push(Corner { joints, relief: CornerRelief::Tear, size });
+                        torn
+                    }
+                    None => {
+                        corners.push(Corner { joints, relief: CornerRelief::Notch, size });
+                        notched()
+                    }
+                }
+            }
             CornerRelief::Round | CornerRelief::Square => {
                 // How much of each bend runs on from the corner.
                 let left = k.ends.iter().zip(k.at).map(|((i, e), a)| bent.get(*i).map_or(0.0, |b| if *e == 0 { b.len - a } else { a }));

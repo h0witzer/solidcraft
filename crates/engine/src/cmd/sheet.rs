@@ -57,7 +57,7 @@ pub static COMMANDS: &[CommandSpec] = &[
          the inner virtual sharp, or past 90 deg the line square to the flange touching the bend's outside (tangent; up to 90 deg the outer sharp)), \
          position?: inside|outside|middle|material_outside|tangent (where the bend starts: the outer virtual sharp on the edge (default), \
          the bend starting at the edge (bend_outside is the same), half way, the inner virtual sharp on the edge, \
-         or the bend's outer face tangent to the edge's face (below 90 deg the bend's end on that face)), flip?, body?, corner_relief_shape?: notch|round|rectangular|tear and corner_relief? (size across): \
+         or the bend's outer face tangent to the edge's face (below 90 deg the bend's end on that face)), flip?, body?, corner_relief_shape?: notch|round|rectangular|tear|laser_weld and corner_relief? (size across): \
          the relief at the corners these flanges make (default: the rule's); \
          then?: [{angle?, height, flip?}] further bends (at most 16), each a flange on the far edge of the one before, flip: true turns that bend the other way (edge only); \
          type?: base|edge|contour (default from the inputs); name?, body_name? (the new body). \
@@ -157,8 +157,9 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&MANAGE_RULES_CONTRACT).output(output_schema_for::<ManageRulesResult>).at("SHEET METAL", "MODIFY").icon("sheet_rules").params(
         "name (new or existing); thickness?, k_factor?, bend_radius?, relief_width?, relief_depth?, corner_relief?, hem_gap?, gap? (expressions; `Thickness` is the rule's; \
          gap: between flanges that meet at a corner, whose ends are closed toward each other at any angle); \
-         corner_relief_shape?: notch|round|rectangular|tear (what is cut where two bends meet at a corner of the base: round and rectangular a relief \
-         `corner_relief` across; tear none, each bend's end is cut straight from the corner to its flange's end; default notch); \
+         corner_relief_shape?: notch|round|rectangular|tear|laser_weld (what is cut where two bends meet at a corner of the base: round and rectangular a relief \
+         `corner_relief` across; tear none, each bend's end is cut straight from the corner to its flange's end; \
+         laser_weld as tear, and a round hole `corner_relief` across where the bends cross; default notch); \
          angle_display?: bend|included (how the DXF bend notes read the bend angles: the bend angle, default, or the included angle \
          left between the bend's sides, 180° less it; the bend table gives both, and a flange's `angle` is always the bend angle); \
          active?: bool; delete?: bool",
@@ -508,7 +509,7 @@ fn flange(s: &mut Session, p: &Value) -> Result<Value> {
                     v.as_str()
                         .and_then(solidcraft_doc::sheet::ReliefShape::parse)
                         .map(|shape| shape.name().to_string())
-                        .ok_or_else(|| bad(cmd, "`corner_relief_shape` must be notch, round, rectangular or tear"))?,
+                        .ok_or_else(|| bad(cmd, "`corner_relief_shape` must be notch, round, rectangular, tear or laser_weld"))?,
                 ),
                 None => None,
             };
@@ -982,7 +983,8 @@ fn rules(s: &mut Session, p: &Value) -> Result<Value> {
     }
     if let Some(shape) = p.get("corner_relief_shape").filter(|v| !v.is_null()) {
         let shape = shape.as_str().and_then(solidcraft_doc::sheet::ReliefShape::parse);
-        rule.corner_relief_shape = shape.ok_or_else(|| bad(cmd, "`corner_relief_shape` must be notch, round, rectangular or tear"))?.name().into();
+        rule.corner_relief_shape =
+            shape.ok_or_else(|| bad(cmd, "`corner_relief_shape` must be notch, round, rectangular, tear or laser_weld"))?.name().into();
     }
     if let Some(display) = p.get("angle_display").filter(|v| !v.is_null()) {
         let display = display.as_str().and_then(sheet::AngleDisplay::parse);

@@ -59,6 +59,9 @@ pub enum CornerRelief {
     Tear,
     Round,
     Square,
+    /// A laser-weld corner: the bends' ends torn tight against the seam, as `Tear`, and a round
+    /// hole of the corner's size where the bends cross.
+    Weld,
 }
 
 /// A face of the sheet. Its region is drawn in its surface's own parameters, so whatever is drawn

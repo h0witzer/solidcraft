@@ -153,7 +153,13 @@ flange's closed end starts. Folded, the two bends touch at the corner and open t
 gap where the flanges start; the bend table lists a torn bend between the middles of its two
 ends. A tear whose cuts would cross in the flat pattern, or that would run one bend into the
 other folded (flanges at very different angles), is left out with a warning and the corner
-keeps its notch. `round`
+keeps its notch. `laser_weld` (Laser weld) closes the corner as `tear` does, so the folded bends
+meet along the seam the flanges' closed ends make and it can be welded shut, and also cuts a
+round hole the rule's **corner relief** across (the size is its diameter) at the root of that
+seam, where the two bends' tangent lines cross on the base, so the closed corner does not tear
+there. The hole is in the folded part, the flat pattern and the DXF (an arc). A corner whose
+flanges are not closed toward each other has no seam to weld and keeps its notch, with a
+warning. `round`
 and `rectangular` cut a relief the size of the rule's **corner relief** across, centred on the corner where
 the two bend lines meet: out of the base a round with half that size as its radius, or a square
 with half that size as its side, and both bends stop where it begins, cut straight across. The
@@ -173,7 +179,7 @@ left out, each with a warning saying which the other is.
 ```
 
 The rule's shape and size are the default. An edge flange feature can choose its own for the
-corners its flanges make: `corner_relief_shape` (`notch`, `round`, `rectangular` or `tear`) and
+corners its flanges make: `corner_relief_shape` (`notch`, `round`, `rectangular`, `tear` or `laser_weld`) and
 `corner_relief` (the size across, a length or an expression) in `sheet.flange`, or Corner Relief
 Shape and Corner Relief in the Flange dialog. In the dialog, Rule as the shape and an empty size
 take the rule's; either one left out follows the rule while the other is the feature's. Corners are

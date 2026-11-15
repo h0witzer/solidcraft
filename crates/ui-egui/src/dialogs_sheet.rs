@@ -44,8 +44,8 @@ pub(crate) const RULE_FIELDS: [(&str, &str); 8] = [
     ("gap", "Flange Gap"),
 ];
 /// The corner relief shapes the manager offers (the rule's `corner_relief_shape`) and their labels.
-pub(crate) const RELIEF_SHAPES: [&str; 4] = ["notch", "round", "rectangular", "tear"];
-const RELIEF_SHAPE_LABELS: [&str; 4] = ["Notch", "Round", "Rectangular", "Tear"];
+pub(crate) const RELIEF_SHAPES: [&str; 5] = ["notch", "round", "rectangular", "tear", "laser_weld"];
+const RELIEF_SHAPE_LABELS: [&str; 5] = ["Notch", "Round", "Rectangular", "Tear", "Laser weld"];
 /// How the manager's rule reads bend angles in the DXF bend notes (the rule's `angle_display`)
 /// and their labels.
 pub(crate) const ANGLE_DISPLAYS: [&str; 2] = ["bend", "included"];
@@ -54,7 +54,7 @@ const ANGLE_DISPLAY_LABELS: [&str; 2] = ["Bend", "Included"];
 /// the shapes of `RELIEF_SHAPES` in order.
 /// Which way a further bend turns, against the bend before it.
 const BEND_WAY_LABELS: [&str; 2] = ["Same way", "Other way"];
-const FLANGE_RELIEF_LABELS: [&str; 5] = ["Rule", "Notch", "Round", "Rectangular", "Tear"];
+const FLANGE_RELIEF_LABELS: [&str; 6] = ["Rule", "Notch", "Round", "Rectangular", "Tear", "Laser weld"];
 
 /// One stretch of a picked edge in the Flange dialog: `from`…`to` as fractions of the stretch the
 /// sheet still has of the edge, and the stretch's own angle, height and side (text, as typed).

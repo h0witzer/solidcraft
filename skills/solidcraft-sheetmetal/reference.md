@@ -18,7 +18,7 @@ numbers (fractions 0…1), so an expression there is refused.
 ```
 Keys: `name` (new or existing), `thickness`, `k_factor`, `bend_radius`, `relief_width`,
 `relief_depth`, `corner_relief`, `hem_gap`, `gap` (expressions; `Thickness` inside a rule means
-that rule's thickness), `corner_relief_shape` (`notch`|`round`|`rectangular`|`tear`),
+that rule's thickness), `corner_relief_shape` (`notch`|`round`|`rectangular`|`tear`|`laser_weld`),
 `angle_display` (`bend`|`included`), `active`, `delete`.
 
 - `k_factor` is validated to 0…1, `bend_radius` to at least 0.

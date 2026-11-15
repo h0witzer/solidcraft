@@ -132,6 +132,7 @@ pub fn corner_relief(c: r::CornerRelief) -> k::CornerRelief {
         r::CornerRelief::Tear => k::CornerRelief::Tear,
         r::CornerRelief::Round => k::CornerRelief::Round,
         r::CornerRelief::Square => k::CornerRelief::Square,
+        r::CornerRelief::Weld => k::CornerRelief::Weld,
     }
 }
 
@@ -143,6 +144,7 @@ pub fn record_corner_relief(c: k::CornerRelief) -> r::CornerRelief {
         k::CornerRelief::Tear => r::CornerRelief::Tear,
         k::CornerRelief::Round => r::CornerRelief::Round,
         k::CornerRelief::Square => r::CornerRelief::Square,
+        k::CornerRelief::Weld => r::CornerRelief::Weld,
     }
 }
 
