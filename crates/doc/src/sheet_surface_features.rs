@@ -1401,6 +1401,9 @@ impl SurfaceSheet {
         for pair in &mut self.junctions {
             pair.swap(0, 1);
         }
+        for (pair, _) in &mut self.junction_tears {
+            pair.swap(0, 1);
+        }
         for c in &mut self.sheet.cuts {
             c.region = r(&c.region);
         }

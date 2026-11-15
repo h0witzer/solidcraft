@@ -2638,59 +2638,11 @@ pub(crate) fn settle(
     Ok(notes)
 }
 
-/// Where the flat `dev` of `sheet` is cut along the `junctions` of split edges (see
-/// [`SurfaceSheet::slits`]): at each junction whose two bends turn to opposite sides, along the
-/// line the two zones' ends share there, from the deeper of the bends' tangent lines on the panel
-/// they stand on out to the nearer of their flanges' far edges (each flange's farthest corner on
-/// that line). Past that only the longer flange's material lies on the line: nothing of the other
-/// is left to part.
-fn junction_slits(sheet: &Sheet, dev: &Development, junctions: &[[usize; 2]]) -> Vec<[Vec2; 2]> {
-    let mut out = Vec::new();
-    for &[ends, starts] in junctions {
-        let bend = |j: usize| match sheet.joints.get(j) {
-            Some(Joint { b, kind: JointKind::Bend(bend), .. }) => Some((*b, bend.toward_material, bend.length)),
-            _ => None,
-        };
-        let zone = |j: usize| dev.zones.iter().find(|z| z.joint == j);
-        let (Some((bx, toward_x, length)), Some((by, toward_y, _)), Some(zx), Some(zy)) = (bend(ends), bend(starts), zone(ends), zone(starts)) else {
-            continue;
-        };
-        if toward_x == toward_y {
-            continue;
-        }
-        // The one bend ends at the junction and the other starts there: the line across from the
-        // panel they stand on toward their flanges.
-        let (near_x, near_y) = (zx.near[1], zy.near[0]);
-        let Some(n) = (zx.far[1] - near_x).normalized() else { continue };
-        // How far out along that line a flange reaches: its panel's farthest corner on it.
-        let reach = |an: &Anchor, at: f64| -> Option<f64> {
-            let place = dev.placements.get(an.panel).copied().flatten()?;
-            let corner = an.origin + an.dir * at;
-            let region = &sheet.panels.get(an.panel)?.region;
-            region
-                .outer
-                .segs
-                .iter()
-                .map(Seg2::start)
-                .filter(|v| (*v - corner).dot(an.dir).abs() <= 1e-9)
-                .map(|v| place.point(v).dot(n))
-                .reduce(f64::max)
-        };
-        let (Some(far_x), Some(far_y)) = (reach(&bx, length), reach(&by, 0.0)) else { continue };
-        let (start, end) = (near_x.dot(n).min(near_y.dot(n)), far_x.min(far_y));
-        if end > start + 1e-9 {
-            let along = near_x.dot(n);
-            out.push([near_x + n * (start - along), near_x + n * (end - along)]);
-        }
-    }
-    out
-}
-
 /// The stretches of the cut `[a, b]` that lie in the material of the flat `regions`: the line split
 /// where it crosses their loops, each piece kept where its middle lies inside an outline and in
 /// none of its holes. A notch through a junction's far edge leaves the cut from the bend line out
 /// to the notch's edge; where it takes the whole line, no cut is left.
-fn in_material(regions: &[Region2], [a, b]: [Vec2; 2]) -> Vec<[Vec2; 2]> {
+pub(crate) fn in_material(regions: &[Region2], [a, b]: [Vec2; 2]) -> Vec<[Vec2; 2]> {
     let line = [Seg2::Line { a, b }];
     let mut at = vec![0.0, 1.0];
     for l in regions.iter().flat_map(|r| std::iter::once(&r.outer).chain(&r.holes)) {
@@ -3208,6 +3160,14 @@ pub struct SurfaceSheet {
     /// either side of it, and the two stretches part along it, as they do folded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub slits: Vec<[Vec2; 2]>,
+    /// The junctions of split edges whose segment asked for a `tear` (`sheet.flange`'s
+    /// `segments[].relief`), each as [`SurfaceSheet::junctions`] has the pair, with how far
+    /// before the deeper bend line the slit starts. A tear is the junction's own slit, made
+    /// whichever sides the two bends turn to and started this far into the panel they stand on
+    /// (see [`SurfaceSheet::slits`]). A relief that takes material out is a cut of the sheet's
+    /// ([`SurfaceSheet::relieve_junction`]) and needs no record.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub junction_tears: Vec<([usize; 2], f64)>,
     /// Why a relief asked for was not cut, as the sheet was last built.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
@@ -3580,6 +3540,7 @@ impl SurfaceSheet {
             corner_reliefs: Vec::new(),
             junctions: Vec::new(),
             slits: Vec::new(),
+            junction_tears: Vec::new(),
             notes: c.notes.clone(),
             // The engravings Convert keeps; Recognize reads a body's own once it is built.
             recesses: c.recesses.clone(),
@@ -3772,6 +3733,7 @@ impl SurfaceSheet {
             corner_reliefs: Vec::new(),
             junctions: Vec::new(),
             slits: Vec::new(),
+            junction_tears: Vec::new(),
             notes: Vec::new(),
             recesses: Vec::new(),
             pockets: Vec::new(),
@@ -4231,7 +4193,7 @@ impl SurfaceSheet {
 
     /// Settles where the sheet's bends end (see [`settle`]), from where its development `dev`
     /// folds its panels.
-    fn settle(&mut self, dev: &Development) -> Result<()> {
+    pub(crate) fn settle(&mut self, dev: &Development) -> Result<()> {
         let folded = fold_onto(&self.sheet, dev, &self.places)?;
         let places: Vec<Rigid3> =
             folded.places.iter().copied().collect::<Option<_>>().ok_or_else(|| DocError::Invalid("a panel of the sheet has no place".into()))?;
@@ -4294,7 +4256,7 @@ impl SurfaceSheet {
 
     /// Keeps the flat `regions` of the development `dev` (joined from its `pieces`), with its
     /// bends and their tabs, rolls and their lines, and its panels' rims.
-    fn laid_out(&mut self, dev: &Development, pieces: &[(Piece, Region2)], regions: Vec<Region2>) -> Result<()> {
+    pub(crate) fn laid_out(&mut self, dev: &Development, pieces: &[(Piece, Region2)], regions: Vec<Region2>) -> Result<()> {
         self.rims = crate::sheet::rims(&self.sheet, dev, pieces, &self.sketch_curves, &self.recipes);
         self.bends = dev
             .zones
@@ -4318,7 +4280,10 @@ impl SurfaceSheet {
             })
             .collect();
         self.regions = regions;
-        self.slits = junction_slits(&self.sheet, dev, &self.junctions).into_iter().flat_map(|s| in_material(&self.regions, s)).collect();
+        self.slits = crate::sheet_surface_junction::junction_slits(&self.sheet, dev, &self.junctions, &self.junction_tears)
+            .into_iter()
+            .flat_map(|s| in_material(&self.regions, s))
+            .collect();
         self.rolls = self.sheet.panels.iter().filter(|p| p.surface != Surface::Plane).count();
         self.roll_lines =
             if self.rolls > 0 { roll_lines(&self.sheet, &fold_onto(&self.sheet, dev, &self.places)?, &self.regions) } else { Vec::new() };
