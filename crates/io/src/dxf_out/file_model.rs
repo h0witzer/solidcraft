@@ -729,9 +729,7 @@ mod tests {
             Some("211"),
         ];
         for (style_index, (name, color, kind, weight)) in
-            [("MEASURED", "1", "Continuous", "50"), ("OMITTED", "3", "DASHED", "-3"), ("ZERO_WEIGHT", "8", "HIDDEN", "0")]
-                .into_iter()
-                .enumerate()
+            [("MEASURED", "1", "Continuous", "50"), ("OMITTED", "3", "DASHED", "-3"), ("ZERO_WEIGHT", "8", "HIDDEN", "0")].into_iter().enumerate()
         {
             x2_wire_fields(&layers[style_index + 1].1, &[(2, &[name]), (62, &[color]), (6, &[kind])]);
             assert_eq!(x2_wire_values(&layers[style_index + 1].1, 370), [weight]);

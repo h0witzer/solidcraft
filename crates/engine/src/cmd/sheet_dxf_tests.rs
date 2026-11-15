@@ -1565,7 +1565,8 @@ fn legacy_caller_circle_keeps_an_admitted_sub_writer_precision_arc() {
         let shapes = super::flat_loop_shapes(&flat[0].outer, style).expect("admitted legacy whole circle remains exportable");
         assert!(matches!(shapes.as_slice(), [DxfShape::Circle { c, r }] if *c == center && *r == 8.0));
     }
-    let dxf = super::surface_dxf(&session, &sheet, &super::DxfOptions::default()).expect("the real default flat-pattern exporter retains its whole-circle result");
+    let dxf = super::surface_dxf(&session, &sheet, &super::DxfOptions::default())
+        .expect("the real default flat-pattern exporter retains its whole-circle result");
     let es = entities(&dxf);
     assert_eq!((count(&es, "CIRCLE"), count(&es, "ARC"), count(&es, "LINE")), (1, 0, 0));
 }
