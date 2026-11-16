@@ -9,13 +9,13 @@
 //! Call on validated records. Evaluation of a well-formed record never panics: a point that
 //! cannot be had (a vanishing weight, a Newton step that does not converge) is `None`.
 use super::normal_section::normal_section;
-use super::pcurve::Error;
 use super::{Curve, Curve2, Frame, Surface};
 use crate::bspline::MAX_SPLINE_DEGREE;
 use crate::prelude::*;
 use crate::tess::partials::{Partials, tabulate, trig_derivative};
 use crate::tess::uv::{self, Domain};
-use crate::tess::{EvalCurve, EvalSurface, MAX_EVAL_KNOTS, MAX_EVAL_POINTS};
+use crate::tess::{EvalCurve, EvalSurface, MAX_EVAL_KNOTS, MAX_EVAL_POINTS, from_kernel, from_kernel3, to_kernel};
+use solidcore_ops::pcurve::Error;
 use solidcore_record::Vec3;
 use std::f64::consts::{FRAC_PI_2, TAU};
 
@@ -97,10 +97,12 @@ impl SurfaceEval {
             Ok(SurfaceEval::Eval(e, dom))
         };
         match s {
-            Surface::Plane { origin, u_axis, v_axis } => eval(EvalSurface::Plane { origin: v3(*origin), du: v3(*u_axis), dv: v3(*v_axis) }),
+            Surface::Plane { origin, u_axis, v_axis } => {
+                eval(EvalSurface::Plane { origin: to_kernel(v3(*origin)), du: to_kernel(v3(*u_axis)), dv: to_kernel(v3(*v_axis)) })
+            }
             Surface::PlaneThrough { origin, u_point, v_point } => {
                 let o = v3(*origin);
-                eval(EvalSurface::Plane { origin: o, du: v3(*u_point) - o, dv: v3(*v_point) - o })
+                eval(EvalSurface::Plane { origin: to_kernel(o), du: to_kernel(v3(*u_point) - o), dv: to_kernel(v3(*v_point) - o) })
             }
             Surface::Cylinder { frame, radius } => Ok(SurfaceEval::Cylinder { axes: Axes::new(frame), radius: *radius }),
             Surface::Cone { frame, radius_at_origin, half_angle } => {
@@ -112,6 +114,7 @@ impl SurfaceEval {
             }
             // A label with no (u, v) of its own: its face evaluates its NURBS form.
             Surface::BallPatch { .. } => Err(unsupported("a ball patch's label (evaluate its NURBS form)")),
+            Surface::Blend { .. } => Err(unsupported("a blend's label (evaluate its NURBS form)")),
             Surface::Spline { u_knots, v_knots, points } => {
                 let rows: Vec<Vec<[f64; 4]>> = points.iter().map(|r| r.iter().map(|p| [p[0], p[1], p[2], 1.0]).collect()).collect();
                 eval(nurbs(u_knots, v_knots, &rows)?)
@@ -130,7 +133,7 @@ impl SurfaceEval {
                 let axis = v3(*axis).normalized().ok_or_else(|| Error::Invalid("revolution axis".into()))?;
                 // Column-major: matrix[column][row].
                 let transform = [0, 1, 2].map(|r| [matrix[0][r], matrix[1][r], matrix[2][r], matrix[3][r]]);
-                eval(EvalSurface::Revolved { profile, origin: v3(*origin), axis, transform, swap: !forward })
+                eval(EvalSurface::Revolved { profile, origin: to_kernel(v3(*origin)), axis: to_kernel(axis), transform, swap: !forward })
             }
         }
     }
@@ -154,7 +157,7 @@ impl SurfaceEval {
             return None;
         }
         Some(match self {
-            SurfaceEval::Eval(e, _) => return e.derivs(u, v),
+            SurfaceEval::Eval(e, _) => return e.derivs(u, v).map(from_kernel3),
             SurfaceEval::Cylinder { axes: a, radius } => {
                 let (r, dr) = a.radial(u);
                 (a.o + a.z * v + r * *radius, dr * *radius, a.z)
@@ -190,7 +193,7 @@ impl SurfaceEval {
             return None;
         }
         Some(match self {
-            SurfaceEval::Eval(e, _) => return e.second(u, v),
+            SurfaceEval::Eval(e, _) => return e.second(u, v).map(from_kernel3),
             SurfaceEval::Cylinder { axes: a, radius } => (a.radial(u).0 * -*radius, Vec3::ZERO, Vec3::ZERO),
             SurfaceEval::Cone { axes: a, radius_at_origin, slope } => {
                 let (r, dr) = a.radial(u);
@@ -224,7 +227,7 @@ impl SurfaceEval {
         let at_v = |k: usize| trig_derivative(v, k);
         let lift = |a: &Axes, i: usize, j: usize, x: Vec3| if i == 0 && j == 0 { a.o + x } else { x };
         match self {
-            SurfaceEval::Eval(e, _) => e.partials(u, v),
+            SurfaceEval::Eval(e, _) => e.partials(u, v).map(crate::tess::partials::from_kernel),
             SurfaceEval::Cylinder { axes: a, radius } => tabulate(|i, j| {
                 let height = match j {
                     0 if i == 0 => a.z * v,
@@ -266,7 +269,7 @@ impl SurfaceEval {
     /// ([`uv::project_with`]), which must serve this surface only.
     pub fn project_with(&self, starts: &uv::Starts, p: Vec3, near: Option<[f64; 2]>, accept: f64) -> Option<[f64; 2]> {
         let q = match self {
-            SurfaceEval::Eval(e, dom) => return uv::project_with(e, dom, starts, p, near, accept),
+            SurfaceEval::Eval(e, dom) => return uv::project_with(e, dom, starts, to_kernel(p), near, accept),
             SurfaceEval::Cylinder { axes, .. } => {
                 let [a, b, h] = axes.local(p);
                 [angle(a, b, near.map(|n| n[0])), h]
@@ -445,7 +448,7 @@ impl CurveEval {
                 (p, d, Vec3::ZERO)
             }
             CurveEval::Spline(c) => match c.derivatives(t, 2)?.as_slice() {
-                [p, d1, d2] => (*p, *d1, *d2),
+                [p, d1, d2] => (from_kernel(*p), from_kernel(*d1), from_kernel(*d2)),
                 _ => return None,
             },
             CurveEval::Intersection(x) => return x.jet(t),
@@ -476,7 +479,7 @@ impl CurveEval {
                 let (a, b) = (*p.get(i)?, *p.get(i + 1)?);
                 Some((a + (b - a) * (t - i as f64), b - a))
             }
-            CurveEval::Spline(c) => c.eval(t),
+            CurveEval::Spline(c) => c.eval(t).map(|(p, d)| (from_kernel(p), from_kernel(d))),
             _ => None,
         }
     }
@@ -585,11 +588,7 @@ const GAUSS4: [(f64, f64); 4] = [
     (0.861_136_311_594_052_6, 0.347_854_845_137_453_8),
 ];
 
-/// Gauss pieces to each knot span of a pcurve: one for a straight one (on a plane the integrand is
-/// then a polynomial the Gauss rule takes exactly), two for a curved one; the most one pcurve
-/// takes, past which they are spread evenly over it; and how many Gauss panels cover a v range.
-const FLUX_SPAN_PIECES: [usize; 2] = [1, 2];
-const FLUX_MAX_PIECES: usize = 64;
+/// How many Gauss panels cover a v range.
 const FLUX_PANELS: usize = 4;
 
 /// The flux of `field` through a face, `∫∫ field(S)·(S_u × S_v) du dv` over the (u, v) region its
@@ -616,32 +615,13 @@ pub fn face_flux(s: &SurfaceEval, v0: f64, loops: &[Vec<(&Curve2, bool)>], field
         // `∫ −G u′ dt` over the pcurve, Gauss–Legendre on each piece; a use against the pcurve's
         // direction runs it backwards.
         let sign = if *forward { 1.0 } else { -1.0 };
-        for [a, b] in flux_pieces(c)? {
+        for [a, b] in solidcore_ops::pcurve::flux_pieces(c)? {
             let (mid, half) = (0.5 * (a + b), 0.5 * (b - a));
             for (x, w) in GAUSS4 {
-                let (p, d) = super::pcurve::eval_d1(c, mid + half * x)?;
+                let (p, d) = solidcore_ops::pcurve::eval_d1(c, mid + half * x)?;
                 total -= sign * w * half * g(p[0], p[1])? * d[0];
             }
         }
     }
     total.is_finite().then_some(total)
-}
-
-/// The pieces `face_flux` integrates pcurve `c` in: [`FLUX_SPAN_PIECES`] to each of its knot
-/// spans, or [`FLUX_MAX_PIECES`] spread evenly over it where that is more.
-fn flux_pieces(c: &Curve2) -> Option<Vec<[f64; 2]>> {
-    let [t0, t1] = c.interval()?;
-    let (knots, count, rational) = match c {
-        Curve2::Spline { knots, points } => (knots, points.len(), false),
-        Curve2::RationalSpline { knots, homogeneous } => (knots, homogeneous.len(), true),
-    };
-    let straight = !rational && knots.len().checked_sub(count + 1)? == 1;
-    let each = FLUX_SPAN_PIECES[usize::from(!straight)];
-    let spans: Vec<[f64; 2]> = knots.windows(2).filter(|w| w[1] > w[0] && w[0] >= t0 && w[1] <= t1).map(|w| [w[0], w[1]]).collect();
-    let even = |n: usize, [a, b]: [f64; 2]| (0..n).map(move |k| [a + (b - a) * k as f64 / n as f64, a + (b - a) * (k + 1) as f64 / n as f64]);
-    Some(if spans.is_empty() || spans.len() * each > FLUX_MAX_PIECES {
-        even(FLUX_MAX_PIECES, [t0, t1]).collect()
-    } else {
-        spans.into_iter().flat_map(|s| even(each, s)).collect()
-    })
 }

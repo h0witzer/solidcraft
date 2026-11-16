@@ -1,19 +1,10 @@
-//! Readable names of a sheet metal body's faces, from the sheet itself: `<panel>:top`,
-//! `<panel>:bottom` and `<panel>:rim.<edge>` (the names sketches on sheet faces keep, see
-//! [`SheetBody::panel_face_at`]); a bend's curved faces, `<flange>:bend.inner` and
-//! `<flange>:bend.outer`; and where a flange's panel runs on past its bend's ends (toward a
-//! neighbouring flange), the rim along the bend there, `<flange>:rim.ext0` and `rim.ext1`. A panel
-//! is `base`, or is named after the feature that made it and the edge it was made on
-//! (`F12.base.l2`, a flange on the base's sketch line `l2`; `F15.F12.base.l2.far`, a return on
-//! that flange's far edge; see `tag_panels` in `eval_more`), so the names say what each face is
-//! and stay with it when sizes change, other flanges come and go, or a feature's picks are
-//! reordered. These are the flat model's (`SheetBody`).
-//!
-//! A sheet made from surfaces has no names of its own: it reports to the model what each face of
-//! its body was made for (`FaceNamer::part`, a [`SheetPart`]), and the model names the face from
-//! that, as it names every feature's faces (#7990, see `lineage::sheet_lineage`).
+//! What each face of a folded sheet made from surfaces (#6748) was made for. A sheet has no names
+//! of its own: it reports to the model what each face of its body was made for
+//! (`FaceNamer::part`, a [`SheetPart`]), and the model names the face from that, as it names
+//! every feature's faces (#7990, see `lineage::sheet_lineage`).
 
-use solidcore_record::{Loop2, Plane, Seg2, Vec2, Vec3};
+use solidcore_record::{Loop2, Seg2, Vec2};
+use solidcraft_develop::prelude::*;
 use solidcraft_geom::prelude::*;
 
 use solidcore_record::Region2;
@@ -22,165 +13,14 @@ use solidcraft_develop::{CornerRelief, Development, JointKind, Sheet, Surface};
 use crate::sheet_surface::Piece;
 use crate::sheet_surface_convert::{HoleRecord, PanelMade, RimEdge, SheetFace, SheetPart};
 
-use super::SheetBody;
-use crate::{ModelBody, ModelState, SurfaceSheet, apply_point, mat_inverse};
-
-/// The share of a face's sample points that must agree on a name for the face to take it.
-const AGREE: f64 = 0.8;
-
-/// The sine of the angle within which a flat face's plane faces along a triangle's normal.
-const FACING: f64 = 1e-3;
-
-impl SheetBody {
-    /// The readable name of the face of this sheet a point lies on (sheet coordinates, within
-    /// `tol`, kept below a quarter of the thickness): a flat face's (see
-    /// [`panel_face_at`](Self::panel_face_at)), else a bend's inner or outer face.
-    pub fn face_name_at(&self, p: Vec3, tol: f64) -> Option<String> {
-        self.panel_face_at(p, tol).map(|(name, _)| name).or_else(|| self.bend_face_at(p, tol)).or_else(|| self.ext_rim_at(p, tol))
-    }
-
-    /// [`face_name_at`](Self::face_name_at) for a point on a face whose normal is `normal` (a
-    /// mesh triangle's, either way round): a flat face's name is taken only where its plane faces
-    /// along `normal`. A rim is as narrow as the sheet is thick, so the centres of its triangles
-    /// can lie within `tol` of the panel's top or bottom face beside it.
-    fn face_name_facing(&self, p: Vec3, normal: Vec3, tol: f64) -> Option<String> {
-        let facing = |plane: &Plane| plane.normal().cross(normal).len() < FACING;
-        match self.panel_face_at(p, tol) {
-            Some((name, plane)) if facing(&plane) => Some(name),
-            Some(_) => self
-                .rim_face_at(p, tol)
-                .filter(|(_, plane)| facing(plane))
-                .map(|(name, _)| name)
-                .or_else(|| self.bend_face_at(p, tol))
-                .or_else(|| self.ext_rim_at(p, tol)),
-            None => self.bend_face_at(p, tol).or_else(|| self.ext_rim_at(p, tol)),
-        }
-    }
-
-    /// The rim of a flange's panel along its bend line, where the panel runs on past the
-    /// bend's start (`<flange>:rim.ext0`) or end (`rim.ext1`).
-    fn ext_rim_at(&self, p: Vec3, tol: f64) -> Option<String> {
-        if self.flat {
-            return None;
-        }
-        let tol = tol.min(self.t * 0.25);
-        for (pi, region) in self.panels() {
-            let Some(i) = pi else { continue };
-            let Some(f) = self.flanges.get(i) else { continue };
-            let Some(inverse) = mat_inverse(&self.world(pi)) else { continue };
-            let q = apply_point(&inverse, p);
-            if q.z < -tol || q.z > self.t + tol {
-                continue;
-            }
-            let q2 = Vec2::new(q.x, q.y);
-            let pts = region.outer.ccw().polyline(1e-3);
-            let m = pts.len();
-            for k in 0..m {
-                let (Some(&a), Some(&b)) = (pts.get(k), pts.get((k + 1) % m)) else { continue };
-                let d = b - a;
-                if d.len2() < 1e-18 || self.rim_edge(pi, a, b, k).as_deref() != Some("bend") {
-                    continue;
-                }
-                let along = (q2 - a).dot(d) / d.len2();
-                if !(-1e-9..=1.0 + 1e-9).contains(&along) || ((a + d * along) - q2).len() > tol {
-                    continue;
-                }
-                let end = if (q2 - f.p).dot(f.d) < f.len / 2.0 { "ext0" } else { "ext1" };
-                return Some(format!("{}:rim.{end}", self.panel_name(pi)));
-            }
-        }
-        None
-    }
-
-    /// The curved face of a bend a point lies on: `<flange>:bend.inner` (the bend's radius) or
-    /// `<flange>:bend.outer` (the radius plus the thickness).
-    fn bend_face_at(&self, p: Vec3, tol: f64) -> Option<String> {
-        if self.flat {
-            return None;
-        }
-        let tol = tol.min(self.t * 0.25);
-        for (i, f) in self.flanges.iter().enumerate() {
-            let Some((world, o, d, start, toward)) = self.bend_frame(f) else { continue };
-            let Some(inverse) = mat_inverse(&world) else { continue };
-            let q = apply_point(&inverse, p) - o;
-            let u = q.dot(d);
-            let (lo, hi) = self.zone_reach(f);
-            if u < lo - tol || u > hi + tol {
-                continue;
-            }
-            let radial = q - d * u;
-            let rho = radial.len();
-            let side = if (rho - f.radius).abs() <= tol {
-                "inner"
-            } else if (rho - f.radius - self.t).abs() <= tol {
-                "outer"
-            } else {
-                continue;
-            };
-            let phi = radial.dot(toward).atan2(radial.dot(start));
-            if phi < -1e-6 || phi > f.angle.abs() + 1e-6 {
-                continue;
-            }
-            return Some(format!("{}:bend.{side}", self.panel_name(Some(i))));
-        }
-        None
-    }
-}
+use crate::{ModelBody, ModelState, SurfaceSheet};
 
 /// The readable sheet names of a body's faces (by B-rep face index), as
-/// [`sheet_face_name`](super::sheet_face_name)s: `sheet:<body>:<panel>:<side>`. `None` for a face
-/// the sheet does not name (a hole's wall, a pocket's floor) and for every face of a body that is
-/// no folded sheet of `st`.
-pub fn body_sheet_face_names(st: &ModelState, b: &ModelBody) -> Vec<Option<String>> {
-    // A sheet made from surfaces names none: it reports what each face was made for, and the model
-    // names its faces (#7990).
-    if st.surface_sheets.iter().any(|s| s.body == b.name) {
-        return vec![None; b.body.face_count()];
-    }
-    let m = b.mesh();
-    let nf = m.tri_face.iter().map(|f| *f as usize + 1).max().unwrap_or(0);
-    let Some(sheet) = st.sheets.iter().find(|s| s.body == b.name && !s.flat) else { return vec![None; nf] };
-    // Triangle centres lie inside a face, off a curved one by its facets' sag: a fifth of the
-    // thickness takes them and still tells a flat face from the rim beside it.
-    voted(&m, nf, sheet.t * 0.2, &b.name, |p, n, tol| sheet.face_name_facing(p, n, tol))
-}
-
-/// Each face's name, by the vote of up to 48 of its triangles' centres: the name `name_at`
-/// gives a point with the triangle's normal, kept where at least [`AGREE`] of them agree.
-fn voted<M: std::ops::Deref<Target = solidcraft_geom::Mesh>>(
-    m: &M,
-    nf: usize,
-    tol: f64,
-    body: &str,
-    name_at: impl Fn(Vec3, Vec3, f64) -> Option<String>,
-) -> Vec<Option<String>> {
-    let mut votes: Vec<Vec<(String, usize)>> = vec![Vec::new(); nf];
-    let mut total = vec![0usize; nf];
-    for (t, f) in m.triangles.iter().zip(&m.tri_face) {
-        let (Some(v), Some(n), Some([a, b2, c])) = (votes.get_mut(*f as usize), total.get_mut(*f as usize), m.tri(t)) else { continue };
-        let Some(normal) = (b2 - a).cross(c - a).normalized() else { continue };
-        // At most a few dozen points a face: enough to tell its name, cheap on a fine mesh.
-        if *n >= 48 {
-            continue;
-        }
-        *n += 1;
-        if let Some(name) = name_at((a + b2 + c) * (1.0 / 3.0), normal, tol) {
-            match v.iter_mut().find(|(x, _)| *x == name) {
-                Some(x) => x.1 += 1,
-                None => v.push((name, 1)),
-            }
-        }
-    }
-    votes
-        .into_iter()
-        .zip(total)
-        .map(|(v, n)| {
-            v.into_iter()
-                .max_by_key(|x| x.1)
-                .filter(|(_, k)| *k as f64 >= AGREE * n.max(1) as f64)
-                .map(|(name, _)| super::sheet_face_name(body, &name))
-        })
-        .collect()
+/// [`sheet_face_name`](super::sheet_face_name)s: `None` for every face. No sheet in `_st` names
+/// its faces so: a sheet made from surfaces reports what each face was made for, and the model
+/// names its faces (#7990).
+pub fn body_sheet_face_names(_st: &ModelState, b: &ModelBody) -> Vec<Option<String>> {
+    vec![None; b.body.face_count()]
 }
 
 /// What the builder of a folded sheet made from surfaces sews a face for (see
@@ -204,8 +44,9 @@ pub(crate) struct FaceNamer<'a> {
     /// Each panel's rims in the flat, and what made each (see [`rim_edges`]).
     rims: Vec<Vec<(Vec2, Vec2, Option<RimEdge>)>>,
     /// Each corner relief cut from the flat (see [`Development::cuts`]), with the panels the two
-    /// bends whose corner it is make: the corner whose bends' center lines cross inside it.
-    reliefs: Vec<(&'a Region2, [String; 2])>,
+    /// bends whose corner it is make (the corner whose bends' center lines cross inside it), and
+    /// where along its outline its walls are ranked from (see [`relief_start`]).
+    reliefs: Vec<(&'a Region2, [String; 2], Option<(f64, f64)>)>,
 }
 
 impl<'a> FaceNamer<'a> {
@@ -229,21 +70,24 @@ impl<'a> FaceNamer<'a> {
             })
             .collect();
         let key = |j: usize| sheet.joints.get(j).and_then(|j| sheet.panels.get(j.b.panel)).map(|p| p.name.clone());
-        let centers: Vec<(Vec2, [String; 2])> = sheet
+        // Each relieved corner's middle, and its two bends, by the panels they make and their
+        // joints, in the order of the panels' keys.
+        let centers: Vec<(Vec2, [String; 2], [usize; 2])> = sheet
             .corners
             .iter()
             .filter(|c| matches!(c.relief, CornerRelief::Round | CornerRelief::Square))
             .filter_map(|c| {
-                let mut panels = [key(c.joints[0])?, key(c.joints[1])?];
-                panels.sort();
-                Some((corner_center(dev, c.joints)?, panels))
+                let mut bends = [(key(c.joints[0])?, c.joints[0]), (key(c.joints[1])?, c.joints[1])];
+                bends.sort();
+                let [(ka, ja), (kb, jb)] = bends;
+                Some((corner_center(dev, c.joints)?, [ka, kb], [ja, jb]))
             })
             .collect();
         let reliefs = dev
             .cuts
             .iter()
-            .filter_map(|cut| match centers.iter().filter(|(c, _)| cut.contains(*c)).collect::<Vec<_>>().as_slice() {
-                [(_, panels)] => Some((cut, panels.clone())),
+            .filter_map(|cut| match centers.iter().filter(|(c, ..)| cut.contains(*c)).collect::<Vec<_>>().as_slice() {
+                [(_, panels, joints)] => Some((cut, panels.clone(), relief_start(dev, &cut.outer.segs, *joints))),
                 _ => None,
             })
             .collect();
@@ -254,7 +98,8 @@ impl<'a> FaceNamer<'a> {
     /// (see [`SheetPart`]), and where it starts along that part's definition where faces made for
     /// one part need telling apart (see [`ranked`]): a panel's cap, or a rim by what made its edge;
     /// a bend's curved face or end by the panel the bend makes; a tab's cap, along its bend; a
-    /// corner relief's wall, along the relief's outline; a hole's wall (see [`HoleRecord`],
+    /// corner relief's wall by its corner's two bends, along the relief's outline from where it
+    /// meets the first bend's zone (see [`relief_start`]); a hole's wall (see [`HoleRecord`],
     /// `holes`), along its sketch curve. None for a wall nothing says what made (the model names
     /// it from geometry). A fold's piece's caps and rims are its panel's (see [`root`]): pieces of
     /// the faces the fold parted.
@@ -268,12 +113,17 @@ impl<'a> FaceNamer<'a> {
         let small = self.sheet.thickness * 1e-3;
         // A wall nothing else made: a corner relief's, else a hole's.
         let cut = |run: [Vec2; 3]| -> Option<(SheetPart, Option<f64>)> {
-            for (region, panels) in &self.reliefs {
+            for (region, panels, start) in &self.reliefs {
                 let segs = &region.outer.segs;
                 let place =
                     |x: Vec2| segs.iter().enumerate().find(|(_, g)| on_seg(g, x, small)).map(|(k, g)| k as f64 + g.closest_param(x).clamp(0.0, 1.0));
-                if let [Some(a), Some(_), Some(b)] = run.map(place) {
-                    return Some((SheetPart::Relief { panels: panels.clone() }, Some(a.min(b))));
+                if let [Some(_), Some(m), Some(_)] = run.map(place) {
+                    // Its place along the outline from where the corner's walls are ranked, the way
+                    // they run (see `relief_start`), by the wall's middle: no wall runs across
+                    // that start.
+                    let n = segs.len() as f64;
+                    let along = start.map_or(m, |(from, way)| ((m - from) * way).rem_euclid(n));
+                    return Some((SheetPart::Relief { panels: panels.clone() }, Some(along)));
                 }
             }
             let (feature, curve, along) = hole_at(self.sheet, self.dev, holes, run)?;
@@ -337,6 +187,73 @@ fn corner_center(dev: &Development, joints: [usize; 2]) -> Option<Vec2> {
         return None;
     }
     Some(p + u * ((q - p).cross(w) / cross))
+}
+
+/// Where along the outline `segs` of the relief of a corner of the bends `joints` (in the order of
+/// the keys of the panels they make) its walls are ranked from, a segment's index and its
+/// parameter there, and which way (1 the way the outline runs, -1 against it): where the outline
+/// meets the zone of the first bend in the flat of `dev`, on its edge on the panel the bend stands
+/// on, going away from the zone; else on its edge on the panel it makes; else the second bend's
+/// alike. Where the outline meets a zone's edge, one wall ends and the next starts, so no wall runs
+/// across it, and the place is the corner's own: never the flat's axes, where a round relief's
+/// outline starts. None where the outline crosses none of those edges just once.
+fn relief_start(dev: &Development, segs: &[Seg2], joints: [usize; 2]) -> Option<(f64, f64)> {
+    for j in joints {
+        let Some(zone) = dev.zones.iter().find(|z| z.joint == j) else { continue };
+        for (edge, other) in [(zone.near, zone.far), (zone.far, zone.near)] {
+            let [p, q] = edge;
+            let Some(along) = (q - p).normalized() else { continue };
+            // Square to the edge, away from the zone (from its other edge).
+            let away = along.perp() * (p - other[0]).dot(along.perp()).signum();
+            let met: Vec<(usize, f64)> = segs.iter().enumerate().flat_map(|(k, g)| meets(g, p, q).into_iter().map(move |t| (k, t))).collect();
+            let [(k, t)] = met.as_slice() else { continue };
+            let Some(tangent) = segs.get(*k).map(|g| g.derivative(*t)) else { continue };
+            // Crossing it, not touching it.
+            let way = tangent.dot(away);
+            if way.abs() > 1e-6 * tangent.len() {
+                return Some((*k as f64 + *t, way.signum()));
+            }
+        }
+    }
+    None
+}
+
+/// Where `g`, a line or an arc (a corner relief's outline is drawn in them), crosses the segment
+/// from `p` to `q`, in closed form: the parameter along `g` of each crossing, from 0 and short of
+/// 1 (a crossing at a corner of the outline is the next segment's). No crossing for any other
+/// curve.
+fn meets(g: &Seg2, p: Vec2, q: Vec2) -> Vec<f64> {
+    let d = q - p;
+    let on_g = |s: f64| (0.0..1.0).contains(&s);
+    match *g {
+        Seg2::Line { a, b } => {
+            let e = b - a;
+            let den = e.cross(d);
+            if den == 0.0 {
+                return Vec::new();
+            }
+            let (s, t) = ((p - a).cross(d) / den, (p - a).cross(e) / den);
+            if on_g(s) && (0.0..=1.0).contains(&t) { vec![s] } else { Vec::new() }
+        }
+        Seg2::Arc { center, radius, start, sweep } => {
+            // The segment's points `radius` from the center: |p − center + d t|² = radius².
+            let w = p - center;
+            let (qa, qb, qc) = (d.len2(), 2.0 * d.dot(w), w.len2() - radius * radius);
+            let disc = qb * qb - 4.0 * qa * qc;
+            if !(qa > 0.0) || disc < 0.0 {
+                return Vec::new();
+            }
+            let tau = std::f64::consts::TAU;
+            [(-qb - disc.sqrt()) / (2.0 * qa), (-qb + disc.sqrt()) / (2.0 * qa)]
+                .into_iter()
+                .filter(|t| (0.0..=1.0).contains(t))
+                .map(|t| (w + d * t).angle())
+                .map(|at| if sweep > 0.0 { (at - start).rem_euclid(tau) / sweep } else { (start - at).rem_euclid(tau) / -sweep })
+                .filter(|s| on_g(*s))
+                .collect()
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Each face's part (see [`FaceNamer::part`]) with its place among the faces made for the same
@@ -525,7 +442,7 @@ fn rim_edges(
     let outline: Vec<(Vec2, Vec2)> = lines.iter().map(|&(_, a, b)| (a, b)).collect();
     let mut out: Vec<(Vec2, Vec2, Option<RimEdge>, usize)> = Vec::new();
     for &(k, a, b) in &lines {
-        match bend_making(sheet, r) {
+        match bend_making(sheet, r).or_else(|| contour_bend(sheet, recipes, r)) {
             None => out.push((a, b, sketch_line(sheet, curves, r, a, b), k)),
             Some((an, (lo, hi))) => {
                 let along = |p: Vec2| (p - an.origin).dot(an.dir);
@@ -575,6 +492,22 @@ fn bend_making(sheet: &Sheet, i: usize) -> Option<(solidcraft_develop::Anchor, (
     })
 }
 
+/// On a contour flange's first panel, which no bend makes, the anchor on it of the bend into the
+/// contour's next panel, and the span along the anchor the bend's near side runs: its rims are what
+/// that bend leaves, as a later panel's are what the bend that makes it leaves (its far edge, its
+/// two ends), so none is left for the model to name from geometry. None for any other panel, a
+/// later flange's bend on the panel never counting (a rim keeps its name when one is added).
+fn contour_bend(sheet: &Sheet, recipes: &[(String, PanelMade)], i: usize) -> Option<(solidcraft_develop::Anchor, (f64, f64))> {
+    let made = |k: usize| sheet.panels.get(k).and_then(|p| recipes.iter().find(|(key, _)| *key == p.name)).map(|(_, m)| m);
+    let Some(PanelMade::Contour { feature, .. }) = made(i) else { return None };
+    sheet.joints.iter().find_map(|j| match &j.kind {
+        JointKind::Bend(b) if j.a.panel == i && matches!(made(j.b.panel), Some(PanelMade::Contour { feature: f, .. }) if f == feature) => {
+            Some((j.a, b.ends.near))
+        }
+        _ => None,
+    })
+}
+
 /// The sketch line of `curves` that made the edge from `a` to `b` of panel `i` (its chart): one
 /// of that panel's own (by its key) the edge lies on, within its ends.
 fn sketch_line(sheet: &Sheet, curves: &[(String, String, Vec2, Vec2)], i: usize, a: Vec2, b: Vec2) -> Option<RimEdge> {
@@ -600,8 +533,11 @@ fn sketch_line(sheet: &Sheet, curves: &[(String, String, Vec2, Vec2)], i: usize,
 fn edge_of_bend(sheet: &Sheet, outline: &[(Vec2, Vec2)], an: solidcraft_develop::Anchor, (lo, hi): (f64, f64), a: Vec2, b: Vec2) -> Option<RimEdge> {
     let small = sheet.thickness * 1e-3;
     let along = |p: Vec2| (p - an.origin).dot(an.dir);
-    // How far into the panel from its bend an edge along the bend lies.
-    let off = |a: Vec2, b: Vec2| ((a + b) * 0.5 - an.origin).cross(an.dir);
+    // How far into the panel from its bend an edge along the bend lies: the panel's material lies
+    // on one side of its anchor (a bend's second panel's on the right, its first's on the left).
+    let side = |a: Vec2, b: Vec2| ((a + b) * 0.5 - an.origin).cross(an.dir);
+    let sign = if outline.iter().map(|(p, q)| side(*p, *q)).sum::<f64>() < 0.0 { -1.0 } else { 1.0 };
+    let off = |a: Vec2, b: Vec2| side(a, b) * sign;
     let parallel = |a: Vec2, b: Vec2| (b - a).normalized().is_some_and(|d| d.cross(an.dir).abs() < 1e-6);
     if !parallel(a, b) {
         // Numbered along the flat as it is read, which the charts see mirrored.
@@ -641,7 +577,7 @@ impl SurfaceSheet {
             .iter()
             .filter(|(a, b)| (off(*a) - off(*b)).abs() <= small && off(*a).abs() <= band + small)
             .min_by(|x, y| off(x.0).abs().total_cmp(&off(y.0).abs()))?;
-        let edge = match bend_making(&self.sheet, r) {
+        let edge = match bend_making(&self.sheet, r).or_else(|| contour_bend(&self.sheet, &self.recipes, r)) {
             None => sketch_line(&self.sheet, &self.sketch_curves, r, a, b),
             Some((an, span)) => edge_of_bend(&self.sheet, &outline, an, span, a, b),
         }?;

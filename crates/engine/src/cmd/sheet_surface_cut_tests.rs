@@ -4,6 +4,7 @@
 //! face on the sheet's surface; a cut through a pocket takes it with the material; what the
 //! sheet can't keep is refused, and the sheet stays as it was.
 
+use solidcraft_develop::prelude::*;
 use std::f64::consts::{PI, SQRT_2};
 
 use solidcore_record::{Loop2, Region2, Seg2, Vec2, Vec3};
@@ -71,9 +72,9 @@ fn a_hole_drilled_through_a_folded_sheet_is_a_cut_out_of_its_flat() {
     assert!((exact_volume(&s) - want).abs() < 1e-6 * want, "{} vs {want}", exact_volume(&s));
 }
 
-/// An engraving cut 0.5 into the sheet's surface is a pocket from the flat's face on the
-/// surface (z 0…0.5), on its DXF layer; a hole drilled through it is a cut-out of the flat and a
-/// hole in the pocket. Cut into the other face, an engraving is a pocket from z 1.5 to 2.
+/// An engraving cut 0.5 into the sheet's surface is a pocket down from the flat's face on the
+/// surface, its top (z 1.5…2), on its DXF layer; a hole drilled through it is a cut-out of the
+/// flat and a hole in the pocket. Cut into the other face, an engraving is a pocket from z 0 to 0.5.
 #[test]
 fn an_engraving_is_a_pocket_and_a_hole_through_it_takes_it_with_the_material() {
     let mut s = plate();
@@ -81,9 +82,9 @@ fn an_engraving_is_a_pocket_and_a_hole_through_it_takes_it_with_the_material() {
     let v1 = 100.0 * 60.0 * T - 200.0 * 0.5;
     assert!((exact_volume(&s) - v1).abs() < 1e-6 * v1, "{}", exact_volume(&s));
     let p = pockets(&mut s);
-    assert!(p.len() == 1 && (p[0]["depth_mm"].as_f64().unwrap_or(0.0) - 0.5).abs() < 1e-9 && p[0]["z0_mm"].as_f64() == Some(0.0), "{p:?}");
+    assert!(p.len() == 1 && (p[0]["depth_mm"].as_f64().unwrap_or(0.0) - 0.5).abs() < 1e-9 && p[0]["z1_mm"].as_f64() == Some(T), "{p:?}");
     let dxf = run(&mut s, "sheet.export_dxf", json!({}))["dxf"].as_str().unwrap_or("").to_string();
-    assert_eq!((lines_on(&dxf, "OUTLINE"), lines_on(&dxf, "POCKET_BOTTOM_Z0.000000_TO_0.500000_MM")), (4, 4), "{dxf}");
+    assert_eq!((lines_on(&dxf, "OUTLINE"), lines_on(&dxf, "POCKET_TOP_Z1.500000_TO_2.000000_MM")), (4, 4), "{dxf}");
     // Through the middle of it.
     run(&mut s, "solid.hole", json!({"position": [20, 15, T - 0.5], "diameter": 4}));
     let v2 = v1 - PI * 4.0 * (T - 0.5);
@@ -94,7 +95,7 @@ fn an_engraving_is_a_pocket_and_a_hole_through_it_takes_it_with_the_material() {
     // The other face.
     engrave(&mut s, "Under", 0.0, [60.0, 10.0], [80.0, 20.0], 0.5, false);
     let p = pockets(&mut s);
-    assert!(p.iter().any(|x| x["z0_mm"].as_f64().is_some_and(|z| (z - 1.5).abs() < 1e-9) && x["side"] == "top"), "{p:?}");
+    assert!(p.iter().any(|x| x["z0_mm"].as_f64() == Some(0.0) && x["side"] == "bottom"), "{p:?}");
 }
 
 /// Engravings from both faces that meet in the thickness cut through where they overlap: the
@@ -301,10 +302,12 @@ fn a_rolls_flat_has_lines_where_it_starts_and_ends_and_halfway_between() {
     let length = |l: &(String, [f64; 2], [f64; 2])| (l.2[0] - l.1[0]).hypot(l.2[1] - l.1[1]);
     assert!(lines.iter().all(|l| (length(l) - 40.0).abs() < 1e-6), "{lines:?}");
     // The middle line lies halfway across the roll's flat, which is half a turn round its neutral
-    // surface wide.
+    // surface wide. A roll's neutral surface lies at mid-thickness (K 0.5, not the rule's 0.44):
+    // 48 + 0.5 · 2 = 49 from the axis, so the flat is π · 49 = 153.938040 wide, the middle line
+    // 76.969020 from either end.
     let line = |k: &str| lines.iter().find(|l| l.0 == k).map(|l| Vec2::new(0.5 * (l.1[0] + l.2[0]), 0.5 * (l.1[1] + l.2[1]))).unwrap_or_default();
     let (a, m, b) = (line("start"), line("middle"), line("end"));
-    let wide = PI * (48.0 + 0.44 * T);
+    let wide = PI * (48.0 + 0.5 * T);
     assert!((a.dist(b) - wide).abs() < 1e-6 && (a.dist(m) - wide / 2.0).abs() < 1e-6, "{a:?} {m:?} {b:?}");
     // Its row in the report, as a bend has one: inside radius, turn, width and length.
     let row = &flat["roll_table"][0];
@@ -752,7 +755,7 @@ fn a_notch_cut_across_a_bend_from_the_flats_edge_folds_with_the_sheet() {
 
 /// What such a cut from the flat's edge can't be is refused, and the sheet stays as it was: a
 /// drill at a slant through the bend's end, its walls leaning, and the notch stopping 1 inside
-/// the thickness.
+/// the thickness, cut by a box or by Combine.
 #[test]
 fn a_cut_across_a_bend_from_the_flats_edge_at_a_slant_or_short_of_through_is_refused() {
     let f = Flanged::new();
@@ -779,6 +782,19 @@ fn a_cut_across_a_bend_from_the_flats_edge_at_a_slant_or_short_of_through_is_ref
         assert!(refused(&e), "{what}: {e}");
         assert!((exact_volume(&s) - v).abs() < 1e-9 * v, "{what}: the sheet changed");
     }
+    // The same notch as a body of its own, cut from the sheet by Combine, takes material away as
+    // the box cut does: refused alike, not kept on the body with a warning.
+    let mut s = plate();
+    run(&mut s, "sheet.flange", json!({"edges": [[50, 0, T]], "height": 20}));
+    run(&mut s, "sheet.unfold", json!({}));
+    let v = exact_volume(&s);
+    let (size, corner) = ([hi.x - lo.x, hi.y - lo.y, 5.0], [lo.x, lo.y, T - 1.0]);
+    let notch = json!({"corner": corner, "length": size[0], "width": size[1], "height": size[2], "body_name": "Notch", "operation": "new"});
+    run(&mut s, "solid.box", notch);
+    let combine = json!({"target": "Plate", "tools": ["Notch"], "operation": "cut"});
+    let e = s.execute("solid.combine", &combine).err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(e.contains("reaches a bend or a seam"), "combine: {e}");
+    assert!((exact_volume(&s) - v).abs() < 1e-9 * v, "combine: the sheet changed");
 }
 
 /// What a cut takes from a sheet doesn't depend on the cuts before it, their order, or whether

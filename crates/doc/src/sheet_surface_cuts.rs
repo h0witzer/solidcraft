@@ -37,14 +37,14 @@
 //! chart: each piece folds and lies flat where the panel does. A cut that leaves the sheet in
 //! several pieces says nothing of it: every piece is as much the sheet as any other.
 
+use solidcraft_develop::prelude::*;
 use solidcraft_geom::prelude::*;
 use std::collections::BTreeSet;
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use solidcore_record::brep::Loop as Bounds;
 use solidcore_record::{Loop2, Plane, Region2, Seg2, Vec2, Vec3};
-use solidcraft_develop::{Cut, Development, EdgeFrom, Fold, Joint, JointKind, Rigid2, Rigid3, Surface};
-use solidcraft_geom::brep::query::Query;
+use solidcraft_develop::{Cut, Development, EdgeFrom, Fold, Joint, JointKind, Query, Rigid2, Rigid3, Surface};
 use solidcraft_kernel::{Body, BoolOp, FaceSurface, face_surface, planar_regions_boolean};
 
 use crate::sheet::FlatWork;
@@ -78,9 +78,34 @@ struct OnPanel {
     far_floors: Vec<(f64, Region2)>,
 }
 
+/// An extrude as it was drawn: its sketch plane and the interval along the plane's normal it ran
+/// over (see `ModelState::cut_extents`).
+pub(crate) type Drawn = (Plane, (f64, f64));
+
+/// The depth of a floor through the point `floor` from the panel's face through `face`, the panel's
+/// material toward `z`, `measured` in the panel's frame. Where the extrude `drawn` that cut it ran
+/// from that face to the floor (each an end of its interval, to the `rounding` of the body's
+/// numbers, see [`rounding`]), the pocket is as deep as the extrude ran, exactly: a folded
+/// panel's frame is where its fold puts it, to a rounding, and the floor's plane measured in it is
+/// that rounding off what was asked for. A floor any farther off is another floor.
+fn drawn_depth(measured: f64, face: Vec3, floor: Vec3, z: Vec3, drawn: Option<&Drawn>, rounding: f64) -> f64 {
+    let Some((plane, (a, b))) = drawn else { return measured };
+    let n = plane.normal();
+    if z.cross(n).len() > 64.0 * f64::EPSILON {
+        return measured;
+    }
+    let at = |p: Vec3| (p - plane.origin).dot(n);
+    let (from, to) = (at(face), at(floor));
+    match [(*a, *b), (*b, *a)].into_iter().find(|(s, e)| (from - s).abs() <= rounding && (to - e).abs() <= rounding) {
+        Some((s, e)) if ((e - s).abs() - measured).abs() <= rounding => (e - s).abs(),
+        _ => measured,
+    }
+}
+
 /// The planar faces of `b` parallel to a panel whose frame is `frame` (its material toward
-/// `z`, `t` deep), within its region `own` (or, unfolded, the whole flat's regions).
-fn on_panel(b: &Body, q: &Query, frame: &Rigid3, t: f64, own: &[Region2], tol: f64) -> Result<OnPanel> {
+/// `z`, `t` deep), within its region `own` (or, unfolded, the whole flat's regions). A floor the
+/// extrude `drawn` made is as deep as it ran (see [`drawn_depth`]).
+fn on_panel(b: &Body, q: &Query, frame: &Rigid3, t: f64, own: &[Region2], tol: f64, drawn: Option<&Drawn>) -> Result<OnPanel> {
     let mut out = OnPanel::default();
     for f in 0..q.record().faces.len() {
         let Some(FaceSurface::Plane { normal, .. }) = face_surface(b, f) else { continue };
@@ -114,9 +139,11 @@ fn on_panel(b: &Body, q: &Query, frame: &Rigid3, t: f64, own: &[Region2], tol: f
         } else if (depth - t).abs() <= tol && toward {
             out.far.extend(mine);
         } else if !toward && depth > tol {
+            let depth = drawn_depth(depth, frame.shift, plane.origin, frame.z, drawn, rounding(b));
             out.near_floors.extend(mine.into_iter().map(|r| (depth, r)));
         } else if toward && depth < t - tol {
-            out.far_floors.extend(mine.into_iter().map(|r| (t - depth, r)));
+            let depth = drawn_depth(t - depth, frame.shift + frame.z * t, plane.origin, frame.z, drawn, rounding(b));
+            out.far_floors.extend(mine.into_iter().map(|r| (depth, r)));
         }
     }
     Ok(out)
@@ -177,7 +204,7 @@ fn lying(
     }
     let size = now.size();
     let parallel = |u: Vec3, v: Vec3| u.cross(v).len() * size <= tol;
-    for group in components(q, here) {
+    for group in components(q, here).map_err(|e| e.to_string())? {
         let Some((o, a, r)) = group.iter().find_map(|f| match lean(now, *f, frame.z, tol) {
             Lean::Lying(o, a, r) => Some((o, a, r)),
             _ => None,
@@ -277,12 +304,15 @@ fn union(regions: Vec<Region2>, tol: f64) -> Result<Vec<Region2>> {
     Ok(planar_regions_boolean(&[first], &rest, BoolOp::Union, tol)?)
 }
 
-/// Whether no two of `regions` come within `tol` of each other by their boxes: each pair's
-/// outlines' boxes are apart, or one lies inside the box of a hole of the other.
+/// Whether no two of `regions` come within `tol` of each other by their boxes (see [`loop_box`]):
+/// each pair's outlines' boxes are apart, or one lies inside the box of a hole of the other made
+/// of lines and arcs. A hole with any other curve has a box that may reach past it, which says
+/// nothing of what lies inside the hole.
 fn apart(regions: &[Region2], tol: f64) -> bool {
-    let bounds = |l: &Loop2| l.polyline(1e-3).bounds().inflated(tol);
+    let bounds = |l: &Loop2| loop_box(l).inflated(tol);
+    let hole = |l: &Loop2| l.segs.iter().all(|s| matches!(s, Seg2::Line { .. } | Seg2::Arc { .. })).then(|| bounds(l));
     let boxes: Vec<(solidcraft_geom::Aabb2, Vec<solidcraft_geom::Aabb2>)> =
-        regions.iter().map(|r| (bounds(&r.outer), r.holes.iter().map(bounds).collect())).collect();
+        regions.iter().map(|r| (bounds(&r.outer), r.holes.iter().filter_map(hole).collect())).collect();
     let clear =
         |a: &solidcraft_geom::Aabb2, b: &solidcraft_geom::Aabb2| a.max.x < b.min.x || b.max.x < a.min.x || a.max.y < b.min.y || b.max.y < a.min.y;
     let within =
@@ -320,14 +350,26 @@ fn same_regions(a: &[Region2], b: &[Region2], tol: f64) -> bool {
     a.len() == b.len() && a.iter().all(|x| b.iter().any(|y| same(x, y)))
 }
 
+/// Whether the recesses `a` read from a panel are the ones `b` it has, to `tol`: as many, and each
+/// from the same face, as deep, over the same region.
+fn same_recesses(a: &[Recess], b: Vec<&Recess>, tol: f64) -> bool {
+    a.len() == b.len()
+        && a.iter().all(|x| {
+            b.iter().any(|y| {
+                x.far == y.far
+                    && (x.depth - y.depth).abs() <= tol
+                    && same_regions(std::slice::from_ref(&x.region), std::slice::from_ref(&y.region), tol)
+            })
+        })
+}
+
 /// Whether every region of `a` lies in a region of `b` by their loops (so `a` ∩ `b` is `a`): its
 /// outline is that region's and it has each of that region's holes, or it lies in a new hole of
 /// one that does (a piece a cut left inside it, as faces of one body never overlap).
 fn inside_by_loops(a: &[Region2], b: &[Region2], tol: f64) -> bool {
     let holds = |x: &Region2, y: &Region2| same_loop(&x.outer, &y.outer, tol) && y.holes.iter().all(|k| x.holes.iter().any(|h| same_loop(h, k, tol)));
     let new_hole_at = |p: Vec2| {
-        a.iter()
-            .any(|x| b.iter().any(|y| holds(x, y) && x.holes.iter().any(|h| h.ccw().contains(p) && !y.holes.iter().any(|k| same_loop(h, k, tol)))))
+        a.iter().any(|x| b.iter().any(|y| holds(x, y) && x.holes.iter().any(|h| self::holds(h, p) && !y.holes.iter().any(|k| same_loop(h, k, tol)))))
     };
     a.iter().all(|x| b.iter().any(|y| holds(x, y)) || x.outer.segs.first().is_some_and(|s| new_hole_at(s.start())))
 }
@@ -357,7 +399,7 @@ fn gone_by_loops(footprint: &[Region2], near: &[Region2], tol: f64) -> Option<Ve
     // Each piece left inside a new hole is a hole of what is gone there.
     for island in islands {
         let at = island.outer.segs.first()?.start();
-        let g = gone.iter_mut().find(|g| g.outer.contains(at))?;
+        let g = gone.iter_mut().find(|g| holds(&g.outer, at))?;
         g.holes.push(island.outer.ccw().reversed());
     }
     Some(gone)
@@ -455,19 +497,63 @@ fn kind(s: &Seg2) -> String {
     }
 }
 
-/// A box round `s`: its ends', an arc's circle's, a Bézier's or a conic's control points', which
-/// hold the curve (a conic's weight is above 0).
-pub(crate) fn seg_box(s: &Seg2) -> (Vec2, Vec2) {
-    let pts: Vec<Vec2> = match *s {
+/// The points of segment `s` that reach furthest along each of `ways` and against it: a line's
+/// ends; an arc's ends and each point of its circle furthest along a way or against it that lies
+/// within its sweep (see [`on_arc`]); a Bézier's or a conic's control points, which hold the curve
+/// (a conic's weight is above 0) but may lie off it. Read along any of `ways`, the least and the
+/// greatest of them are the segment's own for a line and an arc, and reach at least as far as the
+/// segment does for any other curve.
+pub(crate) fn extremes(s: &Seg2, ways: &[Vec2]) -> Vec<Vec2> {
+    match *s {
         Seg2::Line { a, b } => vec![a, b],
-        Seg2::Arc { center, radius, .. } => vec![center - Vec2::new(radius, radius), center + Vec2::new(radius, radius)],
+        Seg2::Arc { center, radius, start, sweep } => {
+            let mut pts = vec![s.start(), s.end()];
+            // Any way of some length, however small: along one of none, the ends answer.
+            for w in ways.iter().filter(|w| w.len() > 0.0).map(|w| *w / w.len()) {
+                pts.extend([w, -w].into_iter().filter(|d| on_arc(*d, start, sweep)).map(|d| center + d * radius));
+            }
+            pts
+        }
         Seg2::Cubic { p0, p1, p2, p3 } => vec![p0, p1, p2, p3],
         Seg2::Conic { a, apex, b, .. } => vec![a, apex, b],
         Seg2::Bezier { n, p } => p.iter().take(usize::from(n) + 1).copied().collect(),
-    };
+    }
+}
+
+/// A box round `s` that holds it: a line's and an arc's own, exactly (an arc's ends and each of
+/// its circle's four points center ± radius along x and along y that lies within its sweep, see
+/// [`extremes`]); for a cubic, a conic or a Bézier the box of its control points, a sure box that
+/// holds the curve and may reach past it.
+pub(crate) fn seg_box(s: &Seg2) -> (Vec2, Vec2) {
+    let pts = extremes(s, &[Vec2::X, Vec2::Y]);
     let lo = pts.iter().fold(Vec2::new(f64::INFINITY, f64::INFINITY), |m, q| Vec2::new(m.x.min(q.x), m.y.min(q.y)));
     let hi = pts.iter().fold(Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY), |m, q| Vec2::new(m.x.max(q.x), m.y.max(q.y)));
     (lo, hi)
+}
+
+/// The box of loop `l`, its segments' boxes joined (see [`seg_box`]): the loop's own where it is
+/// made of lines and arcs, and a sure box that holds it where it has any other curve. Empty for a
+/// loop of no segments.
+pub(crate) fn loop_box(l: &Loop2) -> solidcraft_geom::Aabb2 {
+    l.segs.iter().map(seg_box).fold(solidcraft_geom::Aabb2::EMPTY, |b, (min, max)| b.union(&solidcraft_geom::Aabb2 { min, max }))
+}
+
+/// The box of loop `l` carried into space by `to`, an affine map of its plane (a plane's or a
+/// frame's placing, say): each segment's points furthest along each axis of space and against it
+/// (see [`extremes`]), carried. The carried loop's own box where it is made of lines and arcs; a
+/// sure box where it has any other curve, whose control points an affine map carries onto the
+/// carried curve's.
+pub(crate) fn loop_box_in(l: &Loop2, to: impl Fn(Vec2) -> Vec3) -> solidcraft_geom::Aabb3 {
+    let o = to(Vec2::ZERO);
+    let (x, y) = (to(Vec2::X) - o, to(Vec2::Y) - o);
+    // Along each axis of space a carried point moves its x times that axis's share of `x`, and
+    // its y times its share of `y`.
+    let ways = [Vec2::new(x.x, y.x), Vec2::new(x.y, y.y), Vec2::new(x.z, y.z)];
+    let mut b = solidcraft_geom::Aabb3::EMPTY;
+    for p in l.segs.iter().flat_map(|s| extremes(s, &ways)) {
+        b.add(to(p));
+    }
+    b
 }
 
 /// Whether segments `x` and `y` come within `near` of each other, exactly: a line with any curve
@@ -486,7 +572,7 @@ pub(crate) fn near_each_other(x: &Seg2, y: &Seg2, near: f64) -> std::result::Res
 }
 
 /// How far point `p` lies from the segment from `a` to `b`.
-fn to_segment(p: Vec2, a: Vec2, b: Vec2) -> f64 {
+pub(crate) fn to_segment(p: Vec2, a: Vec2, b: Vec2) -> f64 {
     let d = b - a;
     let t = if d.dot(d) > 0.0 { ((p - a).dot(d) / d.dot(d)).clamp(0.0, 1.0) } else { 0.0 };
     p.dist(a + d * t)
@@ -494,14 +580,14 @@ fn to_segment(p: Vec2, a: Vec2, b: Vec2) -> f64 {
 
 /// Whether the way `v` from an arc's center lies within the arc, from angle `start` round
 /// `sweep` (counter-clockwise where above 0).
-fn on_arc(v: Vec2, start: f64, sweep: f64) -> bool {
+pub(crate) fn on_arc(v: Vec2, start: f64, sweep: f64) -> bool {
     sweep.abs() >= TAU || ((v.y.atan2(v.x) - start) * sweep.signum()).rem_euclid(TAU) <= sweep.abs()
 }
 
 /// How far point `p` lies from the arc round `center`, `radius` from it, from `start` round
 /// `sweep`, which ends at `ends`: square to it where the way to `p` lies within it, else from an
 /// end.
-fn to_arc(p: Vec2, (center, radius, start, sweep): (Vec2, f64, f64, f64), ends: [Vec2; 2]) -> f64 {
+pub(crate) fn to_arc(p: Vec2, (center, radius, start, sweep): (Vec2, f64, f64, f64), ends: [Vec2; 2]) -> f64 {
     let v = p - center;
     let square = if v.len() > 0.0 && on_arc(v, start, sweep) { (v.len() - radius).abs() } else { f64::INFINITY };
     square.min(p.dist(ends[0])).min(p.dist(ends[1]))
@@ -744,6 +830,13 @@ pub(crate) fn holds(l: &Loop2, p: Vec2) -> bool {
     l.segs.iter().zip(ends).map(|(s, end)| ray_crossings(s, end, p)).sum::<usize>() % 2 == 1
 }
 
+/// Whether point `p` lies in region `r`'s material, exactly: inside its outline and inside none
+/// of its holes (see [`holds`]). A point on a loop of it lies inside or outside as the ray from
+/// it reads that loop.
+pub(crate) fn region_holds(r: &Region2, p: Vec2) -> bool {
+    holds(&r.outer, p) && !r.holes.iter().any(|h| holds(h, p))
+}
+
 /// How many times a ray from `p` toward +x crosses segment `s`, which ends at `end`, the start of
 /// the next segment of its loop (see [`holds`]).
 fn ray_crossings(s: &Seg2, end: Vec2, p: Vec2) -> usize {
@@ -755,7 +848,10 @@ fn ray_crossings(s: &Seg2, end: Vec2, p: Vec2) -> usize {
             let (lo, hi) = (start.min(start + sweep), start.max(start + sweep));
             let mut stops = vec![0.0];
             let mut turn = FRAC_PI_2 + PI * ((lo - FRAC_PI_2) / PI).ceil();
-            while turn < hi {
+            // A top or a bottom each half turn on. An arc whose angles are not finite has none
+            // to stop at, nor one whose angles are so large that a half turn no longer moves
+            // them: past either, the loop would never end.
+            while hi.is_finite() && turn < hi && turn + PI > turn {
                 if turn > lo {
                     stops.push((turn - start) / sweep);
                 }
@@ -852,7 +948,7 @@ pub(crate) enum Absorbed {
     Refused(String),
 }
 
-pub(crate) fn absorb(before: &ModelState, after: &ModelState, f: &Feature, weigh: bool) -> Result<Vec<(usize, Absorbed)>> {
+pub(crate) fn absorb(before: &ModelState, after: &ModelState, f: &Feature, weigh: bool, drawn: Option<&Drawn>) -> Result<Vec<(usize, Absorbed)>> {
     if f.kind.is_sheet()
         || matches!(
             f.kind,
@@ -883,7 +979,7 @@ pub(crate) fn absorb(before: &ModelState, after: &ModelState, f: &Feature, weigh
         if sk.altered_by.is_some() {
             continue;
         }
-        match cut(&sk, &was, &now, weigh) {
+        match cut(&sk, &was, &now, weigh, drawn) {
             Ok((cut, built)) => out.push((i, Absorbed::Read(Box::new(cut), built))),
             Err(e) => out.push((i, Absorbed::Refused(format!("`{}`: what {} cut {e}", sk.body, f.name)))),
         }
@@ -894,10 +990,17 @@ pub(crate) fn absorb(before: &ModelState, after: &ModelState, f: &Feature, weigh
 /// The sheet `sk` with what was cut from its body, `was` before and `now` after, read onto its
 /// flat panels, and its body built again. Every face the cut made must lie in a panel or a piece
 /// of the flat it was read in. Weighed (`weigh`), the body built again must also weigh what `now`
-/// does: a check of the reading itself, which costs more than the rest of it.
-pub(crate) fn cut(sk: &SurfaceSheet, was: &Body, now: &Body, weigh: bool) -> std::result::Result<(SurfaceSheet, Body), String> {
+/// does: a check of the reading itself, which costs more than the rest of it. The extrude `drawn`
+/// that made the cut, if one did, gives its pockets their depths.
+pub(crate) fn cut(
+    sk: &SurfaceSheet,
+    was: &Body,
+    now: &Body,
+    weigh: bool,
+    drawn: Option<&Drawn>,
+) -> std::result::Result<(SurfaceSheet, Body), String> {
     let walls = made(was, now, tolerance(was));
-    let (mut out, read) = onto_panels(sk, was, now, Some(&walls))?;
+    let (mut out, read) = onto_panels(sk, was, now, Some(&walls), drawn)?;
     // Nothing else may have been cut: a bend's material, or anything the panels' faces don't show.
     if walls.iter().any(|f| !read.claimed.contains(f)) {
         return Err("can't be kept in the sheet yet: it reaches a bend or a seam".into());
@@ -943,7 +1046,7 @@ fn weighed(sk: &SurfaceSheet, out: &SurfaceSheet, built: &Body, now: &Body, shad
 /// body's two faces of a panel end apart at its outline (as a bent part drawn with sharp
 /// corners has them), that is how it was drawn, not a cut.
 pub(crate) fn engraved(sk: &SurfaceSheet, built: &Body, body: &Body) -> Result<(SurfaceSheet, Body)> {
-    let (mut out, _) = onto_panels(sk, built, body, None).map_err(DocError::Invalid)?;
+    let (mut out, _) = onto_panels(sk, built, body, None, None).map_err(DocError::Invalid)?;
     if out.recesses.is_empty() && out.sheet == sk.sheet {
         return Ok((out, built.clone()));
     }
@@ -954,6 +1057,17 @@ pub(crate) fn engraved(sk: &SurfaceSheet, built: &Body, body: &Body) -> Result<(
 /// How near two points of `b` are one: as near as the body's exact edges close its faces' loops.
 fn tolerance(b: &Body) -> f64 {
     (b.size() * 1e-7).clamp(1e-7, 1e-3)
+}
+
+/// How far apart two workings of one length from the coordinates of body `b` can come out: 64
+/// units in the last place of its largest coordinate and size. A folded panel's frame is where
+/// its fold puts it, to a rounding, so a length measured in it differs by that much from the same
+/// length worked out from the numbers a feature was given; two lengths any farther apart are
+/// different lengths (far below the extrusion resolution, 1e-6 mm).
+fn rounding(b: &Body) -> f64 {
+    let o = b.outline_bounds();
+    let far = [o.min.x, o.min.y, o.min.z, o.max.x, o.max.y, o.max.z].into_iter().map(f64::abs).fold(0.0, f64::max);
+    64.0 * f64::EPSILON * (if far.is_finite() { far } else { 0.0 } + b.size())
 }
 
 /// A plane: the slab of a sheet laid out flat.
@@ -1051,7 +1165,7 @@ fn left(region: &Region2, through: &[Region2], holders: &[Vec2], tol: f64) -> st
                 let outer = h.ccw();
                 let holes = through
                     .iter()
-                    .filter(|o| o.outer.segs.first().is_some_and(|g| outer.contains(g.start())))
+                    .filter(|o| o.outer.segs.first().is_some_and(|g| holds(&outer, g.start())))
                     .map(|o| o.outer.ccw().reversed())
                     .collect();
                 Region2 { outer, holes }
@@ -1065,7 +1179,7 @@ fn left(region: &Region2, through: &[Region2], holders: &[Vec2], tol: f64) -> st
     }
     // The piece nearest each joint's point holds it.
     let gap = |r: &Region2, p: Vec2| {
-        if r.contains(p) {
+        if region_holds(r, p) {
             return 0.0;
         }
         std::iter::once(&r.outer)
@@ -1131,8 +1245,15 @@ fn holders(sk: &SurfaceSheet, p: usize) -> Vec<Vec2> {
 /// square (by their surfaces, see [`lean`], or by what its faces show), or the panel is a roll,
 /// what went through is the shadow they cast: of a bore lying in a flat panel, its band (see
 /// [`lying`]). Reading a converted body's engravings (no `walls`), a panel's walls must be
-/// square, away from its outline.
-fn onto_panels(sk: &SurfaceSheet, was: &Body, now: &Body, walls: Option<&[usize]>) -> std::result::Result<(SurfaceSheet, Read), String> {
+/// square, away from its outline. The
+/// extrude `drawn` that made the cut gives the floors it made their depths.
+fn onto_panels(
+    sk: &SurfaceSheet,
+    was: &Body,
+    now: &Body,
+    walls: Option<&[usize]>,
+    drawn: Option<&Drawn>,
+) -> std::result::Result<(SurfaceSheet, Read), String> {
     let strict = walls.is_some();
     let dev = sk.develop().map_err(|e| e.to_string())?;
     let frames = frames(sk, &dev).map_err(|e| e.to_string())?;
@@ -1180,8 +1301,8 @@ fn onto_panels(sk: &SurfaceSheet, was: &Body, now: &Body, walls: Option<&[usize]
             taken.claimed.extend(crossing.iter().copied());
         }
         let folded = Folded::new(carriers(sk, &dev, fold.as_ref(), &pieces)?, fold.as_ref(), t);
-        for group in components(&qb, walls).into_iter().filter(|_| flat.is_none()) {
-            let reach = reached(&qb, &folded, &group, sag);
+        for group in components(&qb, walls).map_err(|e| e.to_string())?.into_iter().filter(|_| flat.is_none()) {
+            let reach = reached(&qb, &folded, &group, sag).map_err(|e| e.to_string())?;
             touched.extend(reach.iter().copied());
             let mut panels = reach.iter().map(|k| match pieces.get(*k).map(|p| p.0) {
                 Some(Piece::Panel(i)) => Some(i),
@@ -1215,7 +1336,12 @@ fn onto_panels(sk: &SurfaceSheet, was: &Body, now: &Body, walls: Option<&[usize]
             continue;
         }
         let slab = Slab::new(&panel.surface, *frame, t);
-        let here = rest.as_deref().map(|w| within(&qb, &slab, &panel.region, w, tol * 100.0, sag)).unwrap_or_default();
+        let here = rest
+            .as_deref()
+            .map(|w| within(&qb, &slab, &panel.region, w, tol * 100.0, sag))
+            .transpose()
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
         taken.claimed.extend(here.iter().copied());
         if !plane {
             // A roll: what went through it is its walls' shadow.
@@ -1241,7 +1367,7 @@ fn onto_panels(sk: &SurfaceSheet, was: &Body, now: &Body, walls: Option<&[usize]
         let (bands, bored) = lying(now, &qb, frame, t, &here, &panel.name, tol)?;
         let others: Vec<usize> = here.iter().copied().filter(|f| !bored.contains(f)).collect();
         let leaning = others.iter().any(|f| !matches!(lean(now, *f, frame.z, tol), Lean::Square));
-        let read = |b: &Body, q: &Query| on_panel(b, q, frame, t, std::slice::from_ref(&panel.region), tol).map_err(|e| e.to_string());
+        let read = |b: &Body, q: &Query| on_panel(b, q, frame, t, std::slice::from_ref(&panel.region), tol, drawn).map_err(|e| e.to_string());
         let (before, after) = (read(was, &qa)?, read(now, &qb)?);
         // The panel's flat material before the cut, and each face's after it (its own face, or
         // a floor seen from it).
@@ -1376,10 +1502,19 @@ fn onto_panels(sk: &SurfaceSheet, was: &Body, now: &Body, walls: Option<&[usize]
                 }
             }
         }
-        // The panel's recesses are its floors as they are now.
-        recesses.retain(|r| r.panel != p);
-        recesses.extend(near_floors.into_iter().map(|(depth, region)| Recess { panel: p, region, far: false, depth }));
-        recesses.extend(far_floors.into_iter().map(|(depth, region)| Recess { panel: p, region, far: true, depth }));
+        // The panel's recesses are its floors as they are now. Floors read again as they were (a
+        // cut that changed nothing here), to the rounding of the body's numbers, keep their
+        // records: each recess's depth stays as it was recorded, not as its floor's plane measures
+        // now. A floor any farther off is another floor, and the panel's records are read anew.
+        let fresh: Vec<Recess> = near_floors
+            .into_iter()
+            .map(|(depth, region)| Recess { panel: p, region, far: false, depth })
+            .chain(far_floors.into_iter().map(|(depth, region)| Recess { panel: p, region, far: true, depth }))
+            .collect();
+        if !same_recesses(&fresh, recesses.iter().filter(|r| r.panel == p).collect(), rounding(now)) {
+            recesses.retain(|r| r.panel != p);
+            recesses.extend(fresh);
+        }
     }
     out.recesses = recesses;
     // Folded, a stretch of a bend beside which the cut took both panels' material, with no wall
@@ -1444,7 +1579,7 @@ fn held(
     let across = Vec2::new(-d.y, d.x);
     let outward = if (c - a).dot(across) > 0.0 { across * -1.0 } else { across };
     // Far enough that the region below holds all of the panel's pieces on that side.
-    let bounds = std::iter::once(zr).chain(&kept).map(|r| r.outer.polyline(1e-3).bounds()).reduce(|x, y| x.union(&y));
+    let bounds = std::iter::once(zr).chain(&kept).map(|r| loop_box(&r.outer)).reduce(|x, y| x.union(&y));
     let reach = bounds.map_or(0.0, |x| x.size().len()) + (b - a).len() + (c - a).len() + 1.0;
     let side = Region2 {
         outer: Loop2::polygon(&[a - d * reach, b + d * reach, b + d * reach + outward * reach, a - d * reach + outward * reach]).ccw(),
@@ -1464,10 +1599,12 @@ fn held(
 /// than one panel, of the flat's `pieces`: a cut across a joint.
 fn spans_joint(pieces: &[(Piece, Region2)], g: &Region2, tol: f64) -> std::result::Result<bool, String> {
     let slack = tol * 10.0 * perimeter(std::slice::from_ref(g)).max(1.0);
-    let gb = g.outer.polyline(1e-3).bounds();
+    // Boxes that hold the loops (see [`loop_box`]): a pair whose boxes are apart has nothing in
+    // common.
+    let gb = loop_box(&g.outer);
     let mut panels = BTreeSet::new();
     for (piece, region) in pieces {
-        let b = region.outer.polyline(1e-3).bounds();
+        let b = loop_box(&region.outer);
         if b.max.x < gb.min.x || gb.max.x < b.min.x || b.max.y < gb.min.y || gb.max.y < b.min.y {
             continue;
         }
@@ -1503,7 +1640,7 @@ fn flat_gone(
         return Ok(None);
     }
     let t = sk.sheet.thickness;
-    let read = |b: &Body, q: &Query| on_panel(b, q, &sk.flat, t, &sk.regions, tol).map_err(|e| e.to_string());
+    let read = |b: &Body, q: &Query| on_panel(b, q, &sk.flat, t, &sk.regions, tol, None).map_err(|e| e.to_string());
     let (before, after) = (read(was, qa)?, read(now, qb)?);
     let seen = |own: &[Region2], floors: &[(f64, Region2)]| {
         union(own.iter().cloned().chain(floors.iter().map(|x| x.1.clone())).collect(), tol).map_err(|e| e.to_string())
@@ -1529,7 +1666,7 @@ fn flat_gone(
 /// never from the order of the panels or the pieces. None where no panel has material left.
 fn holder(pieces: &[(Piece, Region2)], r: &Region2) -> Option<usize> {
     let x = r.interior_point();
-    let near = |g: &Region2| if g.contains(x) { 0.0 } else { outline_gap(g, x) };
+    let near = |g: &Region2| if region_holds(g, x) { 0.0 } else { outline_gap(g, x) };
     pieces
         .iter()
         .filter_map(|(p, g)| match *p {
@@ -1578,10 +1715,10 @@ fn bounded(q: &Query, frame: &Rigid3, group: &[usize], gone: &[Region2], near: f
 mod tests {
     use std::f64::consts::{PI, SQRT_2};
 
-    use solidcore_record::{Loop2, Region2, Seg2, Vec2};
+    use solidcore_record::{Loop2, Region2, Seg2, Vec2, Vec3};
     use solidcraft_geom::prelude::*;
 
-    use super::{holds, reaches};
+    use super::{holds, loop_box_in, reaches, seg_box};
 
     /// How near points are one, as a body reads them.
     const NEAR: f64 = 1e-6;
@@ -1684,5 +1821,58 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// An arc whose angles are not finite, or so large that a half turn no longer moves them, has
+    /// no top or bottom of its circle to stop at, and is read to an end. Each arc round (15, 6),
+    /// radius 2, is a loop of its own, so its end is its start: the ray from the center, level or
+    /// not with them, crosses it nowhere between them, and the loop holds no point. A sweep of +∞
+    /// stepped toward its end forever; one of −∞ put its first stop at −∞, which a half turn left
+    /// there; and from 1e17 (where a double's step is 16) the half turns past it, 1e3 on, rounded
+    /// back to where they were.
+    #[test]
+    fn an_arc_whose_angles_are_not_finite_is_read_to_an_end() {
+        let c = Vec2::new(15.0, 6.0);
+        for (start, sweep) in [(0.0, f64::INFINITY), (0.0, f64::NEG_INFINITY), (1e17, 1e3)] {
+            let l = Loop2 { segs: vec![Seg2::Arc { center: c, radius: 2.0, start, sweep }] };
+            assert!(!holds(&l, c), "start {start}, sweep {sweep}");
+        }
+    }
+
+    /// An arc's box is its own: its ends, and each of its circle's points center ± radius along x
+    /// and along y that it passes. Round (1, 1), radius 1, a quarter turn clockwise from 0 runs
+    /// from (2, 1) to (1, 0) past neither (1, 2) nor (0, 1): x 1..2, y 0..1, a quarter of its
+    /// circle's box (x 0..2, y 0..2, what the box was before). Round the origin, radius 2, a
+    /// quarter turn counter-clockwise from −π/4 runs from (√2, −√2) to (√2, √2) past (2, 0):
+    /// x √2..2, y −√2..√2. A line's box is its ends' (3, −1) and (−2, 4): x −2..3, y −1..4. A
+    /// cubic's is its control points' (0, 0), (0, 3), (4, 3), (4, 0): x 0..4, y 0..3, which holds
+    /// the curve, whose top is 9 t (1 − t) = 2.25 at t = ½.
+    #[test]
+    fn a_segments_box_is_its_own_for_a_line_or_an_arc_and_holds_any_other_curve() {
+        let near = |a: Vec2, b: Vec2| a.dist(b) < 1e-12;
+        let quarter = Seg2::Arc { center: Vec2::new(1.0, 1.0), radius: 1.0, start: 0.0, sweep: -PI / 2.0 };
+        let (lo, hi) = seg_box(&quarter);
+        assert!(near(lo, Vec2::new(1.0, 0.0)) && near(hi, Vec2::new(2.0, 1.0)), "{lo:?} {hi:?}");
+        let across = Seg2::Arc { center: Vec2::ZERO, radius: 2.0, start: -PI / 4.0, sweep: PI / 2.0 };
+        let (lo, hi) = seg_box(&across);
+        assert!(near(lo, Vec2::new(SQRT_2, -SQRT_2)) && near(hi, Vec2::new(2.0, SQRT_2)), "{lo:?} {hi:?}");
+        let line = Seg2::Line { a: Vec2::new(3.0, -1.0), b: Vec2::new(-2.0, 4.0) };
+        assert_eq!(seg_box(&line), (Vec2::new(-2.0, -1.0), Vec2::new(3.0, 4.0)));
+        let cubic = Seg2::Cubic { p0: Vec2::ZERO, p1: Vec2::new(0.0, 3.0), p2: Vec2::new(4.0, 3.0), p3: Vec2::new(4.0, 0.0) };
+        assert_eq!(seg_box(&cubic), (Vec2::ZERO, Vec2::new(4.0, 3.0)));
+    }
+
+    /// A circle of radius 1 round the origin, as two halves, carried into space with its x along
+    /// (√3/2, 0, ½) (tilted 30° about y), its y along y, and moved 5 along x. Its box in space is
+    /// the tilted circle's own: x 5 ± √3/2 (4.1340…, 5.8660…), y −1..1, z −½..½. Its chords'
+    /// box would be smaller wherever no chord ends at those points.
+    #[test]
+    fn a_loops_box_in_space_is_the_carried_loops_own() {
+        let half = 3f64.sqrt() / 2.0;
+        let arc = |start: f64| Seg2::Arc { center: Vec2::ZERO, radius: 1.0, start, sweep: PI };
+        let circle = Loop2 { segs: vec![arc(0.0), arc(PI)] };
+        let b = loop_box_in(&circle, |q| Vec3::new(5.0 + q.x * half, q.y, q.x * 0.5));
+        let near = |a: Vec3, b: Vec3| a.dist(b) < 1e-12;
+        assert!(near(b.min, Vec3::new(5.0 - half, -1.0, -0.5)) && near(b.max, Vec3::new(5.0 + half, 1.0, 0.5)), "{b:?}");
     }
 }

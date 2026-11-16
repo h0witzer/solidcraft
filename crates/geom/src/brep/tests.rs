@@ -1,7 +1,8 @@
 use super::*;
 use crate::prelude::*;
-use solidcore_record::brep::*;
+use solidcore_ops::{label, pcurve, record_check as check};
 use solidcore_record::Vec3;
+use solidcore_record::brep::*;
 use std::f64::consts::{FRAC_PI_2, TAU};
 
 fn segment(a: f64, b: f64) -> Curve2 {
@@ -289,7 +290,7 @@ fn every_form_validates_and_round_trips_without_a_kernel() {
         ("lower forms", sheet_with_lower_forms()),
     ] {
         check::validate(&body).unwrap_or_else(|e| panic!("{name}: {e}"));
-        geometry::check(&body).unwrap_or_else(|e| panic!("{name}: {e}"));
+        solidcore_ops::record_check::agreement(&body).unwrap_or_else(|e| panic!("{name}: {e}"));
         let bytes = serde_json::to_vec(&body).unwrap();
         let restored: Brep = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(body, restored, "{name}");
@@ -367,13 +368,13 @@ fn a_pcurve_a_rounding_short_of_its_edge_is_read_at_its_end() {
         *k = short;
     }
     check::validate(&b).unwrap();
-    geometry::check(&b).unwrap();
+    solidcore_ops::record_check::agreement(&b).unwrap();
 }
 
 /// One geometric defect each, structurally valid: every one is refused, naming the record.
 #[test]
 fn geometric_defects_are_refused_by_record() {
-    use geometry::{Problem, Record};
+    use solidcore_ops::record_check::{Problem, Record};
     let off = |what| move |p: &Problem| matches!(p, Problem::Off { what: w, .. } if *w == what);
     let cases: Vec<(&str, Record, Box<dyn Fn(&Problem) -> bool>, Brep)> = vec![
         ("vertex off its curve's start", Record::Edge(0), Box::new(off("curve start misses its start vertex")), {
@@ -463,7 +464,7 @@ fn geometric_defects_are_refused_by_record() {
     ];
     for (name, record, problem, body) in cases {
         check::validate(&body).unwrap_or_else(|e| panic!("{name}: structurally valid: {e}"));
-        let error = geometry::check(&body).err().unwrap_or_else(|| panic!("{name} was accepted"));
+        let error = solidcore_ops::record_check::agreement(&body).err().unwrap_or_else(|| panic!("{name} was accepted"));
         assert_eq!(error.record, record, "{name}: {error}");
         assert!(problem(&error.problem), "{name}: {error}");
     }
@@ -510,7 +511,7 @@ fn hostile_records_never_panic_the_geometry_check() {
     b.faces[0].surface = Surface::PlacedRevolution { profile: circle, origin: [0.; 3], axis: [0., 0., 1.], matrix: identity, forward: true };
     cases.push(b);
     for (i, b) in cases.iter().enumerate() {
-        let checked = std::panic::catch_unwind(|| geometry::check(b));
+        let checked = std::panic::catch_unwind(|| solidcore_ops::record_check::agreement(b));
         assert!(matches!(checked, Ok(Err(_))), "case {i}: {checked:?}");
     }
 }
@@ -747,54 +748,6 @@ fn a_form_on_arcs_of_its_own_is_the_surface_and_does_not_close_around_an_open_fa
     assert!(form::surface_on_own_arcs(&Surface::Plane { origin: [0.; 3], u_axis: [1., 0., 0.], v_axis: [0., 1., 0.] }, label, tol).is_none());
 }
 
-/// Exact queries on a record: a tetrahedron's faces, one point on each, its outward normals, and
-/// rays from inside it meeting the faces they should at the distances they should.
-#[test]
-fn queries_find_a_tetrahedrons_faces_from_its_record() {
-    let b = tetra();
-    let q = query::Query::new(&b);
-    let third = 1.0 / 3.0;
-    let middles = [[third, third, 0.], [third, 0., third], [third, third, third], [0., third, third]];
-    for (f, m) in middles.iter().enumerate() {
-        let p = Vec3::new(m[0], m[1], m[2]);
-        assert!(q.face_contains(f, p, 1e-9), "face {f} at {p:?}");
-        assert_eq!(q.faces_at(p, 1e-9).first().map(|x| x.1), Some(f));
-    }
-    // Off a face's outline, in its plane: not on it.
-    assert!(!q.face_contains(0, Vec3::new(0.9, 0.9, 0.), 1e-9));
-    // The floor's normal points down, out of the solid.
-    let uv = q.face_uv(0, Vec3::new(0.2, 0.2, 0.), 1e-9).unwrap_or_default();
-    let n = q.face_normal(0, uv).unwrap_or_default();
-    assert!((n - Vec3::new(0., 0., -1.)).len() < 1e-12, "{n:?}");
-    // From inside: down to the floor 0.1 away, and along x to the slanted face x + y + z = 1.
-    let o = Vec3::new(0.1, 0.1, 0.1);
-    let down = q.ray(o, Vec3::new(0., 0., -1.), 1e-9);
-    assert!(down.first().is_some_and(|h| h.1 == 0 && (h.0 - 0.1).abs() < 1e-12), "{down:?}");
-    let along = q.ray(o, Vec3::X, 1e-9);
-    assert!(along.first().is_some_and(|h| h.1 == 2 && (h.0 - 0.7).abs() < 1e-12), "{along:?}");
-}
-
-/// A tube's side on its NURBS form, as SMLib holds it: its circles drawn within the sag asked
-/// for, a line drawn as its ends, the distance from the axis to its seam, points on it and off
-/// its ends, and a ray from the axis meeting it at its radius.
-#[test]
-fn queries_read_a_tube_side_on_its_form() {
-    let b = tube();
-    let q = query::Query::new(&b);
-    let axis = Vec3::new(1., 2., 0.);
-    let off_axis = |p: Vec3| Vec3::new(p.x - axis.x, p.y - axis.y, 0.).len();
-    let circle = q.edge_points(0, 1e-4).unwrap_or_default();
-    assert!(circle.len() > 20 && circle.iter().all(|(_, p)| (off_axis(*p) - 2.0).abs() < 1e-9), "{}", circle.len());
-    assert_eq!(q.edge_points(1, 1e-4).map(|v| v.len()), Some(2));
-    let d = q.edge_distance(1, Vec3::new(1., 2., 5.5), 1e-4).unwrap_or(f64::NAN);
-    assert!((d - 2.0).abs() < 1e-12, "{d}");
-    assert!(q.face_contains(0, Vec3::new(1., 4., 5.5), 1e-9));
-    assert!(q.face_contains(0, Vec3::new(3., 2., 5.5), 1e-9), "on the seam");
-    assert!(!q.face_contains(0, Vec3::new(1., 4., 9.), 1e-9), "past the top circle");
-    let hit = q.ray(Vec3::new(1., 2., 5.5), Vec3::Y, 1e-9);
-    assert!(hit.first().is_some_and(|h| h.1 == 0 && (h.0 - 2.0).abs() < 1e-12), "{hit:?}");
-}
-
 /// The flux of p / 3 out of a tetrahedron is its volume, 1/6, to rounding; a constant added to the
 /// field (as about a far origin) adds nothing, however large the faces' shares grow.
 #[test]
@@ -818,5 +771,78 @@ fn the_flux_of_p_over_3_out_of_a_tetrahedron_is_its_volume() {
             sum += if of.forward { flux } else { -flux };
         }
         assert!((sum - 1.0 / 6.0).abs() < 1e-12 * (1.0 + c.len()), "{c:?}: {sum}");
+    }
+}
+
+/// A whole turn whose seam lies a rounding short of a quarter line (as a file's seam on its
+/// frame's x axis measures, 2π − 2e-12 or −2e-12) has its form from that quarter line: four
+/// quarters that end where the seam's second use lies (#12760; from the quarter before, the
+/// form ended a quarter short of it and the face's last quarter was off its form).
+#[test]
+fn a_whole_turn_a_rounding_short_of_a_quarter_line_has_its_form_from_it() {
+    let cylinder = Surface::Cylinder { frame: a_frame(), radius: 21.2 };
+    let u_knots = |s: &Surface| match s {
+        Surface::RationalSpline { u_knots, .. } => (u_knots.first().copied().unwrap(), u_knots.last().copied().unwrap()),
+        _ => panic!("not a NURBS: {s:?}"),
+    };
+    for (start, q) in [(TAU - 2e-12, 4.0), (-2.2e-12, 0.0), (TAU + 2e-12, 4.0)] {
+        let (form, domain) = form::surface_within(&cylinder, [[start, start + TAU], [0., 10.]], 2e-5).unwrap();
+        assert_eq!(u_knots(&form), (q, q + 4.0), "seam at {start}");
+        assert_eq!(domain[0], [q, q + 4.0], "seam at {start}");
+    }
+}
+
+/// A disc (a plane bounded by a circle) mapped by a scaling and a shear stays a plane bounded by
+/// an ellipse: the record is valid and agrees with its topology, the circle's NURBS form mapped
+/// with its parameter lies on the ellipse labelling it, and a reflection is left to the kernel.
+#[test]
+fn a_disc_scaled_and_sheared_is_a_plane_bounded_by_an_ellipse() {
+    use solidcore_record::Vec3;
+    let disc = one_face(
+        Surface::Plane { origin: [1., 2., 3.], u_axis: [1., 0., 0.], v_axis: [0., 1., 0.] },
+        [[-3., 3.], [-3., 3.]],
+        vec![(Curve::Circle { frame: a_frame(), radius: 2. }, [0., TAU], [0, 0])],
+        &[[3., 2., 3.]],
+        &[(0, true)],
+    );
+    check::validate(&disc).unwrap();
+    let m = [[2., 0., 0., 0.], [0.7, 3., 0., 0.], [0.3, 0., 0.5, 0.], [4., -1., 2., 1.]];
+    let mapped = placement::mapped(&disc, &m).unwrap();
+    check::validate(&mapped).unwrap();
+    solidcore_ops::record_check::agreement(&mapped).unwrap();
+    assert!(matches!(mapped.faces[0].surface, Surface::Plane { .. }));
+    let edge = &mapped.edges[0];
+    let Curve::Ellipse { frame, radii } = &edge.curve else { panic!("{:?}", edge.curve) };
+    let (o, x, y) = (Vec3::from(frame.origin), Vec3::from(frame.x_axis), Vec3::from(frame.y_axis));
+    let form = eval::CurveEval::new(edge.nurbs.as_ref().unwrap()).unwrap();
+    for k in 0..12 {
+        let t = edge.interval[0] + (edge.interval[1] - edge.interval[0]) * k as f64 / 12.0;
+        let d = form.jet(t).unwrap().point - o;
+        let on = (d.dot(x) / radii[0]).powi(2) + (d.dot(y) / radii[1]).powi(2);
+        assert!((on - 1.0).abs() < 1e-9 && d.dot(x.cross(y)).abs() < 1e-9, "{t}: {on}");
+    }
+    let mirror = [[-1., 0., 0., 0.], [0., 1., 0., 0.], [0., 0., 1., 0.], [0., 0., 0., 1.]];
+    assert!(placement::mapped(&disc, &mirror).is_none());
+}
+
+/// A plane given by points keeps its UV coordinates and remains importable after successive
+/// rigid turns, just as a plane given by axes does. Its conic frame stays unit and square too.
+#[test]
+fn a_plane_through_points_stays_importable_after_successive_rigid_turns() {
+    let mut disc = one_face(
+        Surface::PlaneThrough { origin: [1., 2., 3.], u_point: [2., 2., 3.], v_point: [1., 3., 3.] },
+        [[-3., 3.], [-3., 3.]],
+        vec![(Curve::Circle { frame: a_frame(), radius: 2. }, [0., TAU], [0, 0])],
+        &[[3., 2., 3.]],
+        &[(0, true)],
+    );
+    let tilt = solidcore_ops::affine::rotation([0.; 3], [1., 0., 0.], 1.5e-6).unwrap();
+    disc = placement::moved(&disc, &placement::Rigid::of_matrix(&tilt).unwrap()).unwrap();
+    let step = solidcore_ops::affine::rotation([0.; 3], [0., 0., 1.], 1_f64.to_radians()).unwrap();
+    let step = placement::Rigid::of_matrix(&step).unwrap();
+    for deg in 1..=80 {
+        disc = placement::moved(&disc, &step).unwrap();
+        assert!(solidcore_ops::Body::from_record(&disc, true).is_ok(), "{deg} degrees");
+        assert_eq!(disc.faces[0].domain, [[-3., 3.], [-3., 3.]]);
     }
 }
