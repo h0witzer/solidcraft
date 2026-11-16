@@ -1,0 +1,32 @@
+{
+ "sources": [
+  "tangency-labs/solidcraft#7582",
+  "tangency-labs/solidcraft#7531"
+ ],
+ "what": "a 120 x 90 channel with two 30 mm walls (T 1, R 1, K 0.5), written to STEP, inserted into a new design as a plain solid and converted with no bends given: both modelled bends are found by themselves",
+ "source": "analytic",
+ "method": "T = 1, R = 1, K = 0.5, inside flanges: each bend starts R + T = 2 in from the base's edge, BA = (pi/2)(R + K T) = 2.356194, each wall's straight leg 30 - (R + T) = 28. Flat: 120 x (90 - 4) of base, 2 x 120 x BA of bend, 2 x 120 x 28 of wall = 17605.4867 mm2, 120 x (86 + 2(BA + 28)) across; with K = 0.5 the neutral surface is the mid-surface, so the folded volume is the flat area times T. The step results: two bends, each 120 long",
+ "body_count": 1,
+ "volume_mm3": 17605.486677646164,
+ "flat_pattern": {
+  "size_mm": [
+   120.0,
+   146.71238898038467
+  ],
+  "area_mm2": 17605.486677646164
+ },
+ "results": [
+  {
+   "step": 14,
+   "pointer": "/bends",
+   "json": [
+    {
+     "length": 120.0
+    },
+    {
+     "length": 120.0
+    }
+   ]
+  }
+ ]
+}
