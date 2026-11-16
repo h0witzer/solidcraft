@@ -75,7 +75,7 @@ impl<'a> FaceNamer<'a> {
         let centers: Vec<(Vec2, [String; 2], [usize; 2])> = sheet
             .corners
             .iter()
-            .filter(|c| matches!(c.relief, CornerRelief::Round | CornerRelief::Square))
+            .filter(|c| matches!(c.relief, CornerRelief::Round | CornerRelief::Square | CornerRelief::Weld))
             .filter_map(|c| {
                 let mut bends = [(key(c.joints[0])?, c.joints[0]), (key(c.joints[1])?, c.joints[1])];
                 bends.sort();

@@ -1101,22 +1101,21 @@ pub(super) fn sheet_eval(
             }
             // The corner relief these flanges ask for in place of the rule's, at the corners
             // their bends make.
-            let own =
-                match (corner_relief_shape, corner_relief) {
-                    (None, None) => None,
-                    (shape, size) => Some((
-                        match shape {
-                            Some(name) => crate::sheet_surface_convert::corner_relief(sheet::ReliefShape::parse(name).ok_or_else(|| {
-                                DocError::Invalid(format!("unknown corner relief shape `{name}` (notch, round, rectangular or tear)"))
-                            })?),
-                            None => sk.reliefs.corner,
-                        },
-                        match size {
-                            Some(e) => val(vals, e, Kind::Length)?,
-                            None => sk.reliefs.corner_size,
-                        },
-                    )),
-                };
+            let own = match (corner_relief_shape, corner_relief) {
+                (None, None) => None,
+                (shape, size) => Some((
+                    match shape {
+                        Some(name) => crate::sheet_surface_convert::corner_relief(sheet::ReliefShape::parse(name).ok_or_else(|| {
+                            DocError::Invalid(format!("unknown corner relief shape `{name}` (notch, round, rectangular, tear or laser_weld)"))
+                        })?),
+                        None => sk.reliefs.corner,
+                    },
+                    match size {
+                        Some(e) => val(vals, e, Kind::Length)?,
+                        None => sk.reliefs.corner_size,
+                    },
+                )),
+            };
             let n0 = sk.sheet.panels.len();
             let several = picks.len() > 1;
             // Each edge's error names it, among several.

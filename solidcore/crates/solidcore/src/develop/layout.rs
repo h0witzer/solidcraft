@@ -2106,6 +2106,7 @@ fn corner_cut(dev: &Development, corner: &Corner) -> Option<Region2> {
     }
     let c = p + u * ((q - p).cross(w) / cross);
     let round = match corner.relief {
+        CornerRelief::Weld => return weld_cut(za, zb, r),
         CornerRelief::Round => true,
         CornerRelief::Square => false,
         CornerRelief::Notch | CornerRelief::Tear => return None,
@@ -2141,6 +2142,61 @@ fn corner_cut(dev: &Development, corner: &Corner) -> Option<Region2> {
     };
     Some(Region2 {
         outer: ccw(outer),
+        holes: Vec::new(),
+    })
+}
+
+/// A laser-weld corner's hole: a round of radius `r` about the root of its seam, where the two
+/// bends' zones meet the panel both bends hold (their edges on that panel's side cross). The
+/// zones are closed tight against the seam there (as at a tear), so the wedge between their ends
+/// opens from that point; the round's two arcs meet inside that wedge, a third and two thirds of
+/// the way across it, in the material the seam already parts, so no wall the hole leaves is split
+/// at one. `None` where the bends share no panel or their edges run alike.
+fn weld_cut(a: &Zone, b: &Zone, r: f64) -> Option<Region2> {
+    let shared = a.panels.iter().find(|p| b.panels.contains(p))?;
+    // A zone's edge on the shared panel's side, and the one across the zone.
+    let sides = |z: &Zone| {
+        if z.panels.first() == Some(shared) {
+            (z.near, z.far)
+        } else {
+            (z.far, z.near)
+        }
+    };
+    let ((pa, qa), (pb, qb)) = (sides(a), sides(b));
+    let line = |[s, e]: [Vec2; 2]| Some((s, (e - s).normalized()?));
+    let ((oa, da), (ob, db)) = (line(pa)?, line(pb)?);
+    let cross = da.cross(db);
+    if !(cross.abs() > 1e-9 && r > 0.0) {
+        return None;
+    }
+    let c = oa + da * ((ob - oa).cross(db) / cross);
+    // Each zone's end at the corner: its shared-side end nearest the root, and the way out from
+    // there to the matching end across the zone.
+    let way_out = |[p0, p1]: [Vec2; 2], [q0, q1]: [Vec2; 2]| {
+        let (p, q) = if (p0 - c).dot(p0 - c) <= (p1 - c).dot(p1 - c) {
+            (p0, q0)
+        } else {
+            (p1, q1)
+        };
+        (q - p).normalized().map(|v| v.angle())
+    };
+    let (ta, tb) = (way_out(pa, qa)?, way_out(pb, qb)?);
+    let delta = (tb - ta + PI).rem_euclid(TAU) - PI;
+    let (s1, s2) = if delta >= 0.0 {
+        (ta + delta / 3.0, ta + 2.0 * delta / 3.0)
+    } else {
+        (ta + 2.0 * delta / 3.0, ta + delta / 3.0)
+    };
+    let arc = |start: f64, sweep: f64| Seg2::Arc {
+        center: c,
+        radius: r,
+        start,
+        sweep,
+    };
+    Some(Region2 {
+        outer: ccw(Loop2 {
+            segs: vec![arc(s1, s2 - s1), arc(s2, TAU - (s2 - s1))],
+        }),
         holes: Vec::new(),
     })
 }

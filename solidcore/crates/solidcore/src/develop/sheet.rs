@@ -70,6 +70,10 @@ pub enum CornerRelief {
     Round,
     /// A four-sided hole whose sides run along the bends.
     Square,
+    /// A laser-weld corner: the bends' ends torn tight against the seam between their panels,
+    /// as [`CornerRelief::Tear`], and a round hole where the bends cross, as
+    /// [`CornerRelief::Round`].
+    Weld,
 }
 
 /// A face of the sheet. Its region is drawn in its surface's own parameters, so whatever is drawn

@@ -5346,6 +5346,63 @@ fn corner_reliefs_at_non_orthogonal_corners_reach_the_flat_pattern_and_the_dxf()
     }
 }
 
+/// A laser-weld corner (#12651) on the 90° tray (see [`a_tear_of_the_rule_reaches_the_part_the_flat_pattern_and_the_dxf`]):
+/// the bends close tight against the walls' mitre as at a tear, and a round hole the rule's
+/// `corner_relief` across (1 mm) is cut at the root of each seam, where the bends' tangent lines
+/// cross on the base: (s0, s0) = (3, 3) from each corner of the 120 x 90 base. In the flat each
+/// zone's end runs from there to (x_end(s0), s0 − BA) = (2 + 0.5/√2, 3 − π) and its mirror, and the
+/// wedge between the two ends is the seam's own gap, so the hole takes the rest of its disc. The
+/// ends follow the mitre round the bend (a spline within the tear's tolerance of that curve), bowed
+/// toward each other from the chords between those points, so what a hole takes lies between the
+/// disc less the chords' wedge, (2π − w)·r²/2 with r = 0.5 and w the angle between the chords' ways
+/// (−1 + 0.5/√2, −π) and (−π, −1 + 0.5/√2), and the whole disc, π r². Four corners; at K = 0.5 the
+/// folded part holds the flat's material, 2 thick, exactly.
+#[test]
+fn a_laser_weld_corner_closes_the_seam_and_holes_its_root() {
+    use std::f64::consts::{SQRT_2, TAU};
+    let exact_area = |s: &Session| -> f64 { s.model.state().surface_sheets.iter().flat_map(|k| k.shown().regions).map(|r| r.area()).sum() };
+    let (s0, ba, r) = (3.0, PI, 0.5);
+    let x_end = 0.5 / SQRT_2 + 2.0;
+    let (ea, eb) = ((x_end - s0, -ba), (-ba, x_end - s0));
+    let w = (ea.0 * eb.1 - ea.1 * eb.0).abs().atan2(ea.0 * eb.0 + ea.1 * eb.1);
+    let hole = (TAU - w) * r * r / 2.0;
+    let mut tear = Session::default();
+    alu_tray(&mut tear, 90.0, json!({"corner_relief_shape": "tear"}));
+    let (v_tear, a_tear) = (volume(&mut tear), exact_area(&tear));
+    let mut notch = Session::default();
+    alu_tray(&mut notch, 90.0, json!({}));
+    let v_notch = volume(&mut notch);
+    let mut s = Session::default();
+    alu_tray(&mut s, 90.0, json!({"corner_relief_shape": "laser_weld", "corner_relief": "1 mm"}));
+    assert!(s.model.results.iter().all(|r| r.error.is_none() && r.warning.is_none()), "{:?}", s.model.results);
+    let listed = run(&mut s, "sheet.rules", json!({}));
+    assert_eq!(listed["rules"][0]["rule"]["corner_relief_shape"], "laser_weld");
+    // The flat: one loop, the tear's closed corner, less the four holes.
+    let f = flat(&mut s);
+    assert_eq!(f["outline"].as_array().map(Vec::len), Some(1), "{f}");
+    let took = a_tear - exact_area(&s);
+    assert!(took > 4.0 * hole && took < 4.0 * PI * r * r, "{took}: not between {} and {}", 4.0 * hole, 4.0 * PI * r * r);
+    // The DXF: a round of radius 0.5 at the root of each seam.
+    let (arcs, _) = relief_drawing(&mut s);
+    for (x, y) in [(s0, s0), (120.0 - s0, s0), (120.0 - s0, 90.0 - s0), (s0, 90.0 - s0)] {
+        assert!(
+            arcs.iter().any(|(c, q)| (c.x - x).abs() < 1e-6 && (c.y - y).abs() < 1e-6 && (q - r).abs() < 1e-6),
+            "no hole at ({x}, {y}): {arcs:?}"
+        );
+    }
+    // The folded part: the tear's, less the holes through the 2 mm sheet, and more than the
+    // notched tray's, whose bends stop short of the corner.
+    let v = volume(&mut s);
+    assert!(((v_tear - v) - took * 2.0).abs() < 1e-3, "the holes took {} of the part and {took} of the flat", v_tear - v);
+    assert!(v > v_notch, "laser weld {v} vs notch {v_notch}");
+    // Unfolding, refolding and reopening keep it.
+    run(&mut s, "sheet.unfold", json!({}));
+    run(&mut s, "sheet.refold", json!({}));
+    assert!((volume(&mut s) - v).abs() < 1e-6 * v);
+    let mut reopened = Session::new(solidcraft_doc::Document::from_json(&s.doc.to_json()).unwrap());
+    assert!((volume(&mut reopened) - v).abs() < 1e-6 * v);
+}
+
 #[test]
 fn a_tear_of_the_rule_reaches_the_part_the_flat_pattern_and_the_dxf() {
     use std::f64::consts::SQRT_2;
@@ -5430,7 +5487,7 @@ fn the_corner_relief_shape_is_a_rule_setting_checked_and_undone() {
     // Only the four names are shapes; a refused one changes nothing.
     for wrong in [json!("star"), json!("square"), json!(""), json!(2)] {
         let e = s.execute("sheet.manage_rules", &json!({"name": "AL2", "corner_relief_shape": wrong})).map(|_| ()).unwrap_err().to_string();
-        assert!(e.contains("`corner_relief_shape` must be notch, round, rectangular or tear"), "{e}");
+        assert!(e.contains("`corner_relief_shape` must be notch, round, rectangular, tear or laser_weld"), "{e}");
     }
     assert!(shape(&mut s) == "notch" && volume(&mut s) == v0);
     // Changing the rule changes the parts made with it; other settings leave the shape alone.
@@ -5720,8 +5777,8 @@ fn only_an_edge_flange_takes_a_corner_relief_of_its_own() {
     for (extra, want) in [
         (json!({"thickness": "3 mm"}), "`thickness` is not a sheet.flange parameter"),
         (json!({"relief_width": "1 mm"}), "`relief_width` is not a sheet.flange parameter"),
-        (json!({"corner_relief_shape": "star"}), "`corner_relief_shape` must be notch, round, rectangular or tear"),
-        (json!({"corner_relief_shape": 2}), "`corner_relief_shape` must be notch, round, rectangular or tear"),
+        (json!({"corner_relief_shape": "star"}), "`corner_relief_shape` must be notch, round, rectangular, tear or laser_weld"),
+        (json!({"corner_relief_shape": 2}), "`corner_relief_shape` must be notch, round, rectangular, tear or laser_weld"),
         (json!({"corner_relief": "wide"}), "corner_relief"),
         (json!({"corner_relief": "30 deg"}), "corner_relief"),
     ] {
