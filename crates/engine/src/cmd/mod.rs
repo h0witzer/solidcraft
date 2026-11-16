@@ -116,6 +116,7 @@ mod parameter_sweep;
 mod parameters;
 mod plastic;
 mod print_face;
+pub mod print_unfold;
 mod render;
 pub(crate) use render::{
     PreparedCapture, prepare_capture_with_metadata, read_render_request, render_cancel_params, render_form_refusal, render_saved_job_refusal,
@@ -127,9 +128,9 @@ mod render_ui;
 mod script_tests;
 mod sheet;
 pub(crate) use sheet::{
-    DxfCurves, DxfText, FlangeType, ThenStep, bend_table_format, dxf_curves, dxf_layers, dxf_note_height, dxf_text, flange_edge, flange_edge_list,
-    flange_position, flange_type, fold_points, fold_position, fold_stays, material_side, perforation_pattern, sheet_points, sheet_rule_name,
-    then_list,
+    DxfCurves, DxfText, FlangeType, ThenStep, bend_table_format, dxf_curves, dxf_layers, dxf_note_height, dxf_text, filament_params, flange_edge,
+    flange_edge_list, flange_position, flange_type, fold_points, fold_position, fold_stays, material_side, perforation_pattern, press_params,
+    sheet_points, sheet_rule_name, then_list,
 };
 mod silhouette;
 mod sketch;
@@ -403,6 +404,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(parameter_sweep::COMMANDS.iter());
     v.extend(file::COMMANDS.iter());
     v.extend(print_face::COMMANDS.iter());
+    v.extend(print_unfold::COMMANDS.iter());
     v.extend(metadata::COMMANDS.iter());
     v.extend(inspect::COMMANDS.iter());
     v.extend(compare::COMMANDS.iter());

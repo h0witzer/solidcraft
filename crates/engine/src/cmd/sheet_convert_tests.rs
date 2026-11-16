@@ -2164,3 +2164,465 @@ fn a_bend_split_by_slots_across_it_converts_as_one_bend() {
         }
     }
 }
+
+// Foldable 3D prints (#13905): the print is the folded sheet's faces laid flat with a V-groove
+// and a film at each bend. The sheet's faces are its definition: the flat is derived from them as
+// the sheet's development lays it out, never written back. The expected numbers below are derived
+// in each test from that layout.
+
+/// A 100 x 60 x 30 block made a foldable print on its bottom face, with its four bottom edges as
+/// the bends (`extra` adds to the parameters).
+fn print_fold(s: &mut Session, extra: Value) -> Result<Value, crate::EngineError> {
+    run(s, "solid.box", json!({"length": 100, "width": 60, "height": 30, "body_name": "Block"}));
+    let mut p = json!({"body": "Block", "face": [50, 30, 0], "bends": BOTTOM_EDGES, "print_fold": true, "print_wall": "2 mm"});
+    if let (Some(p), Some(extra)) = (p.as_object_mut(), extra.as_object()) {
+        p.extend(extra.clone());
+    }
+    s.execute("sheet.convert", &p)
+}
+
+/// The area of a 90° V-groove's cross-section above the film `f` in a wall `t` thick, `c` the
+/// clearance between its walls: its walls at 45° from upright, so `2·z` wide at height `z` less
+/// the film's `f` (the trapezoid (t² − f²)), and each wall `c / 2` off square to itself, which is
+/// `c / √2` across the flat on either side: `2·(c / √2)·(t − f)` more.
+fn groove(t: f64, f: f64, c: f64) -> f64 {
+    (t * t - f * f) + SQRT_2 * c * (t - f)
+}
+
+#[test]
+fn a_foldable_print_lies_flat_and_keeps_the_blocks_outer_lengths() {
+    let mut s = Session::default();
+    let out = print_fold(&mut s, json!({})).unwrap_or_else(|e| panic!("{e}"));
+    // Its corners are cut open on purpose: no warning says so.
+    assert!(out["warning"].is_null(), "{out}");
+    // Flat on the bottom face, the wall's thickness into the block; the walls' outer faces run on
+    // from the base's edges by the block's height (30) on every side.
+    let (lo, hi) = bbox(&mut s);
+    let want = ([-30.0, -30.0, 0.0], [130.0, 90.0, 2.0]);
+    assert!((0..3).all(|i| (lo[i] - want.0[i]).abs() < 1e-6 && (hi[i] - want.1[i]).abs() < 1e-6), "{lo:?} {hi:?}");
+    // Its flat pattern shows where it folds: a bend line at each of the four bends.
+    assert_eq!(flat(&mut s)["bends"].as_array().map(Vec::len), Some(4));
+    // One piece.
+    let m = run(&mut s, "inspect.measure", json!({"bodies": ["Block"]}));
+    assert_eq!(m["bodies"][0]["kernel"]["shells"], json!(1), "{m}");
+    // Refolded, it is the block again, its material only turned about the films: the grooves
+    // close. Unfolded, it is the flat print again.
+    let flat_volume = volume(&mut s);
+    run(&mut s, "sheet.refold", json!({}));
+    let (lo, hi) = bbox(&mut s);
+    assert!((0..3).all(|i| lo[i].abs() < 1e-3 && (hi[i] - [100.0, 60.0, 30.0][i]).abs() < 1e-3), "{lo:?} {hi:?}");
+    let folded = volume(&mut s);
+    assert!((folded - flat_volume).abs() < 0.01 * flat_volume, "{folded} vs {flat_volume}");
+    // At each upright corner the walls stand the clearance apart: one runs on to the corner, the
+    // other ends a wall and the clearance short of it, so a point inside both walls' corner is
+    // in neither both.
+    for z in [5.0, 15.0] {
+        assert!(!contains(&s, [2.07, 1.0, z]) || !contains(&s, [1.0, 2.07, z]), "the upright corner is closed at z = {z}");
+    }
+    run(&mut s, "sheet.unfold", json!({}));
+    assert!((volume(&mut s) - flat_volume).abs() < 1e-6 * flat_volume);
+    // No other sheet metal feature works on it.
+    let e = s.execute("sheet.flange", &json!({"edges": [[50, -30, 1]], "height": 10, "body": "Block"})).expect_err("a flange on a print");
+    assert!(e.to_string().contains("foldable print"), "{e}");
+}
+
+#[test]
+fn a_foldable_prints_v_grooves_take_what_their_film_and_clearance_say() {
+    // The flat is the base 100 x 60 and four walls 30 high, the corners cut open: at each of the
+    // four upright corners the wall that runs on to it keeps its length and the other ends a
+    // wall and the clearance short, so (t + c)·30 of face less on each: the panels' area is
+    // 6000 + 2·100·30 + 2·60·30 − 4·30·(t + c). Each wall's bend runs along the whole of its
+    // edge the wall has: 2·(100 + 60) less (t + c) at each of the four corners. A groove takes
+    // its section [`groove`] along that. With no clearance the wall ends a wall short.
+    let t = 2.0;
+    let vol = |extra: Value| {
+        let mut s = Session::default();
+        print_fold(&mut s, extra).unwrap_or_else(|e| panic!("{e}"));
+        volume(&mut s)
+    };
+    let (thin, thick) =
+        (vol(json!({"print_film": "0.4 mm", "print_clearance": "0 mm"})), vol(json!({"print_film": "1 mm", "print_clearance": "0 mm"})));
+    let len = 2.0 * (100.0 + 60.0) - 4.0 * t;
+    let want = len * (groove(t, 0.4, 0.0) - groove(t, 1.0, 0.0));
+    assert!(((thick - thin) - want).abs() < 2e-3 * want, "{} vs {want}", thick - thin);
+    // Absolutely: the panels' flat less its grooves.
+    let area = 6000.0 + 2.0 * 100.0 * 30.0 + 2.0 * 60.0 * 30.0 - 4.0 * 30.0 * t;
+    let want = t * area - len * groove(t, 0.4, 0.0);
+    assert!((thin - want).abs() < 1e-3 * want, "{thin} vs {want}");
+    // The default film is 0.4 mm and the default clearance 0.15 mm.
+    let default = vol(json!({}));
+    assert!((default - vol(json!({"print_film": "0.4 mm", "print_clearance": "0.15 mm"}))).abs() < 1e-6 * thin);
+    let (c, len) = (0.15, 2.0 * (100.0 + 60.0) - 4.0 * (t + 0.15));
+    let area = 6000.0 + 2.0 * 100.0 * 30.0 + 2.0 * 60.0 * 30.0 - 4.0 * 30.0 * (t + c);
+    let want = t * area - len * groove(t, 0.4, c);
+    assert!((default - want).abs() < 1e-3 * want, "{default} vs {want}");
+    // One bend alone has no corner to open: the clearance only widens its groove along the whole
+    // 100 mm edge.
+    let one = |c: &str| vol(json!({"bends": [[50.0, 0.0, 0.0]], "print_clearance": c}));
+    let (shut, open) = (one("0 mm"), one("0.2 mm"));
+    let want = 100.0 * (groove(t, 0.4, 0.2) - groove(t, 0.4, 0.0));
+    assert!(((shut - open) - want).abs() < 2e-3 * want, "{} vs {want}", shut - open);
+}
+
+#[test]
+fn a_foldable_print_refuses_values_it_cant_be_made_with() {
+    for (extra, says) in [
+        (json!({"print_film": "2 mm"}), "film thickness"),
+        (json!({"print_film": "0 mm"}), "film thickness"),
+        (json!({"print_clearance": "-0.1 mm"}), "clearance"),
+        (json!({"print_clearance": "50 mm"}), "gaps at the cut edges"),
+        (json!({"print_wall": null}), "wall thickness"),
+        (json!({"rule": "Steel"}), "rule"),
+        (json!({"bends": null}), "bends"),
+    ] {
+        let mut s = Session::default();
+        let got = print_fold(&mut s, extra.clone()).map(|_| ()).unwrap_err().to_string();
+        assert!(got.contains(says), "{extra}: {got}");
+    }
+    // The print's values are refused without `print_fold`.
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 100, "width": 60, "height": 30, "body_name": "Block"}));
+    let p = json!({"body": "Block", "face": [50, 30, 0], "bends": BOTTOM_EDGES, "print_film": "0.4 mm"});
+    assert!(s.execute("sheet.convert", &p).is_err());
+}
+
+#[test]
+fn a_foldable_prints_walls_meet_butted_or_mitred_at_its_corners() {
+    // The block's walls meet at its four upright corners on edges that are no bends. The panels
+    // are the base and the four walls 30 high (the faces' outlines), `A0` = 15600 mm² with the
+    // corners cut open, and their bends `L0` = 320 mm.
+    // - A butt joint keeps one wall whole and ends the other t + c short of the corner (square, the
+    //   faces at right angles): 30·(t + c) of face and (t + c) of bend off each of the four corners.
+    // - A mitre ends each wall at the plane halfway between them, c / √2 short of it on the outer
+    //   skin (c / 2 off the plane, at 45°) and, at the inner skin, t further in, a triangle
+    //   t·t / 2 along its 30 mm: off each of eight ends, a strip 30·c / √2 of face and c / √2 of
+    //   bend too. Where a wall's slope and its groove cut the same corner of it (the wedge
+    //   x ≤ s + z, the groove |y| ≤ z + s at height z, from the film f up to t) the corner is
+    //   counted once, (t³ − f³)/3 + s·(t² − f²)/2 for each of the eight ends; and the base's two
+    //   grooves cross each other at its four corners (x, y ≤ z + s past s): (t³ − f³)/3 each.
+    // Each takes its grooves ([`groove`]) off its bends.
+    let (t, leg, f) = (2.0, 30.0, 0.4);
+    let (a0, l0) = (6000.0 + 2.0 * 100.0 * leg + 2.0 * 60.0 * leg, 2.0 * (100.0 + 60.0));
+    let vol = |joint: &str, c: &str| {
+        let mut s = Session::default();
+        print_fold(&mut s, json!({"print_joint": joint, "print_clearance": c})).unwrap_or_else(|e| panic!("{joint} {c}: {e}"));
+        let (lo, hi) = bbox(&mut s);
+        assert!((lo[0] + 30.0).abs() < 1e-6 && (hi[0] - 130.0).abs() < 1e-6, "{joint}: {lo:?} {hi:?}");
+        volume(&mut s)
+    };
+    let butt = |c: f64| t * (a0 - 4.0 * leg * (t + c)) - (l0 - 4.0 * (t + c)) * groove(t, f, c);
+    let mitre = |c: f64| {
+        let s = c / SQRT_2;
+        let (cube, square) = ((t.powi(3) - f.powi(3)) / 3.0, (t * t - f * f) / 2.0);
+        t * (a0 - 8.0 * leg * s) - 8.0 * 0.5 * t * t * leg - (l0 - 8.0 * s) * groove(t, f, c) + 8.0 * (cube + s * square) + 4.0 * cube
+    };
+    for (joint, c, want) in [("butt", 0.0, butt(0.0)), ("mitre", 0.0, mitre(0.0)), ("butt", 0.2, butt(0.2)), ("mitre", 0.2, mitre(0.2))] {
+        let got = vol(joint, &format!("{c} mm"));
+        assert!((got - want).abs() < 1e-3 * want, "{joint} {c}: {got} vs {want}");
+    }
+    // Butt is the default; anything else is refused.
+    let mut s = Session::default();
+    assert!((vol("butt", "0 mm") - vol("butt", "0 mm")).abs() < 1e-9);
+    assert!(print_fold(&mut s, json!({"print_joint": "round"})).is_err());
+}
+
+#[test]
+fn an_end_edge_picked_in_its_middle_is_a_bend_all_the_same() {
+    // A hexagonal prism, 40 long, turned to lie along -y: each side face lies between two faces
+    // whose planes meet, as a chamfer does, and the middle half of its end edge is in the middle
+    // half of that face. An end edge picked there is a bend all the same: the edge nearest the
+    // pick, not the face under it, is the bend.
+    let (r, len) = (25.0, 40.0);
+    let h = r * 3f64.sqrt() / 2.0;
+    let corners = [[-r, 0.0], [-r / 2.0, -h], [r / 2.0, -h], [r, 0.0], [r / 2.0, h], [-r / 2.0, h]];
+    // Turned, a sketch point (x, y) at height z lies at (x, -z, y). The fixed face is the side at
+    // y = -h of the sketch; five side edges are bends (the one at the last corner is cut open),
+    // and so is the far end edge of the fixed face, picked at points across its middle half.
+    let at = |c: [f64; 2], z: f64| [c[0], -z, c[1]];
+    for u in [-6.0, -4.5, -3.0, -1.5, 0.0, 1.5, 3.0, 4.5, 6.0] {
+        let mut s = Session::default();
+        run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Hex"}));
+        run(&mut s, "sketch.line", json!({"points": corners, "closed": true}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"sketch": "Hex", "distance": len, "body_name": "Hex"}));
+        run(&mut s, "solid.move", json!({"bodies": ["Hex"], "axis": [1, 0, 0], "angle": "90 deg"}));
+        let mut bends: Vec<[f64; 3]> = [0, 1, 2, 3, 4].iter().map(|&i| at(corners[i], len / 2.0)).collect();
+        bends.push(at([u, -h], len));
+        let p = json!({"body": "Hex", "face": at([-6.0, -h], 23.0), "bends": bends, "print_fold": true, "print_wall": "2 mm"});
+        let out = s.execute("sheet.convert", &p).unwrap_or_else(|e| panic!("end edge picked {u} from its middle: {e}"));
+        assert!(out["warning"].is_null(), "{out}");
+        // Flat on the fixed face (z = -h), the wall's thickness into the prism.
+        let (lo, hi) = bbox(&mut s);
+        assert!((lo[2] + h).abs() < 1e-6 && (hi[2] - lo[2] - 2.0).abs() < 1e-6, "{u}: {lo:?} {hi:?}");
+    }
+}
+
+/// An L-shaped bar, 20 deep: its front face (z = 0) has six edges, and the side faces at its
+/// inside corner (the foot's top, y = 10, and the arm's inside, x = 10) unfold off it into the
+/// same square. `split` picks some of those edges as split edges instead of bends.
+fn print_l(s: &mut Session, bends: &[[f64; 3]], splits: &[[f64; 3]]) -> Result<Value, crate::EngineError> {
+    run(s, "sketch.create", json!({"plane": "XY", "name": "L"}));
+    run(s, "sketch.line", json!({"points": [[0, 0], [60, 0], [60, 10], [10, 10], [10, 60], [0, 60]], "closed": true}));
+    run(s, "sketch.finish", json!({}));
+    run(s, "solid.extrude", json!({"sketch": "L", "distance": 20, "body_name": "L"}));
+    let mut p = json!({"body": "L", "face": [5, 30, 0], "bends": bends, "print_fold": true, "print_wall": "2 mm"});
+    if !splits.is_empty() {
+        p["print_splits"] = json!(splits);
+    }
+    s.execute("sheet.convert", &p)
+}
+
+/// The front face's edges: its bottom, right end, the foot's top, the arm's inside, its top, its left.
+const L_EDGES: [[f64; 3]; 6] = [[30.0, 0.0, 0.0], [60.0, 5.0, 0.0], [35.0, 10.0, 0.0], [10.0, 35.0, 0.0], [5.0, 60.0, 0.0], [0.0, 30.0, 0.0]];
+
+#[test]
+fn a_foldable_print_whose_faces_unfold_onto_each_other_is_split_where_asked() {
+    // All six edges bent: the foot's top and the arm's inside both unfold into the square inside
+    // the L, and the print says which faces overlap, asking for a split edge between them.
+    let mut s = Session::default();
+    let e = print_l(&mut s, &L_EDGES, &[]).expect_err("an overlapping print is refused");
+    let msg = e.to_string();
+    assert!(msg.contains("overlaps itself") && msg.contains("Split Edges"), "{msg}");
+    // Without the arm's inside at all, the print lies flat in one piece.
+    let five: Vec<[f64; 3]> = L_EDGES.iter().copied().filter(|p| *p != L_EDGES[3]).collect();
+    let mut one = Session::default();
+    print_l(&mut one, &five, &[]).unwrap_or_else(|e| panic!("{e}"));
+    let (lo1, hi1) = bbox(&mut one);
+    let v1 = volume(&mut one);
+    // With it as a split edge, the arm's inside prints as a part of its own beside the rest:
+    // at most its whole 50 × 20 face of 2 mm wall more, a gap past the first part's flat.
+    let mut split = Session::default();
+    let out = print_l(&mut split, &five, &[L_EDGES[3]]).unwrap_or_else(|e| panic!("{e}"));
+    assert!(out["warning"].is_null(), "{out}");
+    let (lo, hi) = bbox(&mut split);
+    let v = volume(&mut split);
+    assert!(v > v1 + 1.0 && v < v1 + 50.0 * 20.0 * 2.0, "{v} {v1}");
+    assert!((hi[2] - lo[2] - 2.0).abs() < 1e-6, "{lo:?} {hi:?}");
+    let (w1, w) = ([hi1[0] - lo1[0], hi1[1] - lo1[1]], [hi[0] - lo[0], hi[1] - lo[1]]);
+    assert!(w[0] * w[1] > w1[0] * w1[1] + 5.0 * 15.0, "{w1:?} {w:?}");
+    // Split edges are a foldable print's only.
+    let mut plain = Session::default();
+    run(&mut plain, "solid.box", json!({"length": 100, "width": 60, "height": 30, "body_name": "Block"}));
+    let p = json!({"body": "Block", "face": [50, 30, 0], "bends": BOTTOM_EDGES, "print_splits": [[50, 0, 0]]});
+    assert!(plain.execute("sheet.convert", &p).is_err());
+}
+
+#[test]
+fn a_foldable_prints_filament_edges_share_their_corner_out_in_fingers_round_a_channel() {
+    // The block's four upright corners joined with filament, its walls 3 mm and no clearance. At a
+    // joint both walls run on to the corner and the edge is split into fingers that belong to
+    // them by turns, each wall notched t = 3 deep where the other's fingers stand: along the
+    // 30 mm corner that is the material a butt joint takes from the wall that ends short of it
+    // (30·t deep t), however many fingers there are and whichever wall starts. What differs from
+    // a butt joint is the channel: 1.85 mm square (the filament and 0.1 mm of play) along each
+    // wall's own fingers, 30 mm of corner between the two, less what each shares with its wall's
+    // groove at the bend.
+    const CORNERS: [[f64; 3]; 4] = [[0.0, 0.0, 15.0], [100.0, 0.0, 15.0], [100.0, 60.0, 15.0], [0.0, 60.0, 15.0]];
+    let joints = |segments: u32, flip: bool, diameter: f64| -> Value {
+        json!(CORNERS.iter().map(|c| json!({"at": c, "segments": segments, "diameter": diameter, "flip": flip})).collect::<Vec<_>>())
+    };
+    let vol = |extra: Value| {
+        let mut s = Session::default();
+        print_fold(&mut s, extra.clone()).unwrap_or_else(|e| panic!("{extra}: {e}"));
+        volume(&mut s)
+    };
+    let t3 = |mut v: Value| {
+        v["print_wall"] = json!("3 mm");
+        if v.get("print_clearance").is_none() {
+            v["print_clearance"] = json!("0 mm");
+        }
+        v
+    };
+    let butt = vol(t3(json!({})));
+    let five = vol(t3(json!({"print_filament": joints(5, false, 1.75)})));
+    let three = vol(t3(json!({"print_filament": joints(3, false, 1.75)})));
+    let flipped = vol(t3(json!({"print_filament": joints(5, true, 1.75)})));
+    assert!((five - three).abs() < 1e-6 * five && (five - flipped).abs() < 1e-6 * five, "{five} {three} {flipped}");
+    let side = 1.85;
+    let want = 4.0 * 30.0 * side * side;
+    assert!(((butt - five) - want).abs() < 0.03 * want, "{} vs {want}", butt - five);
+    // With clearance every finger stands that far from the next: more fingers, more gaps.
+    let gap = |n: u32| vol(t3(json!({"print_filament": joints(n, false, 1.75), "print_clearance": "0.2 mm"})));
+    assert!(gap(5) < gap(3) - 1.0, "{} {}", gap(5), gap(3));
+    // More fingers than fit 5 mm wide on the 30 mm corners: they get as many as fit, 6.
+    assert!(
+        (vol(t3(json!({"print_filament": joints(200, false, 1.75)}))) - vol(t3(json!({"print_filament": joints(6, false, 1.75)})))).abs()
+            < 1e-6 * five
+    );
+    // Refused: a channel the wall can't hold (2.85 + two films of 0.4 is more than 3), a channel
+    // the tolerance closes, a filament edge that is no edge of the print, and filament without a
+    // foldable print.
+    let mut s = Session::default();
+    let e = print_fold(&mut s, t3(json!({"print_filament": joints(5, false, 2.85)}))).expect_err("too thin for the channel");
+    assert!(e.to_string().contains("needs walls at least"), "{e}");
+    let mut s = Session::default();
+    let closed = json!([{"at": CORNERS[0], "diameter": 1.75, "tolerance": -1.7}]);
+    let e = print_fold(&mut s, t3(json!({"print_filament": closed}))).expect_err("closed channel");
+    assert!(e.to_string().contains("closes the channel"), "{e}");
+    let mut s = Session::default();
+    let e = print_fold(&mut s, t3(json!({"print_filament": [{"at": [50, 30, 15]}]}))).expect_err("inside the block");
+    assert!(e.to_string().contains("no edge of the print"), "{e}");
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 100, "width": 60, "height": 30, "body_name": "Block"}));
+    let p = json!({"body": "Block", "face": [50, 30, 0], "bends": BOTTOM_EDGES, "print_filament": [{"at": CORNERS[0]}]});
+    assert!(s.execute("sheet.convert", &p).is_err());
+}
+
+#[test]
+fn a_foldable_prints_press_fit_edges_snap_a_nub_of_one_finger_into_a_dimple_of_the_next() {
+    // The block's four upright corners joined by press fits, its walls 3 mm: the fingers of a
+    // filament joint without its channel. With no clearance and no tolerance each nub fills the
+    // dimple it snaps into, so the print takes what a filament joint's fingers do, a butt joint's
+    // material.
+    const EDGES: [[f64; 3]; 4] = [[0.0, 0.0, 15.0], [100.0, 0.0, 15.0], [100.0, 60.0, 15.0], [0.0, 60.0, 15.0]];
+    let joints = |fit: Value| -> Value {
+        json!(
+            EDGES
+                .iter()
+                .map(|e| {
+                    let mut j = fit.clone();
+                    j["at"] = json!(e);
+                    j
+                })
+                .collect::<Vec<_>>()
+        )
+    };
+    let run_print = |extra: Value| {
+        let mut s = Session::default();
+        let mut p = extra.clone();
+        p["print_wall"] = json!("3 mm");
+        print_fold(&mut s, p).map(|_| s)
+    };
+    let vol = |extra: Value| {
+        let mut s = run_print(extra.clone()).unwrap_or_else(|e| panic!("{extra}: {e}"));
+        volume(&mut s)
+    };
+    let plain = vol(json!({"print_clearance": "0 mm"}));
+    let tight = vol(json!({"print_press": joints(json!({})), "print_clearance": "0 mm"}));
+    assert!((tight - plain).abs() < 1e-3 * plain, "{tight} vs {plain}");
+    // A larger dimple takes more than its nub brings.
+    let loose = vol(json!({"print_press": joints(json!({"tolerance": 0.1})), "print_clearance": "0 mm"}));
+    assert!(loose < tight - 1.0, "{loose} vs {tight}");
+    // Folded back up it is the block, every nub in its dimple and nothing of one panel inside another.
+    let mut s = run_print(json!({"print_press": joints(json!({}))})).unwrap_or_else(|e| panic!("{e}"));
+    let flat_volume = volume(&mut s);
+    run(&mut s, "sheet.refold", json!({}));
+    let (lo, hi) = bbox(&mut s);
+    assert!((0..3).all(|i| lo[i].abs() < 1e-3 && (hi[i] - [100.0, 60.0, 30.0][i]).abs() < 1e-3), "{lo:?} {hi:?}");
+    let folded = volume(&mut s);
+    assert!((folded - flat_volume).abs() < 0.003 * flat_volume, "{folded} vs {flat_volume}");
+    // Refused: a nub no taller than the clearance (it can't reach its dimple), and one too large
+    // for the wall.
+    let e = run_print(json!({"print_press": joints(json!({})), "print_clearance": "0.3 mm"})).err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(e.contains("can't reach the dimple"), "{e}");
+    let e = run_print(json!({"print_press": joints(json!({"radius": 1.5}))})).err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(e.contains("needs walls at least"), "{e}");
+}
+
+#[test]
+fn a_foldable_prints_inner_walls_fold_into_their_hole() {
+    // An 80 x 60 frame 10 high round a 40 x 20 hole, its walls 2 mm: the base stays, the left side
+    // folds up from it and the lid from that. The walls round the hole bend at the hole's edges,
+    // two from the base and two from the lid, never two neighbours from one face, so that in the
+    // flat each folds into its face's hole clear of the others. The hole stays a hole of its
+    // face, the walls' panels inside it; the print is one piece.
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Frame"}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [0.0, 0.0], "p1": [80.0, 60.0]}));
+    run(&mut s, "sketch.rectangle.two_point", json!({"p0": [20.0, 20.0], "p1": [60.0, 40.0]}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch": "Frame", "distance": 10, "body_name": "Frame"}));
+    let bends = json!([[40, 0, 0], [80, 30, 0], [40, 60, 0], [0, 30, 0], [0, 30, 10], [40, 20, 0], [40, 40, 0], [20, 30, 10], [60, 30, 10]]);
+    let p = json!({"body": "Frame", "face": [10, 30, 0], "bends": bends, "print_fold": true, "print_wall": "2 mm"});
+    let out = s.execute("sheet.convert", &p).unwrap_or_else(|e| panic!("{e}"));
+    assert!(out["warning"].is_null(), "{out}");
+    let m = run(&mut s, "inspect.measure", json!({"bodies": ["Frame"]}));
+    assert_eq!(m["bodies"][0]["kernel"]["shells"], json!(1), "{m}");
+    let flat_volume = volume(&mut s);
+    // Folded back up it is the frame, its four inner walls in place, nothing of one panel in another.
+    run(&mut s, "sheet.refold", json!({}));
+    let (lo, hi) = bbox(&mut s);
+    assert!((0..3).all(|i| lo[i].abs() < 1e-3 && (hi[i] - [80.0, 60.0, 10.0][i]).abs() < 1e-3), "{lo:?} {hi:?}");
+    let folded = volume(&mut s);
+    assert!((folded - flat_volume).abs() < 0.01 * flat_volume, "{folded} vs {flat_volume}");
+    for p in [[40.0, 19.0, 5.0], [40.0, 41.0, 5.0], [19.0, 30.0, 5.0], [61.0, 30.0, 5.0]] {
+        assert!(contains(&s, p), "no inner wall at {p:?}");
+    }
+    assert!(!contains(&s, [40.0, 30.0, 5.0]), "the hole is closed");
+}
+
+#[test]
+fn a_foldable_prints_joints_on_its_bends_fold_back_up_round_a_channel_or_a_nub() {
+    // On a bend the fingers are sectors round the bend's sharp, the front wall's and the base's by
+    // turns, the film under them whole. The channel's core lies on the bisector of the fold, its
+    // wall (0.8 mm), the film and the clearance (0.4 + 0.1) from the other wall's outer face:
+    // 3.15 mm from the sharp, at (x, 2.2, 2.2) along the front bend. The fingers stand out of the
+    // walls inside the box to 5.26 mm round the sharp, 3.6 mm along and up is inside them and
+    // 4 mm along and up is not. Folded back up it is the block, nothing of one panel inside another.
+    let bottom: Vec<Value> = BOTTOM_EDGES.iter().map(|p| json!({"at": p})).collect();
+    let mut s = Session::default();
+    print_fold(&mut s, json!({"print_wall": "3 mm", "print_filament": bottom, "print_clearance": "0.1 mm"})).unwrap_or_else(|e| panic!("{e}"));
+    let flat_volume = volume(&mut s);
+    run(&mut s, "sheet.refold", json!({}));
+    let (lo, hi) = bbox(&mut s);
+    assert!((0..3).all(|i| lo[i].abs() < 1e-3 && (hi[i] - [100.0, 60.0, 30.0][i]).abs() < 1e-3), "{lo:?} {hi:?}");
+    let folded = volume(&mut s);
+    assert!((folded - flat_volume).abs() < 0.003 * flat_volume, "{folded} vs {flat_volume}");
+    for x in [30.0, 50.0] {
+        assert!(!contains(&s, [x, 2.2, 2.2]), "no channel at x = {x}");
+        assert!(contains(&s, [x, 3.6, 3.6]), "no finger inside the fold at x = {x}");
+        assert!(!contains(&s, [x, 4.0, 4.0]), "the finger reaches too far at x = {x}");
+    }
+    // The same bends joined by press fits: the fingers of a filament joint without its channel, a
+    // nub of one finger in a dimple of the next.
+    let press: Vec<Value> = BOTTOM_EDGES.iter().map(|p| json!({"at": p})).collect();
+    let mut s = Session::default();
+    print_fold(&mut s, json!({"print_wall": "3 mm", "print_press": press})).unwrap_or_else(|e| panic!("{e}"));
+    let flat_volume = volume(&mut s);
+    run(&mut s, "sheet.refold", json!({}));
+    let (lo, hi) = bbox(&mut s);
+    assert!((0..3).all(|i| lo[i].abs() < 1e-3 && (hi[i] - [100.0, 60.0, 30.0][i]).abs() < 1e-3), "{lo:?} {hi:?}");
+    let folded = volume(&mut s);
+    assert!((folded - flat_volume).abs() < 0.003 * flat_volume, "{folded} vs {flat_volume}");
+}
+
+#[test]
+fn a_foldable_prints_press_fits_on_a_hexagonal_prism_fold_back_into_it() {
+    // A hexagonal prism's sides fold by 60°: there the other panel's finger covers the core in
+    // the flat, so the nubs sit lower, nearer their own wall, clear of it. Folded back up every
+    // nub is in its dimple and nothing of one panel inside another. Both ends fold up too and
+    // every edge is pressed: the top side then has three open edges (the seam and the two ends)
+    // whose fingers all go with it.
+    let h = 25.0 * 3f64.sqrt() / 2.0;
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane": "XY", "name": "Hex"}));
+    run(&mut s, "sketch.line", json!({"points": [[-25.0, 0.0], [-12.5, -h], [12.5, -h], [25.0, 0.0], [12.5, h], [-12.5, h]], "closed": true}));
+    run(&mut s, "sketch.finish", json!({}));
+    run(&mut s, "solid.extrude", json!({"sketch": "Hex", "distance": 40, "body_name": "Hex"}));
+    let bends = [[-12.5, -h, 20.0], [12.5, -h, 20.0], [-25.0, 0.0, 20.0], [25.0, 0.0, 20.0], [12.5, h, 20.0], [0.0, -h, 40.0], [0.0, -h, 0.0]];
+    let ends = |z: f64| [[-18.75, -h / 2.0, z], [18.75, -h / 2.0, z], [18.75, h / 2.0, z], [0.0, h, z], [-18.75, h / 2.0, z]];
+    let edges = bends.iter().chain(&[[-12.5, h, 20.0]]).chain(&ends(40.0)).chain(&ends(0.0)).map(|a| json!({"at": a})).collect::<Vec<_>>();
+    let p = json!({"body": "Hex", "face": [0.0, -h, 20.0], "bends": bends, "print_fold": true, "print_wall": "3 mm", "print_press": edges});
+    s.execute("sheet.convert", &p).unwrap_or_else(|e| panic!("{e}"));
+    let flat_volume = volume(&mut s);
+    run(&mut s, "sheet.refold", json!({}));
+    let folded = volume(&mut s);
+    // Folding can only lose material: where two sides' fingers share a 60° corner the folded
+    // print holds that material once. On the surface sheet's layout that is 94 mm³ of 23650 mm³
+    // (0.40 %, measured); the old flat model's fingers lost under 0.3 %. Bound it just above.
+    assert!(folded < flat_volume && flat_volume - folded < 0.0042 * flat_volume, "{folded} vs {flat_volume}");
+    let (lo, hi) = bbox(&mut s);
+    let (want_lo, want_hi) = ([-25.0, -h, 0.0], [25.0, h, 40.0]);
+    assert!((0..3).all(|i| (lo[i] - want_lo[i]).abs() < 1e-3 && (hi[i] - want_hi[i]).abs() < 1e-3), "{lo:?} {hi:?}");
+    // The open edge between the last two sides (at the corner (-12.5, h)) folds by 60° too. Part
+    // of the corner both walls share lies past each side's own edge, in the other's wall: 0.6 mm
+    // past the edge and 2.5 mm deep, it is 0.73 mm inside the other side's outer face. Each finger
+    // takes that part on its side, so in every finger's stretch one of the two is filled (with
+    // fingers that end at their own side's edge, neither was, and the seam showed windows).
+    let s3 = 3f64.sqrt() / 2.0;
+    for z in [12.0, 20.0, 28.0] {
+        let past_left = [-12.5 + 0.6 * 0.5 + 2.5 * s3, h + 0.6 * s3 - 2.5 * 0.5, z];
+        let past_top = [-12.5 - 0.6, h - 2.5, z];
+        assert!(contains(&s, past_left) || contains(&s, past_top), "the seam is open at z = {z}");
+    }
+}
